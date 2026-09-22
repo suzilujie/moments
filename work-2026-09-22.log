@@ -596,3 +596,70 @@
   未修改任何既有项目文件，未修改任何 git 全局配置。
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-22] 阶段八：首次推送到 GitHub 与首次 CI 构建成功
+--------------------------------------------------------------------------------
+
+■ 执行内容
+  1) 关联远端 origin = https://github.com/suzilujie/moments.git（公开仓库）
+     推送前用 `git ls-remote --heads origin` 确认远端为空仓库 —— 这一步是为了
+     避免"远端已有 README 提交"导致首次 push 被拒（本地与远端无关历史的经典冲突）
+  2) start.ps1 的 $Owner/$Repo 填入 suzilujie / moments，使 -Wait 可轮询构建结果
+  3) 提交 6d0bf7f 并推送，分支 main 设置上游跟踪
+
+■ 推送结果
+  远端 refs/heads/main = 6d0bf7f（与本地 HEAD 一致）
+  三个提交已上远端：d3c6da2（M0 骨架）→ 05fc0cb（工作日志）→ 6d0bf7f（仓库坐标）
+
+■ 首次 CI 构建结果（run id 35697172960，event=push）
+  总耗时 37 秒，10 个步骤全部 success：
+    1. Set up job
+    2. Checkout
+    3. Show toolchain versions
+    4. Install XcodeGen
+    5. Generate Xcode project        ← project.yml 合法，XcodeGen 生成成功
+    6. Inject build info
+    7. Build for device (unsigned)   ← 【关键】Swift 代码编译通过
+    8. Package unsigned ipa
+    9. Verify ipa contents           ← 产物自检全部通过
+   10. Upload ipa artifact
+
+■ 本次构建解除的风险
+  阶段六登记的风险 1「Swift 代码未经编译验证」现已消除：
+  本机无 Swift 工具链，8 个 Swift 源文件的编译正确性此前无法验证，
+  现在由 CI 证明其可通过 Xcode 编译。
+
+  同时由第 9 步的自检反向确认了四项硬前提已进入最终产物：
+    · 可执行文件为 arm64 Mach-O（能装到真机）
+    · CFBundleIdentifier 已展开为 com.xfish.moments（无构建变量泄漏）
+    · CFBundleDisplayName 正常
+    · UIBackgroundModes[0] = audio（锁屏录音前提，设计文档 3.2）
+    · NSMicrophoneUsageDescription 已配置（权限弹窗前提，设计文档 4.14）
+    · 且产物中不含 NSSpeechRecognitionUsageDescription（最小权限面成立）
+
+■ 关于构建耗时的一个说明
+  37 秒对于"brew install + xcodebuild"而言偏快，因此额外核对了每一步的执行结果，
+  确认十步均为 success（而非被跳过）——特别是第 7 步 Build 与第 9 步 Verify。
+  Verify 步骤内部对不合规产物是直接 exit 1 的，因此它的 success 具有实际含义。
+  耗时偏快的原因推测为：runner 已预置或缓存 xcodegen，
+  且本项目仅 8 个源文件的 Release 构建本身很轻。
+
+■ 影响范围
+  代码与文档上传至公开仓库；未修改任何既有项目文件。
+  未启用 Ad Hoc 路径，因此仓库内未配置任何 Secrets，产物为未签名 ipa。
+
+■ 下一步（用户侧，M0 验收动作）
+  1) 打开 Actions 运行页下载产物 Moments-unsigned-ipa
+     https://github.com/suzilujie/moments/actions/runs/35697172960
+  2) 用 Sideloadly 侧载到 iPhone（付费账号下描述文件有效期 1 年）
+  3) 打开 App，在自检页逐项确认并反馈：
+       · 提交号是否显示 6d0bf7f（验证装的是本次构建）
+       · 后台模式是否显示 audio 且提示已声明
+       · 申请麦克风权限 → 是否变为已授权
+       · 激活会话 → 是否成功，并记录【原生采集格式】的采样率
+  4) 第 4 项记录的采样率是 M1 的关键输入，请务必反馈
+
+■ M0 完成判据
+  「手机上能装上并打开 App，自检页四项全部通过」即视为 M0 完成。
+================================================================================
+
