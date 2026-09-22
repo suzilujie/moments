@@ -24,11 +24,11 @@ param(
 )
 
 # ---------------------------------------------------------------------------
-# Fill these in after the GitHub repository is created, to enable -Wait.
-# Leave empty and the script will still commit and push, it just cannot poll CI.
+# GitHub repository coordinates. Used by -Wait to poll the Actions API.
+# If left empty the script still commits and pushes, it just cannot poll CI.
 # ---------------------------------------------------------------------------
-$Owner = ""
-$Repo  = ""
+$Owner = "suzilujie"
+$Repo  = "moments"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
