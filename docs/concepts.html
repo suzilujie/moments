@@ -870,6 +870,24 @@ li{margin:6px 0}
 <td>CI 流水线</td>
 </tr>
 <tr>
+<td><b>日志三通道</b><br>Three-Channel Logging</td>
+<td>日志同时写入三个载体：内存环形缓冲（应用内实时看）、<b>落盘文件</b>（按天滚动、保留 7 天）、系统日志（<code>os.Logger</code> / <code>idevicesyslog</code>）</td>
+<td>M0 实施阶段确立；<span class="ok">已定并落地</span>。三者缺一不可：内存最快但会随进程消失，落盘最可靠但需要滚动清理，系统日志能在 App 启动完成前就开始记录</td>
+<td>日志落盘、无调试器开发</td>
+</tr>
+<tr>
+<td><b>日志落盘</b><br>Persistent Log File</td>
+<td>把日志按天滚动写入 <code>Logs/moments-yyyy-MM-dd.log</code>，保留 7 天后自动清理</td>
+<td>M0 实施阶段确立；<span class="ok">已落地</span>。<b>存在的唯一理由</b>：内存日志在进程被系统杀掉或崩溃时随之消失，而本项目最需要诊断的场景（锁屏后停止录音）发生时进程已经不在了 —— 日志不能存活，观测能力就等于零</td>
+<td>日志三通道、App 强杀恢复</td>
+</tr>
+<tr>
+<td><b>日志失败降级</b><br>Log-Failure Graceful Degradation</td>
+<td>写盘失败时只记录错误并降级为仅内存日志，不抛出、不阻塞调用方</td>
+<td>M0 实施阶段确立为<b>硬原则</b>；<span class="ok">已定</span>。日志本身是观测工具，<b>观测工具的问题不允许影响被观测的主链路</b></td>
+<td>日志落盘、采集与转写解耦</td>
+</tr>
+<tr>
 <td><b>无调试器开发</b><br>No-Debugger Development</td>
 <td>无 Mac 与 Xcode，无法断点调试，全部依赖日志推断</td>
 <td>既有项目已确立的约束；<span class="ok">已接受</span>。本项目对日志要求更高——中断恢复与降档属"沉默行为"，无报错可查，必须逐条留痕</td>

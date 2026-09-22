@@ -10,11 +10,12 @@ enum LogCategory: String, CaseIterable {
     case app
     case capture
     case session
-    case interrupt
     case route
+    case interrupt
     case thermal
     case disk
     case storage
+    case system
 }
 
 enum LogLevel: String {
@@ -31,12 +32,13 @@ struct LogEntry: Identifiable {
     let message: String
 }
 
-/// 结构化日志：内存环形缓冲 + 可导出 + 同时写入系统日志。
+/// 结构化日志：内存环形缓冲 + 落盘 + 系统日志，三条通道并存。
 ///
-/// 三条通道各有用途：
-/// - 内存缓冲：应用内日志面板实时查看（无需连电脑）
-/// - 导出文本：通过 USB 取证
-/// - 系统日志：`idevicesyslog` 可在 App 还没起来时就看到启动阶段的输出
+/// 三条通道各自解决不同问题（缺一不可）：
+/// - **内存缓冲**：应用内日志面板实时查看，不用连电脑
+/// - **落盘文件**：App 被系统杀掉或崩溃后仍能取证 —— 这是本项目最关键的一条，
+///   因为最需要诊断的场景（锁屏后停录）发生时，进程已经不在了
+/// - **系统日志**：`idevicesyslog` 可在 App 还没启动完成时就看到输出
 final class Log {
 
     static let shared = Log()
@@ -45,10 +47,13 @@ final class Log {
     private var buffer: [LogEntry] = []
     private let queue = DispatchQueue(label: "com.xfish.moments.log")
     private let osLog = os.Logger(subsystem: "com.xfish.moments", category: "Moments")
+    private let fileWriter = LogFileWriter()
 
     init(capacity: Int = 5000) {
         self.capacity = capacity
     }
+
+    // MARK: - 写入口
 
     func info(_ category: LogCategory, _ message: String) {
         write(category, .info, message)
@@ -68,6 +73,15 @@ final class Log {
         write(category, .info, "状态迁移 \(from) → \(to)｜原因：\(reason)")
     }
 
+    /// 分段标记：把不同次启动、不同阶段在滚动日志文件里隔开。
+    /// 没有它，按天滚动的文件里内容会连成一片，无法判断边界。
+    func banner(_ title: String) {
+        fileWriter.appendBanner(title)
+        write(.app, .info, "── \(title) ──")
+    }
+
+    // MARK: - 读取与导出
+
     func snapshot() -> [LogEntry] {
         queue.sync { buffer }
     }
@@ -75,6 +89,7 @@ final class Log {
     /// 导出为纯文本，供 USB 取出或复制粘贴。
     func exportText() -> String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MM-dd HH:mm:ss.SSS"
         let header = "时刻 App 日志导出｜\(AppInfo.deviceModel) / iOS \(AppInfo.systemVersion)"
             + "｜版本 \(AppInfo.version)(\(AppInfo.build))｜commit \(BuildInfo.commit)"
@@ -90,8 +105,19 @@ final class Log {
         }
     }
 
+    // MARK: - 落盘状态（供自检页确认"日志真的写进去了"）
+
+    var filePathText: String { fileWriter.filePathText }
+    var fileSizeText: String { fileWriter.fileSizeText }
+    var fileWrittenLines: Int { fileWriter.writtenLines }
+    var fileErrorText: String? { fileWriter.lastError }
+    var isFileActive: Bool { fileWriter.isActive }
+
+    // MARK: - 内部实现
+
     private func write(_ category: LogCategory, _ level: LogLevel, _ message: String) {
         let entry = LogEntry(at: Date(), category: category, level: level, message: message)
+
         queue.async { [weak self] in
             guard let self else { return }
             self.buffer.append(entry)
@@ -100,6 +126,9 @@ final class Log {
                 self.buffer.removeFirst(self.buffer.count - self.capacity)
             }
         }
+
+        // 落盘：异步，且失败只降级（LogFileWriter 内部保证不抛出）
+        fileWriter.append("[\(level.rawValue)] [\(category.rawValue)] \(message)")
 
         let line = "[\(category.rawValue)] \(message)"
         switch level {

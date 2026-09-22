@@ -811,8 +811,11 @@ li{margin:6px 0}
 <table>
 <thead><tr><th>项</th><th>设计</th></tr></thead>
 <tbody>
-<tr><td>分类</td><td><code>capture</code> / <code>session</code> / <code>interrupt</code> / <code>route</code> / <code>thermal</code> / <code>disk</code> / <code>storage</code></td></tr>
-<tr><td>载体</td><td>内存环形缓冲（保留最近若干千条）+ 可导出为文本文件（供 USB 取出或用 App 内面板查看）</td></tr>
+<tr><td>分类</td><td><code>app</code> / <code>capture</code> / <code>session</code> / <code>interrupt</code> / <code>route</code> / <code>thermal</code> / <code>disk</code> / <code>storage</code> / <code>system</code></td></tr>
+<tr><td><b>三条通道并存</b></td><td><b>①</b> 内存环形缓冲（最近若干千条，供应用内面板实时查看）<br><b>②</b> <b>落盘文件</b>（按天滚动 <code>Logs/moments-yyyy-MM-dd.log</code>，保留 7 天，与应用内面板共用同一份内容）<br><b>③</b> 系统日志（<code>os.Logger</code>，供 <code>idevicesyslog</code> 在 App 尚未启动完成时观察）</td></tr>
+<tr><td><b>为什么必须落盘</b></td><td>内存日志在进程被系统杀掉（jetsam）或崩溃时<b>随之消失</b>，而本项目最需要诊断的场景恰恰是"锁屏一段时间后停止录音"—— <b>那时进程已经不在了</b>。日志不能存活，观测能力就等于零。另外系统直接杀进程时不会触发 <code>applicationWillTerminate</code>，靠回调也补不上这一课</td></tr>
+<tr><td>落盘可用性确认</td><td>自检页显示日志文件路径、当前大小、已写入行数；<b>看到行数在增长才算落盘真的在工作</b>，而不是假设它在工作</td></tr>
+<tr><td>落盘失败降级</td><td>写盘失败<b>只降级</b>（记录错误并在自检页显示），<b>绝不抛出、绝不阻塞调用方</b>——日志问题不允许影响录音主链路</td></tr>
 <tr><td><b>必须留痕的事件</b></td><td>会话开始/结束；每次状态迁移（from → to / 原因 / 耗时）；每次中断、路由变化、引擎重建；每条断口（起止）；每次降档与恢复；<b>每片落盘（序号 / 样本数 / 耗时 / 文件大小）</b></td></tr>
 <tr><td>为什么要求这么高</td><td>本项目没有断点调试器；且"中断恢复"与"降档"属于<b>沉默行为</b> —— 不报错、用户看不到、UI 也不一定显示。没有日志就等于没有观测手段</td></tr>
 </tbody>
