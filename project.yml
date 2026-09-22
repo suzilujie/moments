@@ -1,0 +1,63 @@
+# XcodeGen 工程定义
+#
+# 说明：本文件是工程的唯一真实来源，.xcodeproj 由 CI 生成，不纳入版本控制。
+# 在 Windows 上只需编辑本文件，无需（也无法）触碰 .xcodeproj。
+# 本地生成命令（如有 Mac）：brew install xcodegen && xcodegen generate
+
+name: Moments
+
+options:
+  # 部署目标定为 iOS 18.0，而不是 26.0。原因见 docs/设计文档.html 12.1：
+  # CI runner 上可用的 Xcode 版本决定它能编译的最高 SDK；把部署目标定得
+  # 比 runner 的 SDK 还高会直接构建失败。后续 M5/M6 引入 iOS 26 专属能力
+  # （系统翻译框架的进阶用法、端侧系统语言模型）时，需要同步指定 Xcode 版本。
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+    # 并发检查设为 minimal：本项目有实时音频线程 + 大量跨队列回调，
+    # 先用最小约束把 M0/M1 跑通，避免在还没验证功能时就被并发检查淹没。
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+
+  # ---- 主 App ----
+  # 注：会议模式的 Broadcast Upload Extension 是 M8 的目标，
+  # 现在不建，避免 M0 就引入一个无法验证的空扩展（见设计文档 13 章）。
+  Moments:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_NAME: Moments
+        # 显示名在中文字符串里（Info.plist 的 CFBundleDisplayName = 时刻），
+        # Bundle ID 必须是纯 ASCII，这是 Apple 的硬要求。
+        PRODUCT_BUNDLE_IDENTIFIER: com.xfish.moments
+        # 沿用既有项目的开发者账号（Team ID 属账号级信息）。
+        # M0 走未签名构建，此项目前不参与签名；接入 Ad Hoc 时才会用到。
+        DEVELOPMENT_TEAM: "S2GX2R7LD5"
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: "NO"
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+
+# 必须显式声明 scheme，否则 CI 中的 xcodebuild -scheme 找不到共享 scheme
+schemes:
+  Moments:
+    build:
+      targets:
+        Moments: all
+    run:
+      config: Debug
+    archive:
+      config: Release

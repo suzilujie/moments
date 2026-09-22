@@ -1,0 +1,26 @@
+# ---- XcodeGen 生成物 ----
+# .xcodeproj 是派生文件，由 CI 用 xcodegen 生成，不入版本控制，
+# 这样才能保证「工程配置的唯一真实来源是 project.yml」。
+*.xcodeproj
+*.xcworkspace
+
+# ---- 构建产物 ----
+build/
+DerivedData/
+*.ipa
+Payload/
+verify/
+
+# ---- Xcode 本地状态 ----
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.hmap
+
+# ---- macOS ----
+.DS_Store
+._*
+
+# ---- 本地临时目录（模型转换等脚本的中间产物）----
+scripts/tmp/
+scripts/out/

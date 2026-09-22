@@ -1,0 +1,2097 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>时刻（Moments）iOS 全时录音转写 App 设计文档</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f172a;
+  --bg-2:#1e293b;
+  --bg-3:#334155;
+  --line:#334155;
+  --border:#475569;
+  --fg:#e2e8f0;
+  --fg-dim:#94a3b8;
+  --fg-weak:#64748b;
+  --fg-strong:#e6edf3;
+  --blue:#60a5fa;
+  --green:#4ade80;
+  --orange:#fb923c;
+  --red:#f87171;
+  --purple:#c4b5fd;
+  --cyan:#67e8f9;
+  --code-bg:#0b1220;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font-size:16px;
+  line-height:1.75;
+  font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+main{
+  max-width:1440px;
+  margin:0 auto;
+  padding:48px 300px 140px 40px;
+}
+article{max-width:1100px}
+h1{
+  font-size:30px;
+  color:var(--fg-strong);
+  border-bottom:2px solid var(--border);
+  padding-bottom:16px;
+  margin:0 0 8px;
+}
+h2{
+  font-size:23px;
+  color:var(--fg-strong);
+  border-left:4px solid var(--blue);
+  border-bottom:1px solid var(--line);
+  padding:0 0 8px 12px;
+  margin:56px 0 18px;
+}
+h3{
+  font-size:18px;
+  color:var(--fg-strong);
+  border-left:3px solid var(--border);
+  padding-left:10px;
+  margin:34px 0 12px;
+}
+h4{font-size:16px;color:var(--fg-strong);margin:22px 0 8px}
+p{margin:12px 0}
+b,strong{color:var(--fg-strong)}
+code{
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-radius:3px;
+  padding:1px 5px;
+  font-family:Consolas,Monaco,monospace;
+  font-size:14px;
+  color:var(--cyan);
+}
+pre{
+  background:var(--code-bg);
+  border-left:3px solid var(--border);
+  border-radius:3px;
+  padding:14px 16px;
+  overflow-x:auto;
+  font-family:Consolas,Monaco,monospace;
+  font-size:13.5px;
+  line-height:1.6;
+  color:var(--fg);
+}
+pre code{background:none;border:none;padding:0;color:var(--fg)}
+table{
+  width:100%;
+  border-collapse:collapse;
+  margin:18px 0;
+  font-size:14.5px;
+}
+th{
+  background:var(--bg-3);
+  color:var(--fg-strong);
+  text-align:left;
+  padding:9px 12px;
+  border:1px solid var(--border);
+  font-weight:600;
+}
+td{
+  padding:9px 12px;
+  border:1px solid var(--line);
+  vertical-align:top;
+}
+tbody tr:nth-child(even){background:rgba(30,41,59,.45)}
+.card{
+  background:var(--bg-2);
+  border-left:3px solid var(--blue);
+  padding:12px 16px;
+  margin:18px 0;
+  border-radius:3px;
+}
+blockquote{
+  background:var(--bg-2);
+  border-left:3px solid var(--orange);
+  margin:18px 0;
+  padding:12px 16px;
+  color:var(--fg);
+  border-radius:3px;
+}
+blockquote p{margin:6px 0}
+ul,ol{padding-left:26px;margin:12px 0}
+li{margin:6px 0}
+.meta{
+  color:var(--fg-weak);
+  font-size:14px;
+  margin-bottom:6px;
+}
+.ok{color:var(--green)}
+.no{color:var(--red)}
+.warn{color:var(--orange)}
+.tag{
+  display:inline-block;
+  border:1px solid var(--border);
+  color:var(--fg-dim);
+  border-radius:3px;
+  padding:0 7px;
+  font-size:12.5px;
+  margin-right:6px;
+}
+.toc{
+  position:fixed;
+  top:96px;
+  right:32px;
+  width:262px;
+  max-height:calc(100vh - 150px);
+  overflow-y:auto;
+  border-left:1px solid var(--line);
+  padding-left:16px;
+  font-size:13.5px;
+}
+.toc-title{
+  color:var(--fg-strong);
+  font-weight:600;
+  font-size:13px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  margin-bottom:10px;
+}
+.toc a{
+  display:block;
+  color:var(--fg-dim);
+  text-decoration:none;
+  padding:3px 0 3px 8px;
+  border-left:2px solid transparent;
+  margin-left:-2px;
+  line-height:1.5;
+}
+.toc a.sub{padding-left:20px;font-size:12.8px;color:var(--fg-weak)}
+.toc a:hover{color:var(--fg)}
+.toc a.active{color:var(--blue);border-left-color:var(--blue)}
+@media print{
+  :root{
+    color-scheme: light;
+    --bg:#ffffff;
+    --bg-2:#f4f6f8;
+    --bg-3:#e6e9ee;
+    --line:#c8ced8;
+    --border:#9aa4b2;
+    --fg:#14181f;
+    --fg-dim:#454d59;
+    --fg-weak:#6b7280;
+    --fg-strong:#000000;
+    --blue:#1d4ed8;
+    --green:#15803d;
+    --orange:#b45309;
+    --red:#b91c1c;
+    --purple:#6d28d9;
+    --cyan:#0e7490;
+    --code-bg:#f4f6f8;
+  }
+  body{background:#fff;color:#14181f}
+  main{padding:0;max-width:none}
+  article{max-width:none}
+  .toc{display:none}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<main>
+<article>
+
+<h1>时刻（Moments）· iOS 全时录音转写 App 设计文档</h1>
+<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.3（新增 M1 录音内核详细设计） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
+
+<div class="card">
+<b>一句话定义</b>：在 iPhone 上实现一个「点一下就一直在录」的随身语音记录器 —— 锁屏、切 App 都不中断，全程<b>纯离线</b>（无任何网络请求、无服务器、无 API 费用）把周围说话人的声音转成文字、区分「谁在说」、<b>翻成任意目标语言</b>，并把真实录音变成可跟读、可收藏生词的<b>语言学习材料</b>。
+</div>
+
+<h2 id="overview">1. 项目概述</h2>
+
+<h3 id="overview-goal">1.1 目标（Goals）</h3>
+<ul>
+<li><b>全时录音</b>：用户手动点「开始」后，App 在<b>前台、后台、锁屏</b>三种状态下持续录音，直到用户主动停止</li>
+<li><b>纯离线转写</b>：不联任何云端服务，音频不出手机。识别引擎本地运行（whisper.cpp）</li>
+<li><b>两遍转写</b>：低延迟的「实时稿」保证当场可见；高精度的「终稿」在设备空闲/充电时补跑</li>
+<li><b>噪声抑制</b>：原始轨 + 降噪轨<b>双路处理</b>，可随时对照与开关</li>
+<li><b>说话人分离 + 声纹库</b>：自动区分「说话人 1/2/3」，用户命名后写入声纹库，<b>后续录音自动认出同一个人</b></li>
+<li><b>可检索、可回听</b>：全文检索命中后点句子即跳到对应音频位置播放</li>
+<li><b>多语言输出</b>：转写文字可翻成多种目标语言，界面内自由切换，全部在端侧完成（离线翻译）</li>
+<li><b>辅助语言学习</b>：逐句原文/译文对照、点句回听、慢速朗读、跟读比对、生词提取与生词本</li>
+<li><b>零运行成本</b>：无后端服务、无订阅、无按分钟计费</li>
+</ul>
+
+<h3 id="overview-nongoal">1.2 非目标（Non-Goals）</h3>
+<ul>
+<li>不做隐蔽录音。系统录音指示器不可隐藏，产品定位是「个人记录助手」而非「采集设备」（见 3.4）</li>
+<li>不做跨设备组网采集（多台设备同时开麦汇总）—— 第三方 App 无法读取其他设备的麦克风流</li>
+<li>不做云端同步 / 多端共享（v1 只在本机；是否接 iCloud 备份见 15）</li>
+<li>不做实时通话转录（接打电话时无法录音，见 3.3）</li>
+<li>不做 Android / Mac 版本（Mac 版作为后续可能，可复用核心模块）</li>
+<li>不做自动摘要 / 待办提取（需挂 LLM，列为 v2）</li>
+<li>不做实时同声传译。v1 的翻译发生在<b>转写完成之后</b>，不是边听边译（实时翻译列入 v2 评估，见 7.1）</li>
+<li>不做云端翻译服务。与"纯离线"定位冲突；架构上保留可插拔接口但默认不启用（见 7.4）</li>
+<li>不做完整语言课程。不含分级课程、考试题库、语法教学体系；只做「把真实录音变成学习材料」这一件事（见 8.1）</li>
+<li><b>不做电话通话录音</b>。iOS 不提供通话录音 API，不是取舍问题而是能力缺失（见 1.3 事实八）</li>
+<li>不做屏幕内容的保存与回看。系统内录路径会经过屏幕录制通道，但<b>屏幕视频一律丢弃、不落盘</b>（见 4.6）</li>
+</ul>
+
+<h3 id="overview-fact">1.3 必须接受的平台事实（Platform Constraints）</h3>
+
+<blockquote>
+<p><b>事实一：系统禁止静默开麦。</b>iOS 不允许 App 在没有用户交互的情况下自行启动麦克风。因此「随时能录」的准确含义是：<b>用户点一次「开始」之后才进入全时录制</b>。不存在「开机自动录」「进入某地点自动录」这类能力。</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实二：录音指示器不可隐藏。</b>只要有 App 在采集麦克风，iOS 就会在灵动岛 / 状态栏显示指示点，锁屏界面也会提示「某 App 正在使用麦克风」。这是系统级行为，App 层无 API 可屏蔽 —— 这也是本产品不能定位为「隐蔽采集」的根本原因。</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实三：后台可继续录音，但会被中断。</b>配置 <code>UIBackgroundModes = audio</code> 后，录音本身就是合法的后台执行理由，锁屏不会挂起进程（这一点比「播放静音音频保活」的取巧方案更正当、更稳）。但来电、Siri、其他 App 抢占音频会话时会被强制打断，必须实现自动恢复（见 3.3）。</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实四：蜂窝网络下载安装包上限 200 MB。</b>超过该体积的 App，用户必须连 Wi-Fi 才能下载安装。本项目仅模型就远超此限，因此<b>模型不打包进 ipa</b>，改为首次启动时按需下载（见 12.2）。</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实五：Whisper 的翻译任务只能翻成英文。</b>Whisper 内置的 <code>translate</code> 任务等价于「任意语言 → 英文」，<b>不能直接翻成中文、日文、法文等</b>；<code>transcribe</code> 任务则只在原语言内输出文本。</p>
+<p>这意味着「多语言输出」<b>不可能靠识别引擎顺带完成</b>，必须单独设计一个翻译层（translation layer）—— 见第 7 章。</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实六：端侧翻译的质量明显低于云端。</b>离线翻译模型体积受限，在口语、俚语、长难句、领域术语上会明显劣于云端服务；且系统翻译框架支持的<b>语言对是有限的</b>。</p>
+<p>这不是能绕开的技术问题，而是必须<b>在产品设计上消化</b>的取舍 —— 对策是"原文永远可见、译文可修正"，而不是宣称译文准确（见 7.4）。</p>
+</blockquote>
+
+<p>另有两个次要但真实存在的限制：<b>低电量模式（Low Power Mode）</b>会限制后台活动与网络，可能影响后台转写；<b>热控（thermal throttling）</b>在长时间高负载推理后会让系统降频，需主动降档（见 10.4）。</p>
+
+<blockquote>
+<p><b>事实七：麦克风是独占资源，无法录「其他 App 正在使用的麦克风输入」。</b>同一时刻只有一个 App 能持有麦克风输入流；其他 App 采集到的音频数据对本 App<b>完全不可见</b>，iOS 不提供任何 API（越狱除外）。我们能知道"别人在用麦"（因为会被中断，见 3.3），但拿不到数据。</p>
+<p><b>因此「录所有使用麦克风的语音」这一诉求，指的是"别人开麦时我也能录"那部分是做不到的。</b>（见 4.6 可行性分层）</p>
+</blockquote>
+
+<blockquote>
+<p><b>事实八：能录「其他 App 播放出来的声音」（系统内录），也能录电话？—— 前者可以，后者不行。</b></p>
+<p><b>系统内录（system audio capture）可行</b>：通过 ReplayKit 的<b>广播上传扩展</b>（Broadcast Upload Extension），可拿到其他 App 的音频输出 —— 在线会议对方的声音、视频、播客都能录到。</p>
+<p><b>电话通话录音不可行</b>：iOS 不提供通话录音 API，任何声称能录电话的 App 都是借助三方通话服务绕道实现的。这一条必须让用户明确知道。（见 4.6）</p>
+</blockquote>
+
+<h2 id="decisions">2. 核心技术决策</h2>
+
+<table>
+<thead>
+<tr><th>决策项</th><th>选择</th><th>理由</th><th>被否方案</th></tr>
+</thead>
+<tbody>
+<tr><td>目标平台</td><td>iPhone 独立 App</td><td>随身场景的唯一载体；与既有 iOS 流水线完全一致</td><td>Mac 菜单栏（后续可能，可复用核心模块）</td></tr>
+<tr><td>识别引擎</td><td><b>whisper.cpp</b>（本地离线）</td><td>纯 C/C++ 无 Python 依赖、支持 CoreML/Metal 加速、中文可用、完全离线零成本</td><td>Apple 原生 Speech（无说话人分离、有限流、精度一般）、云端 ASR（需联网与付费，与"离线"定位冲突）</td></tr>
+<tr><td>VAD / 降噪 / 说话人分离</td><td><b>sherpa-onnx</b>（一个库覆盖三项）</td><td>官方提供 iOS 的 xcframework 与 SwiftUI 示例；三件事用同一个依赖，比自研或拼装三个库省一个数量级的工程量</td><td>自研 VAD（无必要）、RNNoise（只解决降噪，仍缺说话人分离）</td></tr>
+<tr><td>通信/依赖冲突</td><td>whisper.cpp 走 ggml，sherpa-onnx 走 onnxruntime</td><td>两套推理后端互不干扰，可共存</td><td>全用 sherpa-onnx 的 Whisper（少一个库，但流式滑窗示例不如 whisper.cpp 成熟，列为备选见 5.6）</td></tr>
+<tr><td>降噪策略</td><td><b>双轨处理</b>：原始轨 + GTCRN 降噪轨</td><td>降噪对识别准确率并非恒为正收益，必须能对照实测（见 6.2）</td><td>只做系统级降噪（改动原始录音、不可对照）、不做降噪（失去优化空间）</td></tr>
+<tr><td>说话人身份</td><td><b>声纹库</b>（主动录入 + 自动匹配）</td><td>聚类只能产出"说话人 1/2/3"局部编号，无法跨录音认人；声纹库是唯一能做到"下次自动认出"的路径</td><td>仅局部编号（体验上限低）、仅标记换人（多人对话不可读）</td></tr>
+<tr><td>音频持久化<br><span class="warn">已修正</span></td><td>原始轨 <b>AAC-LC 32 kbps（.m4a）</b>存盘；降噪轨仅走内存</td><td>降噪轨可由原始轨随时重算（GTCRN 很快），存两份是纯浪费。编码由 Opus 改为 AAC：Opus 在 Apple 音频栈中以解码为主，编码路径不确定，要保证可用就得引入第三方 libopus，为省几 MB 存储加一个 C 依赖不划算</td><td>Opus（编码支持不确定）、PCM（体积大 8 倍）、两条轨都存</td></tr>
+<tr><td><b>音频会话策略</b></td><td><b>共存为默认</b>（<code>.playAndRecord</code> + <code>mixWithOthers</code>），提供「高保真（独占）」开关</td><td>核心承诺是"一直录"。若开启录音就让用户不能听音乐看视频，第二天就不会再打开它 —— <b>录音再干净也没有意义</b></td><td>独占为默认（录音最干净，但让手机变砖）；不做选择题（两边都不满足）</td></tr>
+<tr><td><b>时间基准</b></td><td>单调时钟（monotonic clock）+ <b>样本计数</b>推导时间轴</td><td>墙钟会被系统时间调整干扰；AAC 编码器启动延迟会让墙钟偏差逐片累积</td><td>用墙钟时间相减（偏差累积）、用文件大小推算</td></tr>
+<tr><td><b>实时线程纪律</b></td><td>采集回调内只做 <code>memcpy</code> + 原子指针，其余全部交给后台队列</td><td>在实时音频线程分配内存/加锁/IO 会导致<b>偶发丢帧与爆音</b>，且几乎无法事后定位</td><td>回调内直接编码落盘（会丢帧）、回调内加锁保护共享状态</td></tr>
+</tbody>
+
+<tr><td>数据存储</td><td>SQLite（+ FTS5 全文索引）+ 文件系统</td><td>转写量级大、需复杂查询与检索；音频是二进制大文件不适合入库</td><td>SwiftData（FTS5 支持不便）、Core Data（同样无 FTS5）</td></tr>
+<tr><td>构建分发</td><td>xcodegen + GitHub Actions + <b>Ad Hoc</b> 分发</td><td>复用已跑通的既有流水线（Windows 写码、Mac runner 编译、扫码安装）</td><td>TestFlight（已验证后放弃）、本地 Xcode（无 Mac）</td></tr>
+<tr><td>模型分发</td><td>不打包进 ipa，首次启动按需下载</td><td>绕开 200 MB 蜂窝下载限制（见 1.3 事实四）</td><td>打进 ipa（安不上）、On-Demand Resources（需在 CI 处理资源标签，复杂度更高）</td></tr>
+<tr><td><b>翻译引擎</b></td><td>系统 <b>Translation framework</b> 为主</td><td>端侧运行、免费、零模型体积、无需自建语言对；语言包由系统管理下载</td><td>云端翻译 API（与纯离线冲突）、专用 NMT 模型（语言对零散、质量一般）、本地小 LLM（体积与速度代价大）</td></tr>
+<tr><td>语言讲解 / 释义</td><td>系统 <b>Foundation Models</b>（iOS 26 端侧 LLM）</td><td>免费、无下载、端侧；适合生成式任务（生词释义、句子讲解），不适合大批量翻译</td><td>云端 LLM（冲突离线定位）、自建小模型（体积代价）</td></tr>
+<tr><td>翻译触发方式</td><td><b>按需翻译 + 结果缓存</b></td><td>用户选语言时才翻，命中缓存秒出。省电省算力，支持任意多语言</td><td>预翻所有语言（浪费算力与存储）</td></tr>
+<tr><td>翻译时机</td><td>终稿文字<b>之后</b>，非实时</td><td>翻译输入是准确文本而非音频，成本骤降；避免实时翻译带来的延迟与能耗（v2 再评估）</td><td>实时同声传译（能耗与延迟不可接受，且实时稿本身还在被修正）</td></tr>
+<tr><td>双向文本呈现</td><td><b>双语对照</b>为默认</td><td>端侧翻译质量有限，原文必须始终可见，否则用户会被误导</td><td>只显示译文（信息有损、不可校验）</td></tr>
+<tr><td>生词判定</td><td>词频表 + 用户水平档</td><td>确定性问题，查表比调 LLM 更快更稳；LLM 只用于释义与讲解</td><td>让 LLM 判断"哪些是生词"（慢、不确定、不可复现）</td></tr>
+<tr><td>朗读（TTS）</td><td>系统 <b>AVSpeechSynthesizer</b></td><td>端侧、免费、多语言、语速可调，零额外依赖</td><td>引入神经 TTS 模型（体积与工程量大，收益有限）</td></tr>
+<tr><td><b>采集源</b><br><span class="ok">已纳入</span></td><td>麦克风直采（环境模式）+ <b>系统内录（会议模式）</b>，两者互斥、用户可切换</td><td>麦克风直采轻量省电，是"全时录音"的主力；系统内录能拿到其他 App 的音频原声，质量远高于隔空拾音，但更重且需独立通道</td><td>只用麦克风（拿不到会议对方原声）、只用系统内录（需走屏幕录制流程，日常环境录音过重）</td></tr>
+<tr><td>双采集源能否并用</td><td><b>不做同时双采，改为模式切换</b></td><td>麦克风是独占资源（见 1.3 事实七），系统内录广播运行期间主 App 很可能无法再直采麦克风。与其做一个不可靠的"同时"，不如做两个各自可靠的模式</td><td>强行同时双采（互斥风险 + 回声/重复录制问题）</td></tr>
+</tbody>
+</table>
+
+<h2 id="runtime">3. 运行形态与平台约束</h2>
+
+<h3 id="runtime-oneshot">3.1 目标形态：一键开始，之后一直录</h3>
+
+<pre><code>用户点击「开始」
+   ↓
+[持续录音] ── 前台 ─┐
+   ↓               ├── 均不中断
+[持续录音] ── 后台 ─┤
+   ↓               │
+[持续录音] ── 锁屏 ─┘
+   ↓
+用户点击「停止」→ 进入终稿转写与说话人归属</code></pre>
+
+<p>整个过程不设时长上限。为防止极端情况（忘记停止导致录满存储），提供两道保险：<b>单次录音时长上限</b>（默认 12 小时，可调）与<b>剩余磁盘空间阈值</b>（低于 1 GB 自动停止并保留已录内容）。</p>
+
+<h3 id="runtime-background">3.2 后台执行与保活机制</h3>
+
+<table>
+<thead><tr><th>机制</th><th>配置</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>后台模式声明</td><td><code>Info.plist</code> 中 <code>UIBackgroundModes = audio</code></td><td>必要前置。录音本身即构成合法的后台执行理由</td></tr>
+<tr><td>音频会话类别</td><td><code>AVAudioSession.Category.record</code>（或 <code>.playAndRecord</code>，以便降噪/回放共存）</td><td>决定被打断时的行为、是否静音、以及能否混音</td></tr>
+<tr><td>与播放共存</td><td><code>options: [.mixWithOthers]</code></td><td>不打断用户正在听的音乐（代价：录音中可能混入外放声音，需在设置里说明）</td></tr>
+<tr><td>保活冗余</td><td>不需要额外手段</td><td>与既有项目不同：<b>录音会话本身即是后台执行权来源</b>，无需"播放静音 PCM"这类取巧做法</td></tr>
+<tr><td>低电量模式</td><td>监听 <code>ProcessInfo.isLowPowerModeEnabled</code></td><td>开启时暂停实时转写（保留录音），避免被系统判定为高耗电而杀死</td></tr>
+</tbody>
+</table>
+
+<h3 id="runtime-interrupt">3.3 中断与恢复（本项目最大风险点）</h3>
+
+<p>音频会话被打断是<b>必然事件</b>，不是异常。必须在打断结束后自动恢复录音，并且保证<b>时间轴连续</b>（用户不应该在结果里看到一段无声的黑洞）。</p>
+
+<table>
+<thead><tr><th>中断来源</th><th>系统行为</th><th>本项目对策</th></tr></thead>
+<tbody>
+<tr><td>来电 / 微信语音 / 视频通话</td><td>会话被打断，录音被系统停掉</td><td>监听 <code>AVAudioSession.interruptionNotification</code>；<code>.began</code> 时标记断点并落盘当前分片，<code>.ended</code> 且 <code>shouldResume</code> 为真时自动重启录音，断口写入时间轴</td></tr>
+<tr><td>Siri 被唤起</td><td>同上</td><td>同上（<code>.ended</code> 后自动恢复）</td></tr>
+<tr><td>其他 App 抢占（如录音类 App）</td><td>本 App 会话被强制释放</td><td>同上；若恢复失败，进入退避重试（1s / 2s / 5s / 10s，上限 10 次）</td></tr>
+<tr><td>AirPods 摘下 / 蓝牙断开</td><td>触发路由变更，输入设备切换</td><td>监听 <code>routeChangeNotification</code>；切换后重建输入节点（AVAudioEngine 在设备变更后常需重连）</td></tr>
+<tr><td>耳机插入 / 拔出</td><td>同上</td><td>同上</td></tr>
+<tr><td>系统内存压力</td><td>App 可能被系统回收</td><td>分片滚动落盘（见 4.3）把损失限制在单个分片；重启后用 <code>recoveryState</code> 续录并补一条时间轴断口记录</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>设计原则：录音通路的健壮性优先于一切其他功能。</b>录音层不允许因为"转写线程忙"而丢音频 —— 采集（capture）与转写（transcription）必须解耦，中间用有界队列缓冲，队列满时<b>丢转写任务而不丢音频</b>。这与既有项目「行情自愈」的经验一致：宁可降级功能，不能让主干断掉。
+</div>
+
+<h3 id="runtime-indicator">3.4 录音指示器的产品含义</h3>
+<p>录制期间锁屏与状态栏会持续显示麦克风指示。这不是缺陷，而应被产品设计<b>主动利用</b>：锁屏界面与灵动岛即是「正在记录」的天然状态展示，用户一眼可知是否在录。UI 上无需再重复强调，但必须在首次使用时明确告知——这是合规要求，也是尊重被录音方的起点。</p>
+
+<blockquote>
+<p><b>合规提示（产品层，非技术层）</b>：录音涉及他人声音，需遵守当地法律与他人知情权。建议在设置页明确提示「请确保已获得在场人员同意」，并在 App 图标/名称上不做任何暗示隐蔽性的表述。此条目属于产品决策，需用户自行把握适用场景。</p>
+</blockquote>
+
+<h2 id="capture">4. 音频采集与录音内核（含 M1 实现设计）</h2>
+
+<h3 id="capture-params">4.1 采集参数</h3>
+
+<table>
+<thead><tr><th>参数</th><th>取值</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>采样率 sample rate</td><td>16 kHz</td><td>语音识别的标准输入；whisper.cpp 与 sherpa-onnx 均以 16 kHz 为基准，无需重采样</td></tr>
+<tr><td>声道 channels</td><td>单声道 mono</td><td>iPhone 多麦克风阵列的波束成形（beamforming）由系统完成，App 拿到的已是合成结果；双声道对识别无增益却翻倍存储</td></tr>
+<tr><td>位深 bit depth</td><td>16-bit</td><td>语音动态范围足够；32-bit float 仅用于内部处理链</td></tr>
+<tr><td>采集接口</td><td><code>AVAudioEngine</code> + 输入节点 tap</td><td>可取实时 PCM 缓冲，是实现双轨与 VAD 的基础</td></tr>
+<tr><td>缓冲大小</td><td>约 100 ms 一帧</td><td>兼顾延迟与调用开销</td></tr>
+</tbody>
+</table>
+
+<h3 id="capture-dual">4.2 双轨处理架构</h3>
+
+<pre><code>麦克风 (16 kHz / mono / PCM)
+        │
+        ├──────────────▶ [原始轨 raw] ────┬──▶ 落盘（Opus）
+        │                                └──▶ 终稿转写（whisper small）
+        │
+        └──▶ [GTCRN 降噪] ──▶ [降噪轨 enhanced] ──┬──▶ 实时转写（whisper base）
+                                                 └──▶ 内存环形缓冲（默认不落盘）</code></pre>
+
+<p><b>双轨的意义不是"存两份"，而是让两条处理链可以独立切换与对比</b>：</p>
+<ul>
+<li>实时字幕走降噪轨 —— 用户视觉上更干净，且降低 Whisper 在噪声上的幻觉（hallucination，模型在无语音处凭空生成文字）概率</li>
+<li>终稿转写走原始轨 —— 保留全部细节，避免降噪伪影损伤识别</li>
+<li>设置页提供「降噪 开/关」与「终稿用哪条轨」两个开关，默认值由真机 A/B 实测确定（见 M3 验收标准）</li>
+</ul>
+
+<h3 id="capture-chunk">4.3 分片落盘策略</h3>
+
+<table>
+<thead><tr><th>项</th><th>设计</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>分片时长</td><td>60 秒</td><td>崩溃/被杀时最多损失 1 分钟；也是 AAC 编码器的自然边界（每片一个独立的 <code>.m4a</code> 容器）</td></tr>
+<tr><td>命名</td><td><code>{sessionId}/{seq:06d}.m4a</code></td><td>序号保证顺序，会话目录便于整体清理</td></tr>
+<tr><td>时间戳</td><td>每片记录相对会话起点的 <code>start_ms</code> / <code>end_ms</code></td><td>不依赖文件名推断；中断造成的空洞也因此可被表达</td></tr>
+<tr><td>写入方式</td><td>先写临时文件，完成后原子重命名（atomic rename）</td><td>避免"半截文件"被误认为有效分片</td></tr>
+<tr><td>断口表达</td><td>两个分片之间 <code>end_ms → start_ms</code> 存在间隔即视为断口，在时间轴上标注</td><td>让"漏录"可见，而不是假装连续</td></tr>
+</tbody>
+</table>
+
+<h3 id="capture-codec">4.4 编码与容量估算</h3>
+
+<div class="card">
+<b>修正一（已修正）</b>：前一版方案沟通中给出的「16 kHz 单声道 PCM 约 68 MB/小时」是<b>算错的</b>。正确值为 16000 采样 × 2 字节 × 3600 秒 ≈ <b>110 MB/小时</b>。
+</div>
+
+<div class="card">
+<b>修正二（本版修正，重要）</b>：原方案选定 <b>Opus</b> 作为落盘编码，经核实这是一个<b>站不住的选择</b> —— Opus 在 Apple 音频栈中主要以<b>解码</b>形态存在（服务于 FaceTime、HLS 等场景），而 AVFoundation 的<b>编码</b>路径（<code>AVAudioFile</code> / <code>ExtAudioFile</code>）能否输出 Opus <b>并不确定</b>；要确保可用就必须引入第三方 <code>libopus</code>，为省 5 MB 存储而增加一个 C 依赖与编译复杂度，不划算。
+<p><b>结论：改为 AAC（<code>.m4a</code>，AAC-LC）。</b>它系统原生、确定可用、体积与 Opus 相当（同为 16 kHz 单声道，32 kbps 下每小时约 14 MB），且<b>零第三方依赖</b>。Opus 降级为"待实测的备选项"，不作为首版依赖。</p>
+</div>
+
+<table>
+<thead><tr><th>形式</th><th>码率</th><th>每小时</th><th>8 小时/天</th><th>保留 7 天</th></tr></thead>
+<tbody>
+<tr><td>未压缩 PCM（对照基准）</td><td>256 kbps</td><td class="warn">≈ 110 MB</td><td class="warn">≈ 880 MB</td><td class="no">≈ 6.2 GB</td></tr>
+<tr><td><b>AAC-LC 32 kbps（选定）</b></td><td>32 kbps</td><td class="ok">≈ 14 MB</td><td class="ok">≈ 115 MB</td><td class="ok">≈ 0.8 GB</td></tr>
+<tr><td>AAC-LC 48 kbps（备选，更保真）</td><td>48 kbps</td><td class="ok">≈ 21 MB</td><td class="ok">≈ 170 MB</td><td class="ok">≈ 1.2 GB</td></tr>
+<tr><td>转写文本</td><td>—</td><td>中文语音约 1 万字 ≈ 30 KB</td><td>≈ 240 KB</td><td>≈ 1.7 MB</td></tr>
+<tr><td>声纹向量</td><td>—</td><td>每条约 2 KB（512 维 float32）</td><td>可忽略</td><td>可忽略</td></tr>
+</tbody>
+</table>
+
+<p>AAC 相比未压缩 PCM 省约 <b>8 倍</b>，且是为语音设计的成熟编码，对识别精度的影响可忽略（需在 M2 实测确认）。压缩在后台队列执行，不阻塞采集线程。</p>
+
+<blockquote>
+<p><b>一个必须补偿的实现细节</b>：AAC 编码器自带<b>编码器启动延迟（encoder priming / delay）</b>，每个文件开头的样本数与源并不严格对齐（通常约两千余采样点）。因为我们是每 60 秒切一个新文件，这会累积成<b>数十毫秒级的跨片时间戳偏差</b>。</p>
+<p>对策：在写入分片元数据时记录该片的实际样本总数与编码器延迟，用样本计数而非墙钟时间来计算 <code>start_ms</code> / <code>end_ms</code> —— <b>让时间轴由样本数推导，而不是由系统时间戳相减推导</b>。这样偏差不会累积。（见 4.11）</p>
+</blockquote>
+
+<h3 id="capture-cleanup">4.5 自动清理策略</h3>
+
+<table>
+<thead><tr><th>数据</th><th>默认策略</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>转写文本 / 说话人</td><td>永久保留</td><td>体积可忽略，是产品真正的价值所在</td></tr>
+<tr><td>音频分片</td><td>保留 7 天后删除（可调 3/7/30/永久）</td><td>删除前记录 <code>expires_at</code>；已删除音频的转写保留，UI 上回听按钮置灰</td></tr>
+<tr><td>声纹向量</td><td>永久保留</td><td>体积可忽略；用户主动删除说话人时一并删除</td></tr>
+<tr><td>清理触发时机</td><td>App 启动时 + 每次录音结束 + 每日一次后台任务</td><td>不依赖单一时机</td></tr>
+</tbody>
+</table>
+
+<h3 id="capture-source">4.6 采集源设计与系统内录（可选增强）</h3>
+
+<p>用户提出的诉求是「录所有使用麦克风的语音」。这句话包含四种不同的场景，可行性<b>截然不同</b>，必须先分层说清楚：</p>
+
+<table>
+<thead><tr><th>诉求</th><th>可行性</th><th>说明</th></tr></thead>
+<tbody>
+<tr>
+<td>录周围环境的声音（自己说话、旁边人说话、线下会议）</td>
+<td class="ok">✅ 可行</td>
+<td>本项目的主路径：<code>AVAudioEngine</code> 麦克风直采。轻量、省电，支持全时录制</td>
+</tr>
+<tr>
+<td><b>录其他 App 正在使用的麦克风输入</b><br>（如微信语音时"我的"那一路输入）</td>
+<td class="no">❌ 不可能</td>
+<td><b>麦克风是独占资源</b>（见 1.3 事实七）。其他 App 的输入数据对本 App 不可见，iOS 无此 API</td>
+</tr>
+<tr>
+<td><b>录其他 App 播放出来的声音</b><br>（在线会议对方的声音、视频、播客）</td>
+<td class="ok">✅ 可行</td>
+<td>通过 ReplayKit 的<b>广播上传扩展</b>（Broadcast Upload Extension）实现，即"系统内录"。<b>这是本次需求中唯一可落地的增量</b></td>
+</tr>
+<tr>
+<td>录电话通话</td>
+<td class="no">❌ 不可能</td>
+<td>iOS 不提供通话录音 API，任何声称能录电话的 App 都借助三方通话服务绕道</td>
+</tr>
+</tbody>
+</table>
+
+<h4>系统内录的实现与真实约束</h4>
+
+<table>
+<thead><tr><th>项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>实现方式</td><td>新增一个 <b>Broadcast Upload Extension</b> target，继承 <code>RPBroadcastSampleHandler</code>；用户通过 <code>RPSystemBroadcastPickerView</code> 手动启动录制</td></tr>
+<tr><td>能拿到什么</td><td>屏幕视频（<b>本项目一律丢弃</b>）+ 其他 App 的音频输出（<code>audioApp</code>）+ 麦克风（<code>audioMic</code>，可选）</td></tr>
+<tr>
+<td class="ok"><b>优势一（关键）</b></td>
+<td>拿到的是<b>数字原声</b>：没有环境噪声、没有房间混响、没有回声、没有隔空衰减。对在线会议里对方的声音，转写与翻译质量<b>远高于麦克风隔空拾音</b> —— 这对本项目的翻译与语言学习价值是质变</td>
+</tr>
+<tr>
+<td class="ok"><b>优势二</b></td>
+<td>「我（<code>audioMic</code>）」与「对方（<code>audioApp</code>）」在数据层<b>天然分成两路</b>，说话人分离的难度大幅下降（少了一路需要聚类的对象）</td>
+</tr>
+<tr><td class="warn">约束一：互斥</td><td><b>麦克风独占</b> —— 广播运行期间主 App 很可能无法再直采麦克风，两条采集路径<b>无法同时使用</b>（需真机实测确认，见 R23）</td></tr>
+<tr><td class="warn">约束二：内存</td><td>扩展是<b>独立进程</b>且内存限制很严（数十 MB 量级），<b>不能在其中跑任何推理</b>。音频必须经 App Group 共享容器或 socket 交给主 App 处理</td></tr>
+<tr><td class="warn">约束三：录制指示</td><td>广播期间系统强制显示屏幕录制指示，且录制内容包含屏幕 —— 与麦克风指示一样<b>不可隐藏</b></td></tr>
+<tr><td class="warn">约束四：开销</td><td>屏幕视频即使丢弃，系统仍会采集与编码，带来额外耗电与发热，比纯音频录音重得多</td></tr>
+<tr><td class="warn">约束五：审查</td><td>屏幕录制属敏感能力，App 审核趋严，需清晰的用途声明与隐私说明；<b>不得用于采集屏幕内容本身</b></td></tr>
+<tr><td class="warn">约束六：合规升级</td><td>录制<b>通话对方</b>的声音比录制环境声敏感得多，许多地区对通话录音有明确法律规定。必须显著提示并获取在场各方同意（见 R14、R26）</td></tr>
+</tbody>
+</table>
+
+<h4>设计结论：两个模式，而不是"一个更强的模式"</h4>
+
+<div class="card">
+由于两条采集路径<b>互斥</b>（麦克风独占），设计上不做「同时双采」，而是做成两个各自可靠、用户可选的模式：
+</div>
+
+<table>
+<thead><tr><th>模式</th><th>采集源</th><th>适用场景</th><th>特点</th></tr></thead>
+<tbody>
+<tr>
+<td><b>环境模式</b><br>Ambient Mode</td>
+<td>麦克风直采（<code>AVAudioEngine</code>）</td>
+<td>随身记录、线下会议、访谈、日常背单词素材采集</td>
+<td class="ok">轻量、省电、可全时录制；转写目标主要是环境中的说话人</td>
+</tr>
+<tr>
+<td><b>会议模式</b><br>Meeting Mode</td>
+<td>系统内录（Broadcast Extension）</td>
+<td>在线会议、网课、看视频学外语</td>
+<td class="warn">质量高（数字原声）且天然分两路；但更重、有屏幕录制指示，需用户手动经系统入口启动</td>
+</tr>
+</tbody>
+</table>
+
+<pre><code>【环境模式】麦克风 ──▶ VAD ──▶ 转写 ──▶ 说话人分离（需聚类）──▶ 翻译 / 学习
+                    （单路，说话人身份靠聚类推断）
+
+【会议模式】系统内录 ──┬─ audioApp（对方）──▶ 转写 ──▶ 说话人分离（路内聚类）
+                     │        ↑ 数字原声，转写与翻译质量远高一档
+                     └─ audioMic（我）  ──▶ 转写 ──┐
+                                                   └─▶ 两路汇入同一时间轴
+                    （双路，我/对方天然可辨，聚类只在每路内部进行）</code></pre>
+
+<div class="card">
+<b>模式切换的成本要讲清楚</b>：会议模式需要用户在系统的录制入口里选择本扩展（<code>RPSystemBroadcastPickerView</code>），不是"点一下就录"。因此它是一个<b>需要明确动作的模式</b>，而不是可以无感常开的能力。UI 上必须把这一点讲明白，避免用户以为它会自动生效。
+</div>
+
+<blockquote>
+<p><b>优先级判断</b>：系统内录是<b>明确的价值提升但非核心必需</b> —— 它不解决"能不能录到周围人说话"（那是麦克风直采的活），只解决"能不能拿到其他 App 的声音"。</p>
+<p><b>2026-09-22 决策：已确认纳入范围</b>，但排在核心链路之后（见第 13 章 M8），<b>不阻塞任何核心功能</b>。</p>
+<p><b>动工前的前置实测（R23）</b>：先验证两个采集源是否真的互斥。若实测发现"系统内录期间主 App 仍可直采麦克风"，则可把"两个模式"简化为"一个模式 + 可选开关"，方案反而更优 —— 所以这一条要在 M8 动工前先做掉，避免按最坏假设做了冗余设计。</p>
+</blockquote>
+
+<h3 id="kernel-state">4.7 录音内核状态机（Session State Machine）</h3>
+
+<p>M1 的全部复杂度集中在一个状态机上。它必须<b>只有一个权威来源</b>，否则会出现"UI 显示在录、实际已经停了"这类最难查的问题。</p>
+
+<pre><code>        ┌──────────┐
+        │   idle   │◀──────────────────────────┐
+        └────┬─────┘                           │
+             │ start()                         │
+             ▼                                 │
+        ┌──────────┐  失败                    │
+        │preparing │───────▶ failed ──────────┤
+        └────┬─────┘                           │
+             │ 会话激活 + 引擎启动 + 首片打开    │
+             ▼                                 │
+        ┌──────────┐  interruption .began      │
+        │recording │────────────────────▶┌─────────────┐
+        └────┬─────┘                     │ interrupted │
+             │                           └──────┬──────┘
+             │ stop()                    .ended │ shouldResume
+             │                    ┌─────────────┘
+             │                    ▼
+             │              ┌────────────┐  重试耗尽
+             │              │ recovering │──────────▶ failed
+             │              └─────┬──────┘
+             │                    │ 成功
+             │                    └──▶ 回到 recording（并记一条断口）
+             ▼
+        ┌──────────┐
+        │ stopping │  finalize 当前分片 + 收尾元数据
+        └────┬─────┘
+             ▼
+        ┌───────────┐
+        │ finalizing│  写 DB、汇总、清理临时文件
+        └────┬──────┘
+             ▼
+           idle</code></pre>
+
+<table>
+<thead><tr><th>设计要点</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><b>单点权威</b></td><td>所有状态变更只经由<b>一个串行执行体</b>（Swift <code>actor</code> 或专用串行队列）完成；UI 与其它模块只作为观察者订阅状态，<b>不允许直接改状态</b>。既有项目曾因"回调线程直接改状态"出过线程安全问题，这里从结构上避免</td></tr>
+<tr><td>状态可观测</td><td>每次状态迁移都产生一条结构化日志（from → to / 触发原因 / 耗时），这是无调试器环境下唯一的排错依据</td></tr>
+<tr><td><b>失败不丢数据</b></td><td>进入 <code>failed</code> 前必须 <code>finalize</code> 已录分片；<b>已录到的音频永远不能因为状态机失败而丢失</b></td></tr>
+<tr><td>幂等</td><td><code>start()</code> / <code>stop()</code> 在任意状态下重复调用都必须安全（中断恢复会被多方触发，不幂等必然出 bug）</td></tr>
+</tbody>
+</table>
+
+<h3 id="kernel-session">4.8 音频会话配置：独占 vs 共存（M1 关键取舍）</h3>
+
+<blockquote>
+<p>这是"全时录音"里最容易被忽略、但对实际体验影响最大的一个决策，必须先说清楚物理事实。</p>
+</blockquote>
+
+<table>
+<thead><tr><th>事实</th><th>来源</th></tr></thead>
+<tbody>
+<tr><td><code>.record</code> 类别下，<b>其他 App 的音频会停止</b></td><td>音频会话类别的固有语义：录音类会话不混音</td></tr>
+<tr><td>要与其他 App 共存，必须显式设置 <code>mixWithOthers</code></td><td>Apple 文档：清空该选项并激活会话会<b>中断其他音频会话</b>；设置它才会与后台 App 的音频混音</td></tr>
+<tr><td><b>反过来同样成立</b>：其他 App 激活一个<b>不带混音</b>的会话时，也可能把我们中断</td><td>会话仲裁是双向的，这不是我们能单方面决定的</td></tr>
+</tbody>
+</table>
+
+<h4>两条路线</h4>
+
+<table>
+<thead><tr><th>策略</th><th>会话配置</th><th>好处</th><th>代价</th></tr></thead>
+<tbody>
+<tr>
+<td><b>独占录音</b><br>Exclusive</td>
+<td><code>.record</code>（或 <code>.playAndRecord</code> 不带 <code>mixWithOthers</code>）</td>
+<td class="ok">录音最干净；<b>不会录到本机扬声器外放的声音</b>（无污染）</td>
+<td class="no">用户<b>一整天不能听音乐/看视频/听语音消息</b>（会被我们中断）—— 对"全时录音"是灾难级体验</td>
+</tr>
+<tr>
+<td><b>共存录音</b><br>Coexistent</td>
+<td><code>.playAndRecord</code> + <code>.mixWithOthers</code></td>
+<td class="ok">用户可正常使用手机，录音可长时间挂着</td>
+<td class="no">麦克风会<b>录到本机外放的声音</b>（音频被污染，转写质量下降）；且仍可能被别人的非混音会话抢占</td>
+</tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>M1 决策：默认「共存录音」，并提供「高保真（独占）」开关。</b>
+<p>理由：本项目的核心承诺是"<b>一直录</b>"。如果一开录音就让手机变成砖头（不能听歌看视频），用户第二天就不会再打开它了 —— 录音再干净也没有意义。因此共存是<b>默认真实可用</b>的选择，独占留作正式访谈/会议时的主动选项。</p>
+<p>开启共存时的提示文案必须直白：<b>「录音期间可能录到本机外放的声音，建议佩戴耳机」</b>。</p>
+</div>
+
+<div class="card">
+<b>顺带一个结论</b>：<b>会议模式（系统内录）天然绕开了这个两难</b> —— 它直接从 App 的音频输出取数字信号，不需要靠麦克风去"听"扬声器，因此<b>既能让用户正常使用手机，又不会污染音频</b>。这是把系统内录纳入范围的又一个有力理由（见 4.6）。
+</div>
+
+<h3 id="kernel-engine">4.9 采集引擎与实时线程纪律</h3>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>采集接口</td><td><code>AVAudioEngine</code> + <code>inputNode.installTap(onBus:bufferSize:format:)</code></td></tr>
+<tr><td>缓冲大小</td><td>候选 1024 / 2048 / 4096 帧；<b>由实测决定</b>（延迟 vs 回调频率的平衡）。回调过于频繁会增加实时线程负担，过大会增加延迟</td></tr>
+<tr><td>转换链</td><td>采集 → （可选）降噪 → VAD → 编码落盘 / 转写，各环节在<b>不同队列</b>上，用环形缓冲解耦</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>实时线程纪律（硬约束）</b>：<code>installTap</code> 的回调运行在<b>实时音频线程</b>上。在该回调内<b>禁止</b>：分配内存、加锁（<code>DispatchQueue.sync</code> / <code>NSLock</code>）、做文件或网络 I/O、调用任何可能阻塞的 API、触发 ARC 的重活。</p>
+<p>违反的后果不是"报错"，而是<b>偶发的音频丢帧与爆音</b> —— 数据听起来还在，实际已经有空洞。这类问题几乎无法事后定位，只能靠结构上避免。</p>
+<p><b>正确做法</b>：进入回调前<b>预分配</b>一个环形缓冲（ring buffer）；回调内只做 <code>memcpy</code> 与原子指针更新；消费者在后台串行队列上取出处理。</p>
+</blockquote>
+
+<div class="card">
+<b>M1 里最容易写出"看起来能跑、实际偶发丢帧"的地方就在这里。</b>因此 M1 的第一步不是拼功能，而是先把这个采集管道与环形缓冲做对，再用长时间实测验证是否有丢帧（靠样本计数校验，见 4.11）。
+</div>
+
+<h3 id="kernel-format">4.10 采样率与格式转换</h3>
+
+<p>设备硬件原生采样率通常是 48 kHz（且会随路由变化，插耳机/连蓝牙后可能改变），而识别与落盘统一用 16 kHz 单声道。</p>
+
+<table>
+<thead><tr><th>路线</th><th>做法</th><th>优点</th><th>缺点</th></tr></thead>
+<tbody>
+<tr><td>A. 直接以 16 kHz 采集</td><td>给 <code>installTap</code> 传 16 kHz 的格式，交由系统转换</td><td>代码最少</td><td>采样率转换（SRC）在音频线程内不透明地完成，出问题无法观测，也难以插入降噪</td></tr>
+<tr><td><b>B. 原生格式采集 + 显式转换</b>（选定）</td><td>以原生格式（如 48 kHz）采集，后台队列用 <code>AVAudioConverter</code> 转 16 kHz</td><td>可控、可观测、可插入降噪；转换参数明确</td><td>多一步、需自行处理转换失败与格式不匹配</td></tr>
+</tbody>
+</table>
+
+<p><b>选择 B 的理由</b>：本项目要在同一路音频上做降噪、VAD、落盘、转写四件事，对格式与采样率的<b>可控性</b>比省几行代码重要得多。</p>
+
+<blockquote>
+<p><b>必须记日志的两项</b>：实际采集格式（采样率、声道数、位深）与转换后的输出格式。原因是"采样率不匹配导致音调怪异/速度不对"是这类项目最经典的坑，而它只有在锁屏、插耳机、换蓝牙之后才会暴露 —— 不记录现场就等于放弃定位能力。</p>
+</blockquote>
+
+<h3 id="kernel-writer">4.11 分片落盘实现（SegmentWriter）</h3>
+
+<pre><code>环形缓冲（实时线程写入）
+      │
+      ▼
+后台串行队列 ──┬──▶ 累计样本计数 sampleCount++   ← 时间轴的唯一依据
+              │           （不依赖墙钟时间）
+              ├──▶ 写入 AVAudioFile(.m4a / AAC-LC / 16kHz mono)
+              │
+              └── 每满 60 秒 或 收到 stop：
+                    finalize → 关闭文件
+                    → 由 sampleCount 推导 start_ms / end_ms
+                    → 校验文件可读（能被打开）
+                    → 原子重命名 temp → 正式名
+                    → 写 DB 元数据
+                    → 开新文件，重置本片样本计数</code></pre>
+
+<table>
+<thead><tr><th>要点</th><th>设计</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><b>样本计数为时间基准</b></td><td><code>start_ms / end_ms</code> 由累计样本数 ÷ 采样率推导，不用系统时间相减</td><td>AAC 编码器有启动延迟（见 4.4），用墙钟会让偏差逐片累积</td></tr>
+<tr><td><b>停止必须 finalize</b></td><td><code>stop()</code> 时必须关闭并登记最后一片</td><td>最后一片通常不足 60 秒，<b>忘记 finalize 就会丢掉最后那段录音</b>，这是同类项目的经典 bug</td></tr>
+<tr><td>文件先落地再写 DB</td><td>顺序固定：落文件 → 写 DB</td><td>若 DB 写失败，文件中仍留有音频（宁可丢元数据，不可丢音频）</td></tr>
+<tr><td>孤儿分片修复</td><td>启动时扫描音频目录，把"有文件、DB 无记录"的分片补登记</td><td>对应上面那条反过来的情况；也是 App 被强杀后的自愈路径</td></tr>
+<tr><td>落盘前预检磁盘</td><td>每次开新分片前检查剩余空间，低于阈值即停止会话</td><td>避免写到一半失败产生损坏文件</td></tr>
+<tr><td>损坏容忍</td><td>被强杀时最后一片可能未 finalize。启动时尝试打开，能读出多少算多少，其余丢弃并记一条断口</td><td>"能救多少救多少"，而不是整片丢弃</td></tr>
+<tr><td>压缩在后台队列</td><td>编码不与采集同线程</td><td>不阻塞实时线程（见 4.9）</td></tr>
+</tbody>
+</table>
+
+<h3 id="kernel-interrupt">4.12 中断与恢复实现</h3>
+
+<p>中断是<b>必然事件</b>而不是异常。实现上必须把"可能被打断"当作常态来设计。</p>
+
+<table>
+<thead><tr><th>事件源</th><th>含义</th><th>处理</th></tr></thead>
+<tbody>
+<tr><td><code>AVAudioSession.interruptionNotification</code></td><td>会话被抢占（来电、Siri、其他 App）</td><td><code>.began</code>：finalize 当前分片、置 <code>interrupted</code>；<code>.ended</code> 且 <code>shouldResume</code>：进入 <code>recovering</code> 并重启引擎</td></tr>
+<tr><td><b><code>AVAudioEngineConfigurationChange</code></b></td><td>系统重建了音频图（设备变化等）</td><td><b>必须停止 → 重建引擎 → 重启</b>。这是"静默停录"最常见的原因，最容易被漏掉</td></tr>
+<tr><td><code>AVAudioSession.routeChangeNotification</code></td><td>输入设备切换（拔插耳机、蓝牙连断）</td><td>重建输入节点与格式转换器；重新记录实际采集格式</td></tr>
+<tr><td><code>AVAudioSession.mediaServicesWereResetNotification</code></td><td>媒体服务被系统重置（音频栈已失效）</td><td>会话与引擎<b>全部重建</b>，不复用任何旧对象</td></tr>
+<tr><td>前后台切换通知</td><td>进入后台 / 回到前台</td><td>回到前台时主动做一次健康度校验（不信任"应该还在录"）</td></tr>
+<tr><td>系统内存警告</td><td>App 可能被回收</td><td>立即 finalize 当前分片，缩短损失窗口</td></tr>
+</tbody>
+</table>
+
+<h4>恢复退避策略</h4>
+<pre><code>立即重试 1 次  →  1s  →  2s  →  5s  →  10s  →  10s  …（上限 10 次）
+      任一次成功 → 归零计数，回到 recording，并记一条断口
+      全部失败   → failed（finalize 已录内容 + 明确告知用户）</code></pre>
+
+<h4>断口（Gap）的记录方式</h4>
+<p>恢复后新分片的 <code>start_ms</code> 仍由<b>样本累计</b>推导，因此中断期间的时间会自动体现为"上一片 end_ms 与下一片 start_ms 之间的间隔"。断口不需要额外机制去"制造"，只需要在 UI 上把它显式标注出来（见 11.3）。</p>
+
+<h4>App 被强杀后的恢复</h4>
+<table>
+<thead><tr><th>步骤</th><th>做法</th></tr></thead>
+<tbody>
+<tr><td>录音开始时</td><td>写入一条"活跃会话"标记（<code>state = recording</code>）</td></tr>
+<tr><td>正常停止时</td><td>标记改为 <code>done</code></td></tr>
+<tr><td>App 启动时</td><td>若发现存在 <code>state = recording</code> 的会话、但当前并未在录音 → 判定为<b>异常终止</b> → 提示用户"上次录音异常结束"，并提供查看/标记完成/继续录制</td></tr>
+</tbody>
+</table>
+<div class="card">
+<b>这一条是"无调试器"环境下的关键诊断入口。</b>因为没有崩溃日志的实时访问能力，App 自己识别"我上次是异常死的"并提供入口，是唯一能让用户把问题反馈清楚的方式。
+</div>
+
+<h3 id="kernel-guard">4.13 停滞看门狗、降档与资源守卫</h3>
+
+<h4>停滞看门狗（Stall Watchdog）</h4>
+<p>中断通知覆盖的是"系统明确告知我们被打断"的情况。但还有一类更危险的情形：<b>系统没有报任何错，音频却已经不来了</b>（连接半死式的静默失效）。因此需要独立的看门狗兜底。</p>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>判定依据</td><td>记录 <code>lastFrameAt</code>（最后一帧音频的到达时刻）；定时器每秒检查，若 <code>now − lastFrameAt &gt; 3 秒</code> 且状态为 <code>recording</code> → 判定停滞</td></tr>
+<tr><td>时钟选择</td><td><b>必须用单调时钟</b>（<code>ContinuousClock</code> / <code>mach_absolute_time</code>），不能用墙钟 —— 系统时间调整会造成误判</td></tr>
+<tr><td>动作序列</td><td>重建引擎 → 无效则重建会话 → 连续 2 次无效则判定会话失败（保留已录内容）</td></tr>
+<tr><td>恢复冷却</td><td>恢复后设 10 秒冷却，避免真断网/真故障时高频重连（省电，也避免日志刷屏）</td></tr>
+<tr><td>不可造假</td><td>恢复后必须记断口，<b>不能把停滞期间当作"有音频"</b>；停滞时长不计入有效录音时长</td></tr>
+</tbody>
+</table>
+
+<h4>降档与资源守卫（DegradationGuard）</h4>
+
+<table>
+<thead><tr><th>触发条件</th><th>动作</th></tr></thead>
+<tbody>
+<tr><td>低电量模式开启 或 电量 &lt; 20%</td><td>暂停实时转写（M2 起生效）、暂停所有批处理任务、降低健康检查频率</td></tr>
+<tr><td>热状态 ≥ <code>.serious</code></td><td>暂停批处理与降噪；降低 VAD 负担</td></tr>
+<tr><td>热状态 ≥ <code>.critical</code></td><td><b>只保录音</b>，其余全部暂停</td></tr>
+<tr><td>剩余磁盘 &lt; 3 GB</td><td>提前清理过期音频，并提示用户</td></tr>
+<tr><td>剩余磁盘 &lt; 1 GB</td><td><b>停止录音</b>，finalize 当前分片，明确告知用户并保留全部已录内容</td></tr>
+</tbody>
+</table>
+
+<table>
+<thead><tr><th>监测接口</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>ProcessInfo.thermalStateDidChangeNotification</code></td><td>热状态</td></tr>
+<tr><td><code>NSProcessInfoPowerStateDidChange</code></td><td>低电量模式</td></tr>
+<tr><td><code>UIDevice.batteryLevel</code> + <code>batteryStateDidChangeNotification</code></td><td>电量（需先开启 <code>isBatteryMonitoringEnabled</code>）</td></tr>
+<tr><td><code>URLResourceValues.volumeAvailableCapacityForImportantUsage</code></td><td>剩余空间（应使用此键而非普通 free space，它反映系统允许我们使用的额度）</td></tr>
+</tbody>
+</table>
+
+<h3 id="kernel-accept">4.14 权限、日志与 M1 验收矩阵</h3>
+
+<h4>权限与声明</h4>
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>录音权限申请</td><td>iOS 17+ 使用 <code>AVAudioApplication.requestRecordPermission()</code>（旧的 <code>AVAudioSession</code> 版本已过时）</td></tr>
+<tr><td>用途说明</td><td><code>NSMicrophoneUsageDescription</code>，文案需说明"用于记录周围讲话并转成文字"</td></tr>
+<tr><td>被拒绝的处理</td><td>明确引导至系统设置；<b>不静默失败</b>，也不反复弹窗骚扰</td></tr>
+<tr><td>保持最小权限面</td><td>本项目不使用 Apple 的语音识别框架，因此<b>不需要</b> <code>NSSpeechRecognitionUsageDescription</code>；也不申请定位、相册等无关权限</td></tr>
+<tr><td>后台模式</td><td><code>UIBackgroundModes = [audio]</code>（M0 即写入 Info.plist，避免 M1 遇到"改了没生效"的低级坑）</td></tr>
+</tbody>
+</table>
+
+<h4>日志（Log.swift）</h4>
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>分类</td><td><code>capture</code> / <code>session</code> / <code>interrupt</code> / <code>route</code> / <code>thermal</code> / <code>disk</code> / <code>storage</code></td></tr>
+<tr><td>载体</td><td>内存环形缓冲（保留最近若干千条）+ 可导出为文本文件（供 USB 取出或用 App 内面板查看）</td></tr>
+<tr><td><b>必须留痕的事件</b></td><td>会话开始/结束；每次状态迁移（from → to / 原因 / 耗时）；每次中断、路由变化、引擎重建；每条断口（起止）；每次降档与恢复；<b>每片落盘（序号 / 样本数 / 耗时 / 文件大小）</b></td></tr>
+<tr><td>为什么要求这么高</td><td>本项目没有断点调试器；且"中断恢复"与"降档"属于<b>沉默行为</b> —— 不报错、用户看不到、UI 也不一定显示。没有日志就等于没有观测手段</td></tr>
+</tbody>
+</table>
+
+<h4>M1 验收矩阵（真机）</h4>
+<table>
+<thead><tr><th>#</th><th>场景</th><th>期望</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>前台连续录 <b>8 小时</b></td><td>无中断、时间轴连续、电量与发热可接受</td></tr>
+<tr><td>2</td><td><b>锁屏连续录 8 小时</b>（最关键）</td><td>同上；分片落盘记录连续无缺口</td></tr>
+<tr><td>3</td><td>录音中依次切到微信 / 抖音 / 相机各 5 分钟</td><td>按会话策略处理；<b>不得出现静默停录</b>；若有断口必须被记录</td></tr>
+<tr><td>4</td><td>录音中来电 → 挂断</td><td>自动恢复；断口被记录</td></tr>
+<tr><td>5</td><td>录音中唤起 Siri</td><td>自动恢复</td></tr>
+<tr><td>6</td><td>录音中拔插有线耳机 / 连断 AirPods</td><td>自动恢复且转换正确，<b>无音调异常或速度异常</b></td></tr>
+<tr><td>7</td><td>开启低电量模式</td><td>降档但继续录；日志有降档记录</td></tr>
+<tr><td>8</td><td>充电中连续长录</td><td>热状态变化被记录并按级降档</td></tr>
+<tr><td>9</td><td>强制杀死 App → 重启</td><td>识别出异常终止的会话并给出恢复入口</td></tr>
+<tr><td>10</td><td>磁盘余量低于阈值</td><td>自动停止并保留已录内容，明确提示</td></tr>
+<tr><td>11</td><td>校验时间轴</td><td>分片无空洞、无重叠；总时长与累计样本数一致</td></tr>
+<tr><td>12</td><td>校验音频文件</td><td>可正常播放；无爆音、无半截文件</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>验收通过标准</b>：<b>第 1、2、11 项必须全部通过</b>（它们直接决定产品是否成立）；其余各项<b>不允许出现"静默失败"</b> —— 允许降级、允许记断口、允许提示用户，但不允许"出错了却没有痕迹"。
+</div>
+
+<h3 id="kernel-unknown">4.15 M1 已知不确定点（必须先真机实测）</h3>
+
+<table>
+<thead><tr><th>#</th><th>不确定点</th><th>影响</th><th>验证方式</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><b>锁屏后 tap 是否持续回调</b></td><td class="no">决定整个产品是否成立</td><td>8 小时实测，检查每片落盘日志是否连续</td></tr>
+<tr><td>2</td><td><b>音频会话策略的最终选择</b>（共存 vs 独占）</td><td class="warn">同时影响录音纯净度与用户可用性</td><td>分别实测：录音中播放音乐/视频，观察谁被中断、录音是否混入外放声</td></tr>
+<tr><td>3</td><td>其他 App 激活非混音会话时是否抢占我们</td><td class="warn">决定断口出现的频率</td><td>逐款实测常见 App（音乐、视频、语音消息、导航）</td></tr>
+<tr><td>4</td><td>AAC 编码器启动延迟的实际数值</td><td class="warn">跨分片时间轴精度</td><td>用已知长度的测试音频做端到端时长校验</td></tr>
+<tr><td>5</td><td>48 kHz → 16 kHz 两种转换路线的实际表现</td><td class="warn">音质与 CPU 占用</td><td>A/B 对比</td></tr>
+<tr><td>6</td><td>长时间录音的内存增长（是否泄漏）</td><td class="warn">8 小时是否会被系统杀掉</td><td>观察内存 footprint 曲线</td></tr>
+<tr><td>7</td><td>后台时定时器（看门狗）是否仍正常触发</td><td class="warn">决定看门狗是否有效</td><td>锁屏 + 日志验证</td></tr>
+<tr><td>8</td><td>实际耗电（% / 小时）、实际发热</td><td class="warn">决定默认档位与产品可用性</td><td>8 小时实测</td></tr>
+</tbody>
+</table>
+
+<h2 id="asr">5. 转写引擎（whisper.cpp）</h2>
+
+<h3 id="asr-twopass">5.1 两遍转写（Two-Pass）</h3>
+
+<pre><code>录音进行中  ──▶ ① 实时稿：whisper base（量化），滑窗转写当前片段，秒级可见
+                        ↓ 结果直接展示，但会被后续重解不断修正
+录音结束后 / 充电+息屏 ──▶ ② 终稿：whisper small（量化），整片重转
+                        ↓ 覆盖式写入，与实时稿并存可对照</code></pre>
+
+<table>
+<thead><tr><th>遍次</th><th>模型</th><th>触发条件</th><th>目标</th><th>可关闭</th></tr></thead>
+<tbody>
+<tr><td>实时稿</td><td>base（q5 量化）</td><td>录音中，VAD 判定有语音</td><td>当场可读，秒级延迟</td><td>是（省电档）</td></tr>
+<tr><td>终稿</td><td>small（q5 量化）</td><td>充电 或 息屏 或 手动点「重新整理」</td><td>可归档的准确文本</td><td>是</td></tr>
+</tbody>
+</table>
+
+<p>这个设计的价值在于<b>把「耗电」与「准确」解耦</b>：用户白天可以关掉实时转写换取整日续航，晚上插上充电器再一次性出准确结果；录制本身从不中断。</p>
+
+<h3 id="asr-window">5.2 滑窗与自我修正（为什么会"回改"）</h3>
+
+<p>Whisper 是<b>批式（batch）模型</b>，不是流式（streaming）模型——它的输入是「一段完整音频」，输出是「一段完整文字」。要做实时字幕，只能自己搭"边录边重解"的循环：</p>
+
+<pre><code>当 VAD 判定进入语音段：
+  每积累 step（例如 0.5s）：
+     取 [段起点, 当前时刻] 的音频 ──▶ Whisper ──▶ 覆盖式替换屏幕上该段的文字
+     条件：保留 last 若干词做上下文（滑窗重叠），避免断句断裂</code></pre>
+
+<blockquote>
+<p><b>必须提前接受的现象</b>：字幕会先出现再被修正（前几秒的错字在 1~2 秒后被改对）。这不是 bug，是离线批式模型的固有特性。UI 上应把"正在识别中"的片段做视觉区分（如浅色/斜体），避免用户以为文字在乱跳。</p>
+<p>同时它是 Whisper 的<b>幻觉（hallucination）</b>高发场景：安静无声处可能凭空生成「谢谢观看」「字幕由 xx 提供」之类的句子。对策：① VAD 严格把关，非语音段不送模型；② 对高重复文本做黑名单过滤；③ 若无语音活动则输出空。</p>
+</blockquote>
+
+<h3 id="asr-model">5.3 模型选型与体积</h3>
+
+<table>
+<thead><tr><th>模型</th><th>原始体积</th><th>量化后 (q5)</th><th>用途</th><th>中文准确率</th></tr></thead>
+<tbody>
+<tr><td>tiny</td><td>~75 MB</td><td>~31 MB</td><td>仅用于极端省电档</td><td class="no">偏低，不建议</td></tr>
+<tr><td><b>base</b></td><td>~142 MB</td><td>~57 MB</td><td><b>实时稿</b></td><td class="warn">可用</td></tr>
+<tr><td><b>small</b></td><td>~466 MB</td><td>~181 MB</td><td><b>终稿</b></td><td class="ok">日常对话够用</td></tr>
+<tr><td>medium</td><td>~1.5 GB</td><td>~539 MB</td><td>可选高质量档（需实测速度）</td><td class="ok">好</td></tr>
+<tr><td>large-v3-turbo</td><td>~3 GB</td><td>~574 MB</td><td>暂不引入（iPhone 上大概率低于实时）</td><td class="ok">最好</td></tr>
+</tbody>
+</table>
+
+<p>体积为量级参考，实际数值随量化方案与版本变化，需在 M2 以实测为准。模型可让用户自行选择下载档位（省电档只下 base，高质量档下 small/medium）。</p>
+
+<h3 id="asr-accel">5.4 加速后端</h3>
+
+<table>
+<thead><tr><th>后端</th><th>作用对象</th><th>收益</th><th>代价</th></tr></thead>
+<tbody>
+<tr><td>Metal（GPU）</td><td>解码器 decoder</td><td>开箱可用，明显提速</td><td>与录音线程争资源，需限流</td></tr>
+<tr><td>CoreML（ANE 神经引擎）</td><td>编码器 encoder（Whisper 的耗时大头）</td><td>显著提速 + 省电</td><td>需在 macOS 上用 <code>coremltools</code> 转换出 <code>.mlmodelc</code>，属额外构建步骤（见 12.2）</td></tr>
+<tr><td>纯 CPU</td><td>兜底</td><td>零配置</td><td>慢、耗电</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p>CoreML 转换需 Python 环境与 macOS，须在 CI 的 macOS runner 上完成一次并把产物作为 artifact 上传，或直接采用社区已转换版本。<b>这一步存在失败可能（模型版本与 coremltools 版本不匹配是常见坑）</b>，因此设计上必须先保证纯 CPU / Metal 路径可用，CoreML 作为纯增益项，失败不影响功能（见风险 R4）。</p>
+</blockquote>
+
+<h3 id="asr-delivery">5.5 模型分发策略</h3>
+<ul>
+<li>ipa 内<b>不含</b>模型，安装包保持在小体积（预计 &lt; 20 MB，主要来自 sherpa-onnx 与 onnxruntime 的 framework）</li>
+<li>首次进入录音页时引导下载：base 必选（~57 MB），small 推荐（~181 MB）</li>
+<li>下载源需为可稳定访问的地址（GitHub Releases / 自有对象存储），需支持断点续传与校验（sha256）</li>
+<li>模型存放在 <code>Application Support/Models/</code>，可被系统清理策略影响，需检查存在性并重新下载</li>
+<li>设置页可查看模型占用并单独删除</li>
+</ul>
+
+<h3 id="asr-alt">5.6 备选方案（备而不用）</h3>
+<p>由于 sherpa-onnx 已在技术栈内，其自带的 <b>SenseVoice</b> 模型是一个零增量成本的备选（同属离线、中文与粤语表现更强、非自回归因而速度更快）。若 M2 实测发现 whisper small 的中文准确率或速度不达标，可直接在 sherpa-onnx 内切换，无需引入新依赖。<b>保持该后路是选 sherpa-onnx 而非自研语音处理的一个重要附带收益。</b></p>
+
+<h2 id="speech">6. 语音处理（sherpa-onnx）</h2>
+
+<h3 id="speech-vad">6.1 VAD 语音活动检测（Voice Activity Detection）</h3>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>作用</td><td>切出"有人说话"的片段。它是整个链路的闸门：只把语音送进转写与声纹，既省电又抑制幻觉</td></tr>
+<tr><td>实现</td><td>sherpa-onnx 内置的 VAD（Silero / TEN-VAD 类），16 kHz 输入，逐帧判定</td></tr>
+<tr><td>参数</td><td>起始静音阈值、结束静音时长（尾静音，例如 0.5s 判定一句结束）、最短语音时长（过滤咳嗽等短促噪声）</td></tr>
+<tr><td>输出</td><td>语音段列表 <code>[{start_ms, end_ms}]</code>，作为后续所有处理的基本单元</td></tr>
+<tr><td>调参要求</td><td>尾静音过短会切碎句子、过长会延迟实时字幕。默认值需真机实测后确定</td></tr>
+</tbody>
+</table>
+
+<h3 id="speech-denoise">6.2 GTCRN 降噪（Speech Enhancement）</h3>
+
+<p>GTCRN（Global Token Channel Attention Recurrent Network）是 sherpa-onnx 内置的语音增强模型，用于从含噪音频中估计并压制背景噪声。</p>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>处理位置</td><td>采集后立即处理，产出降噪轨（见 4.2 双轨架构）</td></tr>
+<tr><td>落盘</td><td>默认<b>不落盘</b>（可由原始轨随时重算）；仅 A/B 实测期可临时开启留档</td></tr>
+<tr><td>可切换</td><td>设置页开关；实时字幕轨与终稿轨的选择相互独立</td></tr>
+<tr><td>对比方式</td><td>对同一段原始音频分别用原始轨/降噪轨跑一遍 whisper small，比较字错误率（WER, Word Error Rate）与人工可读性</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>反直觉但重要</b>：降噪并不必然提升识别准确率。降噪算法会引入<b>失真伪影（artifact / musical noise）</b>，而 Whisper 这类在大规模含噪数据上训练的模型本身已具备较强抗噪能力——过度降噪可能抹掉模型所需的语音细节，使 WER 反而上升。<b>因此"降噪"在本项目中的定位是「可验证的选项」，而不是「无条件的改进」</b>。这也是双轨架构存在的唯一理由。</p>
+</blockquote>
+
+<h3 id="speech-diar">6.3 说话人分离链路（Speaker Diarization）</h3>
+
+<p>说话人分离回答的是「<b>哪一段是谁说的</b>」。它由三步组成，缺一不可：</p>
+
+<pre><code>① 语音分割 (segmentation)
+   pyannote segmentation-3.0 ──▶ 把语音段进一步切成"同一个人在说"的小段
+                                        │
+② 声纹提取 (speaker embedding)          ▼
+   3D-Speaker / WeSpeaker ──▶ 每段一个定长向量（例如 512 维 float32）
+                                        │
+③ 聚类 (clustering)                     ▼
+   把向量按相似度归组 ──▶ 说话人 A / B / C
+                                        │
+④ 回填 (labeling)                       ▼
+   把「时间段 → 说话人标签」贴回转写结果：09:12–09:15 [张三] …</code></pre>
+
+<table>
+<thead><tr><th>环节</th><th>选型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>语音分割</td><td>pyannote segmentation-3.0（ONNX 版）</td><td>sherpa-onnx 官方支持，负责切出「可能是同一个说话人」的连续片段</td></tr>
+<tr><td>声纹提取</td><td>3D-Speaker 或 WeSpeaker 的 embedding 模型</td><td>输出定长向量，是「认人」的唯一依据</td></tr>
+<tr><td>聚类</td><td>sherpa-onnx 内置聚类</td><td>批式算法，对超长会话必须分块（见 6.5）</td></tr>
+<tr><td>身份判定</td><td>与声纹库做余弦相似度（cosine similarity）比对</td><td>阈值是核心可调参数（见 6.4）</td></tr>
+</tbody>
+</table>
+
+<h3 id="speech-registry">6.4 声纹库与跨录音认人</h3>
+
+<p>这是本项目的差异化能力：<b>不只区分"换人了"，而是知道"这是谁"。</b></p>
+
+<pre><code>新录音的一个说话人簇（cluster）
+        │  计算簇质心 embedding (centroid)
+        ▼
+与声纹库中每个 speaker 的向量比对 ──▶ 余弦相似度
+        │
+        ├── ≥ 阈值 ──▶ 判定为该人，直接贴上名字
+        │
+        └── &lt; 阈值 ──▶ 新建「说话人 N」（未命名）</code></pre>
+
+<h4>身份来源的两条路径（都支持）</h4>
+<table>
+<thead><tr><th>路径</th><th>操作</th><th>特点</th></tr></thead>
+<tbody>
+<tr><td><b>主动录入</b>（enrollment）</td><td>设置页对某人录 10~30 秒语音，提取嵌入向量入库</td><td>准确、可控；冷启动阶段必须用它</td></tr>
+<tr><td><b>事后命名</b></td><td>把已有录音里的「说话人 3」命名成「张三」，其向量自动入库</td><td>免录入、越用越准；是主要成长路径</td></tr>
+</tbody>
+</table>
+
+<h4>关键参数与质量控制</h4>
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>相似度阈值</td><td>初始取经验值（0.7 量级），<b>必须真机实测后调整</b>。阈值偏高 → 同一个人被拆成多个；偏低 → 不同人被合并（后者体验更糟）</td></tr>
+<tr><td>每人向量条数</td><td>保留多条（不同场景/设备/语速），比对时取最大相似度；设上限（如 20 条）防止无限增长</td></tr>
+<tr><td>向量质量</td><td>只从足够长（如 ≥ 2s 且信噪比合格）的语音段提取，短促片段产生的向量噪声大</td></tr>
+<tr><td>误判纠正</td><td>UI 必须支持「这段不是他」的手动改正，并把纠正结果用于更新/剔除向量</td></tr>
+<tr><td>隐私</td><td>声纹向量仅存本机；这是敏感生物特征信息，需在隐私说明中明确列出，且提供「删除某人全部声纹」的能力</td></tr>
+</tbody>
+</table>
+
+<h3 id="speech-long">6.5 超长会话的分块与身份对齐</h3>
+
+<blockquote>
+<p><b>这是全时录音形态带来的特有难题。</b>聚类是<b>批式全局优化</b>：8 小时对话可能包含数万个语音段，一次性聚类在手机上会内存耗尽且耗时不可接受。必须分块处理，再把块与块之间的身份对齐。</p>
+</blockquote>
+
+<pre><code>把整段会话切成 chunk（例如每 10 分钟一块）
+        │
+每块独立聚类 ──▶ 块内标签：chunk1 = {A, B}，chunk2 = {P, Q, R}
+        │
+计算每块的簇质心 ──▶ 与「本会话已确认身份表」及「全局声纹库」比对
+        │
+        ├── 匹配上 ──▶ 统一为同一身份（speaker linking，跨块身份对齐）
+        └── 未匹配 ──▶ 新身份
+        │
+输出：全会话统一的说话人标签序列</code></pre>
+
+<table>
+<thead><tr><th>要点</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>块大小</td><td>10 分钟（可调）。越小越省内存，越大聚类越准（样本多）</td></tr>
+<tr><td>跨块对齐</td><td>以质心向量做比对，而非依赖块内序号（序号在块之间没有意义）</td></tr>
+<tr><td>增量处理</td><td>录音进行中即可对已完成的块做说话人处理，避免停止后一次性等待很久</td></tr>
+<tr><td>调度时机</td><td>与终稿转写同一时机（充电/息屏），避免与录音争抢算力</td></tr>
+</tbody>
+</table>
+
+<h3 id="speech-overlap">6.6 已知局限：重叠说话（Overlapping Speech）</h3>
+
+<p>当两人及以上同时说话时，说话人分割的准确率会显著下降，容易把两个人的声音混成一段并归给其中一人。<b>这是语音领域的公认难题，不存在"解决"方案，只能降级处理。</b></p>
+
+<table>
+<thead><tr><th>策略</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>标注而非隐瞒</td><td>检测到可能重叠的片段，在 UI 上以「可能多人同时说话」标记，而不是假装判断正确</td></tr>
+<tr><td>转写优先</td><td>重叠段的<b>文字</b>通常仍可正确转出（Whisper 擅长分离混合语音的内容），只是<b>归属</b>不可靠。因此归属不确定时保留文字、把说话人标记为「未知/多人」</td></tr>
+<tr><td>不承诺解决</td><td>设计文档中明确记录为已知边界，避免验收时被当作缺陷</td></tr>
+</tbody>
+</table>
+
+<h2 id="translate">7. 翻译层（Translation）</h2>
+
+<h3 id="translate-position">7.1 翻译在链路中的位置</h3>
+
+<p>先明确一条被否掉的捷径：<b>Whisper 自带的 <code>translate</code> 任务只能翻译成英文</b>（任意语言 → 英文），不能翻成中文、日文等其他目标语言。因此翻译必须是转写<b>之后</b>的一个独立阶段，而不是识别的一部分。</p>
+
+<pre><code>录音 ──▶ 转写（whisper，原语言文本）
+              │
+              ├──▶ [实时稿] 仅原文，不翻译        ← 实时阶段不介入翻译
+              │
+              └──▶ [终稿] 准确的原文文本
+                        │
+                        ▼
+                   【翻译层】按用户选择的目标语言翻译
+                        │
+                        ├── 原文 + 译文 双语对照
+                        ├── 逐段保留说话人标签与时间戳
+                        └── 结果按 (段落, 语言) 缓存到数据库</code></pre>
+
+<table>
+<thead><tr><th>设计要点</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>输入是<b>文字</b>不是音频</td><td>翻译的对象是终稿文本。这带来一个关键收益：<b>换语言不需要重跑识别</b>，只需重跑翻译（成本低一个数量级）</td></tr>
+<tr><td>不介入实时阶段</td><td>实时稿本身还在被滑窗不断修正，翻译一个还在变的文本既浪费又会让字幕乱跳。实时翻译列入 v2 评估</td></tr>
+<tr><td>保留结构</td><td>译文挂在转写片段上，因此<b>说话人标签、时间戳、点句回听全部自动继承</b>，不需要额外对齐</td></tr>
+<tr><td>逐段独立翻译</td><td>以 VAD 切出的句级片段为单位，而非整篇长文。段落短 → 翻译质量更好、可并行、可增量</td></tr>
+</tbody>
+</table>
+
+<h3 id="translate-engine">7.2 引擎选型（四条路线对比）</h3>
+
+<table>
+<thead><tr><th>方案</th><th>模型体积</th><th>离线</th><th>优点</th><th>缺点</th><th>结论</th></tr></thead>
+<tbody>
+<tr>
+<td><b>A. 系统 Translation framework</b></td>
+<td><b>0</b>（语言包由系统管理）</td>
+<td class="ok">是</td>
+<td>端侧运行、免费、无需自建语言对、由系统维护升级</td>
+<td>语言对有限（远少于「翻译 App」宣传的 60+ 语言）；长句与口语质量一般；语言包需用户下载</td>
+<td class="ok"><b>主用</b></td>
+</tr>
+<tr>
+<td><b>B. 系统 Foundation Models</b><br>（iOS 26 端侧 LLM）</td>
+<td><b>0</b>（系统内置）</td>
+<td class="ok">是</td>
+<td>免费、无下载；能"理解并解释"，适合生词释义、句子讲解、语法说明</td>
+<td>速度慢，不适合大批量翻译；需设备与系统满足 Apple Intelligence 条件；输出不完全可复现</td>
+<td class="ok"><b>用于讲解</b>，不用于批量翻译</td>
+</tr>
+<tr>
+<td>C. 专用 NMT 模型<br>（OPUS-MT / NLLB 蒸馏，ONNX）</td>
+<td>每个语言对数十 MB</td>
+<td class="ok">是</td>
+<td>可复用已有的 onnxruntime，完全自主可控</td>
+<td>语言对零散需分别管理；中文口语与长句质量一般；属于"自己维护一份比不上系统的翻译"</td>
+<td class="no">不采用（备选）</td>
+</tr>
+<tr>
+<td>D. 本地小 LLM<br>（Qwen 0.6B~1.7B GGUF，走 llama.cpp）</td>
+<td>约 400 MB ~ 1.1 GB</td>
+<td class="ok">是</td>
+<td>翻译质量最好；一个模型同时可做翻译、生词释义、句子讲解、以及未来的摘要/待办（一套模型解决多件事）</td>
+<td>体积大、推理慢、耗电高；llama.cpp 与 whisper.cpp 同属 ggml 生态，集成成本不算高但仍是新增依赖</td>
+<td class="warn">不采用（保留为升级路径）</td>
+</tr>
+<tr>
+<td>云端翻译（DeepL / Google / LLM）</td>
+<td>—</td>
+<td class="no">否</td>
+<td>质量最高</td>
+<td>与"纯离线、音频/文本不出手机"的核心定位冲突；有费用与联网依赖</td>
+<td class="no">不采用</td>
+</tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>选 A 的核心理由</b>：翻译引擎是四件事里唯一「用系统现成的比自建更好」的部分 —— 零体积、零维护、端侧、免费。<b>把工程预算集中在本项目真正独有的价值上（全时录音、说话人分离、学习材料化），而不是重复造一个翻译系统。</b></p>
+<p>同时注意 B 的存在：iOS 26 的端侧系统模型让"生词释义 / 句子讲解"这类<b>生成式</b>需求也能零成本端侧完成，这直接决定了语言学习层的可行性。</p>
+</blockquote>
+
+<h3 id="translate-lazy">7.3 按需翻译与缓存（核心设计）</h3>
+
+<pre><code>用户点「选择语言」→ 选「日文」
+        │
+        ▼
+查询 translations 表：(segment_id, target_lang) 是否已有缓存？
+        │
+        ├── 命中 ──▶ 立即显示（切换语言秒出）
+        │
+        └── 未命中 ──▶ 批量翻译该会话的所有段落
+                       ├── 显示进度（"已翻 32/180 句"）
+                       ├── 结果写回缓存
+                       └── 可随时中断，已翻部分保留</code></pre>
+
+<table>
+<thead><tr><th>设计点</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>不预翻所有语言</td><td>用户实际只会看一两种语言。预翻 N 种语言 = N 倍算力与存储，全属浪费</td></tr>
+<tr><td>缓存键</td><td><code>(segment_id, target_lang, engine_version)</code>。带引擎版本是为了在翻译引擎升级后能识别出旧译文可重翻</td></tr>
+<tr><td>可中断可续</td><td>长会话翻译是批量任务，必须能中断、能续、能只翻未完成的段落</td></tr>
+<tr><td>执行时机</td><td>优先放在终稿转写的同一批处理窗口（充电/息屏，见 10.4）；也可在前台立即执行（短会话）</td></tr>
+<tr><td>清理</td><td>译文随会话删除而删除；提供「清理全部译文缓存」入口</td></tr>
+</tbody>
+</table>
+
+<h3 id="translate-quality">7.4 端侧翻译的质量边界与对策</h3>
+
+<blockquote>
+<p><b>必须向用户诚实</b>：端侧翻译在以下场景会明显失真 —— 口语与俚语、方言口音、长难句、专业术语、人名地名、文化特定表达。这是模型体积受限的必然结果，不是 bug，也无法通过调参消除。</p>
+</blockquote>
+
+<table>
+<thead><tr><th>对策</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><b>双语对照为默认呈现</b></td><td>原文永远可见，译文作为辅助。这一点在本项目中还额外成立一个理由：<b>用户要学语言，看原文本身就是目的，不是干扰</b></td></tr>
+<tr><td><b>术语表（glossary）</b></td><td>用户可维护「不翻译的人名/专有名词」列表，翻译前后做保护与还原，避免把人名翻得面目全非</td></tr>
+<tr><td><b>允许手动修正</b></td><td>译文可编辑并保存，修正后的结果优先展示（同时也能作为后续质量评估的样本）</td></tr>
+<tr><td><b>语言可用性前置校验</b></td><td>选择语言时用 <code>LanguageAvailability</code> 实时查询该语言对是否可用、语言包是否已下载；不可用则明确提示并引导下载，而不是静默失败</td></tr>
+<tr><td>可插拔接口</td><td>翻译层对外只暴露统一协议，云端实现作为<b>预留但默认关闭</b>的选项；用户若未来改变主意只需换实现（见 10.3）</td></tr>
+</tbody>
+</table>
+
+<h3 id="translate-mixed">7.5 逐段语言检测（混合语言对话）</h3>
+
+<p>现实对话常常中英夹杂。Whisper 会为每个段落输出检测到的语言，因此可以做到<b>逐段判定源语言</b>，而不是给整段录音强加一个语言标签。</p>
+
+<table>
+<thead><tr><th>场景</th><th>处理</th></tr></thead>
+<tbody>
+<tr><td>整段都是中文</td><td>正常翻译</td></tr>
+<tr><td>整段都是英文</td><td>正常翻译</td></tr>
+<tr><td>段内中英混合</td><td>以该段主语言为源语言翻译，译文保留混杂特征（不强行"纠正"成纯一种语言）</td></tr>
+<tr><td>语言置信度低</td><td>标记为「语言未定」，翻译结果标注不确定性</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>对语言学习的额外价值</b>：逐段语言检测能直接标出「这段录音里哪几句是外语」，这正是学习者最关心的部分 —— 它可以自动过滤出「值得反复听的目标语言句子」，而不需要用户手工翻找。这一能力见 8.5。
+</div>
+
+<h2 id="learn">8. 语言学习层（Language Learning）</h2>
+
+<h3 id="learn-stance">8.1 设计立场</h3>
+
+<div class="card">
+<b>本项目不做语言课程，只做一件事：把你自己录到的真实语音，变成属于你的学习材料。</b>
+</div>
+
+<p>这个立场的意义在于划清边界：</p>
+<ul>
+<li><b>不</b>做分级课程、考试题库、语法体系教学 —— 那是教科书和 Duolingo 的领域</li>
+<li><b>要</b>做的是：真实语料 + 逐句对照 + 可回听 + 生词沉淀。真实语料是任何教材都买不到的，而它恰好是你每天都在产生的</li>
+<li>因此本层的所有功能都围绕一个动词展开：<b>反复听、逐句看懂、把不会的词留下来</b></li>
+</ul>
+
+<h3 id="learn-align">8.2 逐句对照（Sentence Alignment）—— 本项目的先天优势</h3>
+
+<p>跨语言的「原文-译文对齐」通常是一件麻烦事（需要专门的句对齐算法）。但本项目<b>天然不需要对齐</b>：</p>
+
+<pre><code>VAD 切出的语音段 = 一个句级单位
+      │
+      ├──▶ 原文（whisper 转写，绑定 segment_id）
+      ├──▶ 译文（翻译这段原文，绑定同一个 segment_id）
+      └──▶ 音频（时间区间绑定同一个 segment_id）
+
+三者共用同一个 ID，所以「对齐」在数据模型成立的那一刻就自动成立了。</code></pre>
+
+<h4>显示模式（界面可切换）</h4>
+<table>
+<thead><tr><th>模式</th><th>展示</th><th>适用</th></tr></thead>
+<tbody>
+<tr><td>原文</td><td>只显示源语言文本</td><td>复习母语内容、专注原话</td></tr>
+<tr><td>译文</td><td>只显示目标语言文本</td><td>快速理解内容</td></tr>
+<tr><td><b>双语对照</b>（默认）</td><td>原文在上、译文在下，逐句对应</td><td>语言学习的主场景</td></tr>
+</tbody>
+</table>
+
+<h3 id="learn-listen">8.3 听与跟读</h3>
+
+<table>
+<thead><tr><th>功能</th><th>实现</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td>点句回听</td><td>复用 9.3 的时间戳回放</td><td>句子左侧时间戳可点，直接播放对应音频</td></tr>
+<tr><td>慢速播放</td><td><code>AVAudioPlayer.rate</code>（需 <code>enableRate = true</code>）</td><td>提供 0.5× / 0.75× / 1×；<b>必须保持音高不变</b>（时间伸缩而不变调），否则听不懂反而更难学</td></tr>
+<tr><td>单句循环（AB 复读）</td><td>手动指定 A/B 点或直接循环当前句</td><td>语言学习最高频的操作，务必做成一步可达</td></tr>
+<tr><td>跟读比对</td><td>录用户跟读 → 用 <b>已有 whisper</b> 转写 → 与原文比对，给出准确度</td><td>复用已有引擎，<b>零新增依赖</b>；产出的是文本层面的准确度</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>必须明确的边界</b>：跟读比对给出的是「<b>你说的内容对不对</b>」（文本比对），<b>不是</b>「你的发音好不好」（音素级发音评分）。真正的发音评分需要音素对齐与韵律分析，属于另一个专业领域，不在本项目范围内。UI 文案必须避免让用户误以为是发音打分。</p>
+</blockquote>
+
+<h3 id="learn-tts">8.4 朗读（TTS）</h3>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>引擎</td><td>系统 <code>AVSpeechSynthesizer</code>：端侧、免费、多语言、语速可调、零额外依赖</td></tr>
+<tr><td>用途一</td><td>朗读<b>译文</b> —— 听目标语言的标准发音，同时脱离原文检验自己是否听懂</td></tr>
+<tr><td>用途二</td><td>朗读<b>原文</b> —— 在嘈杂录音本身听不清时，用合成语音还原句子</td></tr>
+<tr><td>用途三</td><td>连续播放整篇 —— 当作泛听材料</td></tr>
+<tr><td>边界</td><td>系统 TTS 音质不如真人，且语调平淡；因此<b>不能替代原声回听</b>，两者并存（原声练真实听力，TTS 练清晰输入）</td></tr>
+</tbody>
+</table>
+
+<h3 id="learn-vocab">8.5 生词提取与生词本</h3>
+
+<h4>生词判定：查表，不调模型</h4>
+
+<pre><code>转写文本
+   │
+   ├── 分词（英文按空格；中文需分词，用系统 NLTokenizer 或内置分词）
+   │
+   ├── 词形还原（lemmatization）：buy / bought / buying 归一为 buy
+   │      ↑ 不做这一步，同一个词会被当成三个生词，生词本会迅速失去意义
+   │
+   ├── 查词频表：命中高频表（如 COCA 前 5000 词）内 → 视为「已掌握」
+   │             超出高频表 → 标记为「生词」
+   │             （再结合用户自选的水平档 A1–C2 调整分数线）
+   │
+   └── 输出：本会话生词列表（含出现次数、所在句子、时间戳）</code></pre>
+
+<div class="card">
+<b>为什么不用 LLM 判断生词？</b>因为「这个词是不是高频词」是一个<b>确定性问题</b>，查表更快、更稳、可复现、零能耗。LLM 的生成能力应该用在<b>需要理解和表达</b>的地方（释义、讲解、造句），而不是浪费在查表就能解决的事情上。这个分工原则贯穿整个语言学习层。
+</div>
+
+<h4>生词本</h4>
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>条目内容</td><td>词形（原形）、出现次数、首次/最近出现时间、来源录音、上下文句子（原文 + 译文）、可回听片段</td></tr>
+<tr><td>自动收集</td><td>学习模式下标记的生词自动入库，无需手工录入</td></tr>
+<tr><td>手动增删</td><td>可把误判的词移出（"我会了"），也可手动加入（自定义词表）</td></tr>
+<tr><td>释义</td><td>用系统 <b>Foundation Models</b> 端侧生成：结合上下文给出该词在此处的中文意思 + 一个例句。也允许接系统词典</td></tr>
+<tr><td>导出</td><td>导出为 Anki 可导入的 CSV（词形 / 释义 / 例句 / 音频文件名）与 Markdown。是否做见 Q11</td></tr>
+</tbody>
+</table>
+
+<h3 id="learn-mode">8.6 学习模式（界面形态）</h3>
+
+<p>在会话详情页增加一个「学习模式」开关，切换后界面重组为学习视图：</p>
+
+<table>
+<thead><tr><th>区域</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>主区</td><td>逐句卡片：原文（可隐藏）→ 译文（可隐藏）→ 点听 → 慢速 → 生词高亮</td></tr>
+<tr><td>操作</td><td>一句一循环（上一句 / 下一句 / 复读 / 跟读）</td></tr>
+<tr><td>侧区</td><td>本会话生词列表，点击即跳到所在句子</td></tr>
+<tr><td>筛选</td><td>「只看有生词的句子」「只看目标语言的句子」（依赖 7.5 的逐段语言检测）</td></tr>
+<tr><td>退出</td><td>回到普通阅读视图，学习标记不丢失</td></tr>
+</tbody>
+</table>
+
+<h3 id="learn-boundary">8.7 本层明确不做的事</h3>
+<ul>
+<li>不做 SRS 间隔重复算法（v1 只做生词本 + 手动标记已掌握；SM-2 / FSRS 等算法列入 v2 评估）</li>
+<li>不做发音打分（见 8.3 边界说明）</li>
+<li>不做语法体系教学与练习题生成</li>
+<li>不做社交 / 排行榜 / 打卡（与"个人记录"定位无关）</li>
+</ul>
+
+<h2 id="storage">9. 存储与检索</h2>
+
+<h3 id="storage-schema">9.1 数据模型</h3>
+
+<p>采用 SQLite（配合 Swift 侧封装库）。所有时间字段<b>一律存 Unix 毫秒（epoch milliseconds）</b>，展示时统一按用户本地时区（UTC+8）格式化 —— 不使用无时区的字符串，避免时区偏移导致的判定错误。</p>
+
+<pre><code>-- 会话（一次"点开始到点停止"）
+CREATE TABLE sessions (
+  id            TEXT PRIMARY KEY,
+  title         TEXT,
+  started_at    INTEGER NOT NULL,   -- Unix ms
+  ended_at      INTEGER,
+  duration_ms   INTEGER,
+  state         TEXT,               -- recording / paused / done / failed
+  has_gap       INTEGER DEFAULT 0,  -- 是否存在中断断口
+  note          TEXT
+);
+
+-- 音频分片
+CREATE TABLE audio_segments (
+  id            TEXT PRIMARY KEY,
+  session_id    TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  file_path     TEXT NOT NULL,
+  start_ms      INTEGER NOT NULL,   -- 相对会话起点
+  end_ms        INTEGER NOT NULL,
+  codec         TEXT,               -- opus
+  bitrate       INTEGER,
+  bytes         INTEGER,
+  expires_at    INTEGER             -- 清理用；NULL = 永久保留
+);
+
+-- 转写片段
+CREATE TABLE transcripts (
+  id            TEXT PRIMARY KEY,
+  session_id    TEXT NOT NULL,
+  segment_id    TEXT,               -- 对应音频分片，用于回听
+  start_ms      INTEGER NOT NULL,
+  end_ms        INTEGER NOT NULL,
+  text          TEXT NOT NULL,
+  pass          TEXT NOT NULL,      -- realtime / final
+  speaker_id    TEXT,               -- NULL = 未归属
+  overlap       INTEGER DEFAULT 0,  -- 疑似重叠说话
+  confidence    REAL,
+  lang          TEXT
+);
+
+-- 说话人
+CREATE TABLE speakers (
+  id            TEXT PRIMARY KEY,
+  name          TEXT,               -- NULL = 未命名，显示"说话人 N"
+  is_self       INTEGER DEFAULT 0,
+  avatar_color  TEXT,
+  created_at    INTEGER
+);
+
+-- 声纹向量（一人多条）
+CREATE TABLE voiceprints (
+  id            TEXT PRIMARY KEY,
+  speaker_id    TEXT NOT NULL,
+  embedding     BLOB NOT NULL,      -- float32 向量原始字节
+  dim           INTEGER NOT NULL,
+  quality       REAL,               -- 提取质量，用于淘汰劣质向量
+  source_session_id TEXT,
+  created_at    INTEGER
+);
+
+-- 全文索引（外部内容表模式，避免文本重复存储）
+CREATE VIRTUAL TABLE transcripts_fts USING fts5(
+  text,
+  content='transcripts',
+  content_rowid='rowid',
+  tokenize='trigram'
+);
+
+-- 译文（按需翻译的缓存，见 7.3）
+CREATE TABLE translations (
+  id            TEXT PRIMARY KEY,
+  segment_id    TEXT NOT NULL,      -- 对应 transcripts 的一个片段
+  session_id    TEXT NOT NULL,
+  target_lang   TEXT NOT NULL,      -- 目标语言代码，如 ja / en
+  text          TEXT NOT NULL,
+  engine        TEXT NOT NULL,      -- system-translation / local-llm / manual
+  engine_version TEXT,              -- 引擎升级后可识别旧译文需重翻
+  edited_by_user INTEGER DEFAULT 0, -- 用户手动修正过则优先展示
+  created_at    INTEGER,
+  UNIQUE(segment_id, target_lang, engine_version)
+);
+
+-- 生词本（见 8.5）
+CREATE TABLE vocab_items (
+  id            TEXT PRIMARY KEY,
+  lemma         TEXT NOT NULL,      -- 词形还原后的原形
+  lang          TEXT NOT NULL,      -- 该词属于哪种语言
+  surface_forms TEXT,               -- 见过的表面形式（buy/bought/buying）
+  definition    TEXT,               -- 释义（端侧 LLM 生成或词典）
+  example       TEXT,               -- 例句
+  status        TEXT DEFAULT 'new', -- new / learning / known / ignored
+  first_seen_at INTEGER,
+  last_seen_at  INTEGER,
+  seen_count    INTEGER DEFAULT 1,
+  UNIQUE(lemma, lang)
+);
+
+-- 生词出现的上下文（一个词可能出现在多个句子里）
+CREATE TABLE vocab_occurrences (
+  id            TEXT PRIMARY KEY,
+  vocab_id      TEXT NOT NULL,
+  segment_id    TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  context_text  TEXT,               -- 该词所在的原文句子
+  created_at    INTEGER
+);
+
+-- 术语表（不翻译的人名 / 专有名词，见 7.4）
+CREATE TABLE glossary_terms (
+  id            TEXT PRIMARY KEY,
+  term          TEXT NOT NULL,      -- 源语言中的词
+  target_lang   TEXT,               -- NULL = 所有语言都不译
+  replacement   TEXT,               -- 指定译法；NULL = 原样保留
+  created_at    INTEGER
+);</code></pre>
+
+<h3 id="storage-fts">9.2 中文全文检索（FTS5）</h3>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>索引类型</td><td>SQLite FTS5（Full-Text Search 5）虚拟表</td></tr>
+<tr><td>中文分词</td><td>使用 <code>trigram</code> 分词器（按 3 字符滑窗切分）。它不依赖词典、天然支持中文子串匹配</td></tr>
+<tr><td>已知限制</td><td>trigram 要求查询串<b>至少 3 个字符</b>。少于 3 字（如「报销」以外的一字词）需回退到 <code>LIKE</code> 查询</td></tr>
+<tr><td>同步方式</td><td>用触发器（trigger）在 <code>transcripts</code> 增删改时同步 FTS 表</td></tr>
+<tr><td>运行时校验</td><td>App 启动时校验 FTS5 与 trigram 是否可用；不可用则降级为 <code>LIKE</code>，保证功能不缺失（见风险 R13）</td></tr>
+</tbody>
+</table>
+
+<h3 id="storage-replay">9.3 点句回听（时间戳对齐）</h3>
+
+<p>检索命中后要能"跳回原声"，依赖三条链路严格对齐：</p>
+<ol>
+<li>转写片段的 <code>start_ms</code> / <code>end_ms</code> 是相对<b>会话起点</b>的偏移</li>
+<li>音频分片的 <code>start_ms</code> / <code>end_ms</code> 使用同一基准</li>
+<li>回听时：由转写片段的时间区间定位到所属分片 → 打开该分片 → 定位到 <code>(区间起点 − 分片起点)</code> 处播放</li>
+</ol>
+
+<blockquote>
+<p>若音频已被自动清理（超过保留期），转写文本仍保留，但回听按钮置灰并提示「音频已过期」。<b>文本永久、音频有限</b>是本项目明确的存储取舍。</p>
+</blockquote>
+
+<h3 id="storage-layout">9.4 文件系统布局</h3>
+
+<pre><code>Application Support/
+├─ Models/
+│  ├─ whisper-base-q5.bin             实时稿模型
+│  ├─ whisper-small-q5.bin            终稿模型
+│  ├─ sherpa-vad.onnx                 VAD
+│  ├─ sherpa-gtcrn.onnx               降噪
+│  ├─ pyannote-segmentation.onnx      说话人分割
+│  └─ speaker-embedding.onnx          声纹提取
+├─ Audio/
+│  └─ {sessionId}/
+│     ├─ 000001.opus
+│     ├─ 000002.opus
+│     └─ …
+└─ moments.sqlite                     SQLite 主库（含 FTS5 索引）</code></pre>
+
+<p>音频目录随时间滚动删除；模型目录独立，可在设置页查看与单独清理。</p>
+
+<h2 id="architecture">10. 应用架构</h2>
+
+<h3 id="architecture-layers">10.1 分层职责</h3>
+
+<table>
+<thead><tr><th>层</th><th>职责</th><th>不做什么</th></tr></thead>
+<tbody>
+<tr><td><b>Capture</b>（采集层）</td><td>音频会话管理、<b>可替换的采集源</b>（麦克风直采 / 系统内录）、中断恢复、分片落盘</td><td>不做识别、不感知 UI、不关心采集源来自哪个模式</td></tr>
+<tr><td><b>Enhance</b>（增强层）</td><td>VAD 切段、GTCRN 降噪，产出双轨数据流</td><td>不做聚类、不落盘决策</td></tr>
+<tr><td><b>ASR</b>（识别层）</td><td>whisper.cpp 封装：实时滑窗、终稿批转</td><td>不做说话人归属</td></tr>
+<tr><td><b>Diarize</b>（说话人层）</td><td>分割、声纹提取、聚类、跨块对齐、声纹库比对</td><td>不做文字处理</td></tr>
+<tr><td><b>Translate</b>（翻译层）</td><td>按需翻译、译文缓存、语言可用性校验、术语表保护</td><td>不做识别、不做生词判定</td></tr>
+<tr><td><b>Learn</b>（学习层）</td><td>逐句对照、生词判定与生词本、TTS 朗读、跟读比对</td><td>不做翻译、不做存储实现</td></tr>
+<tr><td><b>Store</b>（存储层）</td><td>SQLite 读写、FTS5 索引、清理、文件管理</td><td>不做业务判定</td></tr>
+<tr><td><b>Scheduler</b>（调度层）</td><td>决定"何时跑哪个重任务"：终稿、聚类、按需翻译、清理</td><td>不做具体计算</td></tr>
+<tr><td><b>UI</b>（界面层）</td><td>会话列表、实时字幕、详情、语言切换、学习模式、说话人管理、设置</td><td>不直接调用推理库</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>依赖方向是单向的</b>：UI → Scheduler → 各能力层 → Store。<b>Capture 层不得依赖任何上层</b>——这是保证"录音永不被上层阻塞"的架构约束，也是本项目最重要的设计纪律。
+</div>
+
+<h3 id="architecture-tree">10.2 目录结构（规划）</h3>
+
+<pre><code>时刻/
+├─ project.yml                         XcodeGen 工程定义
+├─ Sources/
+│  ├─ App/                             入口、依赖装配、AppDelegate 生命周期
+│  ├─ Capture/                         AudioSessionManager /
+│  │                                   CaptureSource（协议）/
+│  │                                   MicrophoneSource（环境模式）/
+│  │                                   SystemAudioSource（会议模式，收扩展送来的音频）/
+│  │                                   InterruptionHandler / SegmentWriter /
+│  │                                   ChannelMixer（两路音频的时间轴对齐）
+│  ├─ BroadcastExtension/              独立 target：RPBroadcastSampleHandler
+│  │                                   （只负责采音频并转交，不跑推理；见 4.6 约束二）
+│  ├─ Enhance/                         VadSegmenter / Denoiser
+│  ├─ ASR/                             WhisperEngine / RealtimePass / FinalPass /
+│  │                                   ModelManager（模型下载与校验）
+│  ├─ Diarize/                         Segmenter / Embedder / Clusterer /
+│  │                                   SpeakerLinker / VoiceprintStore
+│  ├─ Translate/                       TranslationEngine（系统翻译封装）/
+│  │                                   TranslationCache / LanguageCatalog /
+│  │                                   GlossaryGuard（术语表保护与还原）
+│  ├─ Learn/                           TextSegmenter（分词）/
+│  │                                   Lemmatizer / FrequencyTable（词频表）/
+│  │                                   VocabExtractor / VocabStore /
+│  │                                   SpeechSynthesizer（TTS）/
+│  │                                   ShadowingScorer（跟读比对）
+│  ├─ Store/                           Database / Migrations / TranscriptStore /
+│  │                                   SearchIndex / CleanupService
+│  ├─ Scheduler/                       TaskPlanner / BackgroundRunner（BGProcessingTask）
+│  ├─ Features/
+│  │  ├─ Record/                       录音页（大字状态 + 实时字幕）
+│  │  ├─ Sessions/                     会话列表与详情
+│  │  ├─ Translate/                    语言选择、双语对照、翻译进度
+│  │  ├─ Study/                        学习模式（逐句卡片、跟读、生词高亮）
+│  │  ├─ Vocab/                        生词本与复习
+│  │  ├─ Speakers/                     说话人管理与录入
+│  │  ├─ Search/                       全局检索与回听
+│  │  └─ Settings/                     模型、降噪、保留策略、语言偏好
+│  ├─ DesignSystem/                    配色、组件（暗色）
+│  └─ Support/                         日志、错误类型、扩展
+├─ Resources/
+│  └─ Info.plist                       UIBackgroundModes: audio、隐私用途说明
+├─ scripts/                            模型下载与转换脚本（ASCII 路径执行）
+└─ .github/workflows/ad-hoc.yml        CI 构建与 Ad Hoc 分发</code></pre>
+
+<h3 id="architecture-api">10.3 关键接口（约定草案）</h3>
+
+<p>以下为模块边界的<b>协议约定</b>（Swift protocol），是后续编码的契约。实际命名可在实现时微调，但<b>分层依赖方向不可变</b>。</p>
+
+<pre><code>// 采集源：可替换。环境模式用麦克风直采，会议模式用系统内录（见 4.6）
+enum CaptureSourceKind { case microphone, systemAudio }
+enum AudioChannel { case ambient, me, them }   // 系统内录可区分「我」与「对方」
+
+protocol CaptureSource: AnyObject {
+    var kind: CaptureSourceKind { get }
+    // 采集到的音频帧带上通道标记；麦克风直采恒为 .ambient
+    var onFrame: ((AudioFrame, AudioChannel) -> Void)? { get }
+    func start() throws
+    func stop()
+}
+
+// 采集层：只管录，不感知上层；内部持有一个当前生效的 CaptureSource
+protocol AudioCapturing: AnyObject {
+    var state: CaptureState { get }
+    var activeSource: CaptureSourceKind { get }
+    var onSegment: ((AudioSegmentMeta) -> Void)? { get }   // 分片落盘完成
+    var onGap: ((TimeRange) -> Void)? { get }              // 中断造成的空洞
+    func start(using source: CaptureSourceKind) throws
+    func stop()
+}
+
+// 增强层：双轨输出
+protocol SpeechEnhancing {
+    // 返回 (原始轨, 降噪轨)；降噪可被设置关闭，此时两路相同
+    func process(_ frame: AudioFrame) -> (raw: AudioFrame, enhanced: AudioFrame)
+    func segments() -> AsyncStream<SpeechSegment>          // VAD 输出
+}
+
+// 识别层
+protocol Transcribing {
+    func realtime(_ segment: SpeechSegment) -> AsyncStream<PartialTranscript> // 增量修正
+    func finalize(_ range: TimeRange) async throws -> [TranscriptDraft]
+}
+
+// 说话人层
+protocol Diarizing {
+    func assign(_ drafts: [TranscriptDraft], in sessionId: String) async throws -> [TranscriptDraft]
+}
+
+// 存储层
+protocol TranscriptStoring {
+    func save(_ items: [TranscriptDraft], pass: PassKind) throws
+    func search(_ query: String, limit: Int) throws -> [SearchHit]
+}
+
+// 翻译层：对外只暴露统一协议，便于将来替换实现（默认只有系统翻译实现）
+protocol Translating {
+    // 语言对是否可用；已下载/未下载/不支持
+    func availability(from: String, to: String) -> LanguageStatus
+    // 按需翻译；已缓存的段落直接返回，不重复请求
+    func translate(segments: [TranscriptDraft],
+                   to target: String,
+                   progress: (Int, Int) -> Void) async throws -> [TranslationDraft]
+    // 用户手动修正译文
+    func override(segmentId: String, target: String, text: String) throws
+}
+
+// 学习层：生词判定（查表）与释义（端侧 LLM）分离
+protocol VocabExtracting {
+    // 纯查表 + 词形还原，不做生成
+    func extract(from segments: [TranscriptDraft], lang: String) -> [VocabCandidate]
+    // 生成式释义，可能失败，属于增强项
+    func explain(_ item: VocabItem, context: String) async throws -> VocabExplanation
+}
+
+// 朗读与跟读
+protocol SpeechRendering {
+    func speak(_ text: String, lang: String, rate: Float)
+    // 跟读：转写用户录音并与原文比对，返回文本层面准确度（非音素级评分）
+    func scoreShadowing(reference: String, userAudio: URL, lang: String) async throws -> ShadowingScore
+}
+
+// 调度层：决定重任务时机
+protocol TaskScheduling {
+    func planFinalPass(sessionId: String)
+    func requestBackgroundWindow()                          // BGProcessingTask
+    func thermalStateChanged(_ state: ProcessInfo.ThermalState)
+}</code></pre>
+
+<h3 id="architecture-energy">10.4 能耗模型与降档策略</h3>
+
+<table>
+<thead><tr><th>模式</th><th>组成</th><th>预估耗电</th><th>适用</th></tr></thead>
+<tbody>
+<tr><td><b>录音档</b>（最省）</td><td>仅采集 + VAD + 落盘</td><td>约 5%~8% / 小时</td><td>一整天外出记录</td></tr>
+<tr><td><b>平衡档</b>（默认）</td><td>录音 + 实时稿（base）</td><td>约 15%~25% / 小时（待实测）</td><td>会议、访谈等需要当场看字</td></tr>
+<tr><td><b>终稿档</b></td><td>充电或息屏时批处理 small + 聚类</td><td>不占用使用时段</td><td>夜间充电</td></tr>
+<tr><td><b>翻译档</b></td><td>按需翻译 + 生词提取，可并入终稿档执行</td><td>按句子批量，短会话可在前台完成</td><td>用户选语言时 / 夜间充电</td></tr>
+<tr><td><b>学习档</b></td><td>回听、TTS 朗读、跟读比对</td><td>耗电与普通音频播放同级，占用可忽略</td><td>用户主动学习时</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p>以上数值为<b>量级预估，必须在 M1/M2 真机实测后修正</b>。持续推理是耗电主因，因此实时转写必须是<b>可关闭项</b>，而不是常开项。</p>
+</blockquote>
+
+<h4>降档触发条件（自动）</h4>
+<table>
+<thead><tr><th>触发</th><th>动作</th></tr></thead>
+<tbody>
+<tr><td>电量 &lt; 20%（或低电量模式开启）</td><td>关闭实时转写，仅保留录音；暂停所有批处理任务</td></tr>
+<tr><td>热状态 ≥ <code>.serious</code></td><td>关闭实时转写；降低滑窗频率；暂停聚类</td></tr>
+<tr><td>热状态 ≥ <code>.critical</code></td><td>仅保留录音，其它全部暂停</td></tr>
+<tr><td>剩余磁盘 &lt; 1 GB</td><td>停止录音，保留已录内容并提示用户</td></tr>
+<tr><td>用户手动选「最省电」</td><td>等同第一行</td></tr>
+</tbody>
+</table>
+
+<h2 id="ui">11. 界面设计</h2>
+
+<h3 id="ui-list">11.1 页面清单</h3>
+
+<table>
+<thead><tr><th>页面</th><th>职责</th><th>关键元素</th></tr></thead>
+<tbody>
+<tr><td>录音页（主页）</td><td>一键开始/停止，实时字幕</td><td>超大录音状态、计时、实时字幕流、当前说话人、<b>录制模式选择（环境/会议）</b>、状态提示（降档/断口）</td></tr>
+<tr><td>会话列表</td><td>按时间浏览所有录音</td><td>日期分组、时长、字数、参与人数、断口标记</td></tr>
+<tr><td>会话详情</td><td>查看与整理一次录音</td><td>双稿切换（实时稿/终稿）、<b>语言选择器与三档显示模式</b>、说话人着色分段、点句回听、重命名、手动改说话人、学习模式入口</td></tr>
+<tr><td><b>学习模式</b></td><td>把会话当学习材料用</td><td>逐句卡片、复读、慢速、跟读、生词高亮（详见 8.6）</td></tr>
+<tr><td><b>生词本</b></td><td>跨会话的词汇积累</td><td>生词列表、释义、来源句子与回听、标记已掌握、自定义词表</td></tr>
+<tr><td>搜索</td><td>全局检索</td><td>关键词、命中高亮、跳转详情并定位；支持在原文与译文中搜索</td></tr>
+<tr><td>说话人管理</td><td>声纹库维护</td><td>人物列表、录入语音、合并重复人物、删除声纹</td></tr>
+<tr><td>设置</td><td>模型与策略</td><td>模型下载/删除、降噪开关、终稿用哪条轨、音频保留期、档位选择、<b>默认目标语言、我正在学的语言、术语表</b></td></tr>
+</tbody>
+</table>
+
+<h3 id="ui-live">11.2 录音页设计要点</h3>
+<ul>
+<li><b>状态必须一眼可辨</b>：正在录 / 已降档（省电模式，转写暂停）/ 出现断口（有段落漏录）三种状态用颜色区分，避免用户以为一直在正常记录</li>
+<li>实时字幕区把"还在识别中"的片段做视觉弱化，明确传达"文字可能被修正"，避免用户觉得内容在乱跳</li>
+<li>不隐藏录音指示器带来的事实：页面上明确显示"正在录音"，与系统指示器相互印证</li>
+<li><b>模式必须显眼且不可含糊</b>：环境模式 / 会议模式是两条互斥的采集路径（见 4.6）。会议模式无法"点一下就录"，必须由用户经系统录制入口选择本扩展，因此页面上要明确指引，并显示当前实际生效的采集源</li>
+<li><b>会议模式下要显示两路状态</b>：我（麦克风）与对方（系统音频）是否都在正常采集 —— 任一路中断都要当场可见，否则事后发现只录到一半就来不及了</li>
+</ul>
+
+<h3 id="ui-detail">11.3 会话详情设计要点</h3>
+<ul>
+<li><b>双稿可对照</b>：默认展示终稿；可一键切到实时稿并排对比（用于评估质量，也是 A/B 测试降噪效果的界面）</li>
+<li><b>说话人着色</b>：不同说话人用不同颜色标识（配合暗色主题克制取色），未命名显示「说话人 N」，点名即可命名</li>
+<li><b>点句回听</b>：段落左侧时间戳可点击，跳转播放该段音频；音频已过期则置灰</li>
+<li><b>一键纠正</b>：段落上可手动改说话人（"这段不是他"），改动反馈进声纹库</li>
+<li><b>断口与重叠透明化</b>：断口以分隔线标注；疑似重叠说话的段落加标记</li>
+<li><b>语言切换就近放置</b>：语言选择器固定在会话详情的顶部工具条（不藏在设置里），因为它是高频操作</li>
+</ul>
+
+<h3 id="ui-speaker">11.4 说话人管理设计要点</h3>
+<ul>
+<li>录入流程要短：录 10~30 秒 → 立即给出质量反馈（是否太短/太吵）→ 入库</li>
+<li>支持<b>合并人物</b>（同一人被建成两个身份时）与<b>拆分</b>（两个人被误合成一个）</li>
+<li>删除某人时须二次确认，并明确提示将同时删除其声纹特征</li>
+</ul>
+
+<h3 id="ui-language">11.5 语言选择界面设计要点</h3>
+
+<table>
+<thead><tr><th>要素</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>入口位置</td><td>会话详情顶部工具条的一个语言按钮（显示当前目标语言，如「日文」）；点击展开语言列表</td></tr>
+<tr><td>语言列表</td><td>按<b>可用性分组</b>：已就绪（语言包已下载）／需下载／暂不支持。<b>必须前置校验</b>，不能让用户选完才发现不可用（见 7.4）</td></tr>
+<tr><td>待下载提示</td><td>显示语言包体积与下载入口；下载由系统完成，App 只引导</td></tr>
+<tr><td>显示模式开关</td><td>原文 / 译文 / 双语对照，三档切换，与语言选择并列</td></tr>
+<tr><td>翻译进度</td><td>首次选中某语言需批量翻译，显示「已翻 32/180 句」并可中断；已翻部分立即可见</td></tr>
+<tr><td>修正入口</td><td>译文长按可编辑；修正后标记「已人工校正」，后续优先展示（见 7.4）</td></tr>
+<tr><td>不确定提示</td><td>源语言置信度低或疑似重叠说话的段落，译文旁标注不确定标记</td></tr>
+</tbody>
+</table>
+
+<h3 id="ui-study">11.6 学习模式界面设计要点</h3>
+<p>学习模式的完整形态见 8.6，此处只补两条<b>交互原则</b>：</p>
+<ul>
+<li><b>音频是主角，文字是配角</b>：学习模式的主操作必须是「再听一遍」，而不是「读文字」。复读按钮应是页面上最大、最易按的控件（可能是整屏点击）</li>
+<li><b>不打断思路</b>：跟读、收藏生词、切语言都必须在一屏内完成，不跳页、不弹窗遮挡</li>
+</ul>
+<div class="card">
+<b>设计提醒</b>：这是本项目唯一一个「用户会长时间停留」的界面，也是唯一一个「单手操作 + 频繁点击」的界面。它的交互成本直接决定这个功能会不会被用起来 —— 一个跳三层的复读按钮等于没有。
+</div>
+
+<h2 id="ci">12. 构建、分发与调试</h2>
+
+<h3 id="ci-flow">12.1 CI 流水线</h3>
+
+<div class="card">
+<b>2026-09-22 决策（分发方式选 C）</b>：M0–M1 阶段<b>只做未签名 ipa 构建</b>，用 USB + Sideloadly 侧载安装，<b>暂不接入 Ad Hoc</b>。
+<p>理由：不碰 App Store Connect（无需注册 App ID、无需配置 GitHub Secrets），把一次性配置成本降到零。代价是每次改动要插线装一次。</p>
+<p>侧载在付费账号下的描述文件有效期为 <b>1 年</b>（不是免费账号的 7 天），因此不存在每周重签的问题。<b>Ad Hoc 作为后续可随时切换的升级路径保留</b>（见 12.1 下方说明），切换时只需新增一条工作流，不改动 App 代码。</p>
+</div>
+
+<pre><code>【当前路径（C）】Windows 写码 → push → GitHub Actions(macOS runner)
+                                    → xcodebuild(未签名) → 打包 ipa → 下载 → USB 侧载
+
+【后续可切换路径（A）】同上，但增加：Ad Hoc 签名 → 发布 manifest.plist 到
+                        GitHub Pages → 产出扫码安装链接（改一次扫一次码）</code></pre>
+
+<p>下表为完整能力的描述，其中 Ad Hoc 相关部分当前<b>暂不启用</b>，保留作为升级路径。</p>
+
+<table>
+<thead><tr><th>环节</th><th>做法</th></tr></thead>
+<tbody>
+<tr><td>工程文件</td><td>由 <code>project.yml</code>（XcodeGen）生成，不提交 <code>.xcodeproj</code>，避免多人/多机冲突</td></tr>
+<tr><td>构建</td><td><code>xcodebuild archive</code> → <code>xcodebuild -exportArchive</code>（<code>method=ad-hoc</code>）</td></tr>
+<tr><td>签名</td><td>App Store Connect API 密钥（.p8）+ <code>-allowProvisioningUpdates</code>，证书自动创建，无需手工维护</td></tr>
+<tr><td>构建号</td><td>取 GitHub 运行号自动递增（同版本号重复上传会被拒收）</td></tr>
+<tr><td>分发</td><td>ipa + <code>manifest.plist</code> 推送到 <code>gh-pages</code>，产出稳定 <code>itms-services://</code> 安装链接</td></tr>
+<tr><td>设备白名单</td><td>Ad Hoc 需预先注册设备 UDID（本项目两台：iPhone 17 与 iPhone 17 Pro Max）</td></tr>
+<tr><td>密钥缺失保护</td><td>凭据检查放在最前，未配置时整条流水线<b>成功跳过</b>并输出提示，不把 CI 弄红</td></tr>
+</tbody>
+</table>
+
+<h3 id="ci-model">12.2 模型与资源的处理</h3>
+
+<table>
+<thead><tr><th>项</th><th>做法</th></tr></thead>
+<tbody>
+<tr><td>模型不进仓库</td><td>使用脚本在构建机或本地下载（<code>scripts/</code>），仓库只记录版本与校验值</td></tr>
+<tr><td>CoreML 转换</td><td>若启用，需在 macOS 上用 <code>coremltools</code> 转换；作为 CI 的一个<b>可选步骤</b>，成功则上传 artifact，失败不影响主构建</td></tr>
+<tr><td>App 内下载</td><td>首次使用时从配置的地址下载模型（支持断点续传 + sha256 校验）</td></tr>
+<tr><td>framework 集成</td><td>whisper.cpp 与 sherpa-onnx 均以静态库/xcframework 形式集成；sherpa-onnx 附带 onnxruntime</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>路径注意</b>：本项目工作区路径含中文（<code>...\xfish\时刻</code>）。iOS 编译全部发生在 CI 的 macOS 机器上，不受影响；但后续做<b>模型转换/量化</b>等 Python 脚本时，中文路径容易触发工具链问题。建议脚本统一在<b>纯 ASCII 路径</b>（或 ASCII 目录的 junction）下执行。</p>
+</blockquote>
+
+<h3 id="ci-debug">12.3 无 Xcode 环境下的调试策略</h3>
+
+<table>
+<thead><tr><th>手段</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>idevicesyslog</code>（USB）</td><td>实时查看设备日志，是本项目主要排错手段</td></tr>
+<tr><td>应用内日志面板</td><td>查看录音状态转换、中断恢复、降档、模型加载、聚类结果等关键轨迹</td></tr>
+<tr><td>音频自检报告</td><td>每次录音结束后生成报告：总时长、有效语音时长、断口列表、各处理耗时、耗电估算</td></tr>
+<tr><td>崩溃日志</td><td>设置 → 隐私与安全性 → 分析与改进 → 分析数据</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>核心约束</b>：没有断点调试器（debugger）。所有排错依赖<b>日志推断</b>，因此本项目对日志质量的要求高于一般项目——尤其是<b>中断恢复</b>与<b>降档决策</b>这两类"沉默行为"（用户看不到、也不会有报错），必须逐条留痕，否则无法定位。
+</div>
+
+<h2 id="milestones">13. 里程碑（Milestones）</h2>
+
+<table>
+<thead><tr><th>阶段</th><th>内容</th><th>验收标准</th><th>风险</th></tr></thead>
+<tbody>
+<tr><td><b>M0</b></td><td>工程骨架：仓库 + XcodeGen + CI + <b>未签名 ipa 构建</b>（分发方式已选 C：USB + Sideloadly 侧载，暂不接 Ad Hoc）</td><td>手机上能装上并打开空壳 App（无功能）</td><td class="warn">低</td></tr>
+<tr><td><b>M1</b></td><td><b>录音内核</b>：采集 + 后台/锁屏续录 + 中断恢复 + 分片落盘 + 看门狗 + 降档<br><span class="ok">详细设计见 4.7–4.15</span></td><td>通过 4.14 的 <b>12 项验收矩阵</b>；其中第 1（前台 8 小时）、第 2（<b>锁屏 8 小时不断档</b>）、第 11（时间轴无空洞无重叠）<b>必须全部通过</b>，其余项不允许"静默失败"</td><td class="no">最高</td></tr>
+<tr><td><b>M2</b></td><td>转写：whisper.cpp 接入，实时稿 + 终稿两遍</td><td>中文可读；实时稿秒级出现；终稿质量明显优于实时稿；<b>产出耗时与耗电实测数据</b></td><td class="warn">中高</td></tr>
+<tr><td><b>M3</b></td><td>语音处理：VAD + GTCRN 双轨 + 说话人分离 + 声纹库</td><td>说话人编号基本正确；录入后能自动认人；<b>产出降噪 A/B 的 WER 对比报告</b>并据此定默认值</td><td class="warn">中高</td></tr>
+<tr><td><b>M4</b></td><td>存储与检索：SQLite + FTS5 + 点句回听 + 自动清理</td><td>能搜到任意历史句子并跳回原声播放；超期音频按策略清理且文本保留</td><td class="warn">中</td></tr>
+<tr><td><b>M5</b></td><td><b>翻译层</b>：系统 Translation framework 接入 + 按需翻译与缓存 + 语言可用性校验 + 双语对照 + 术语表</td><td>切换目标语言可正常出译文；已翻语言再切换秒出；不可用语言被正确提示而非静默失败；<b>产出翻译质量实测样本并记录已知失真类型</b></td><td class="warn">中</td></tr>
+<tr><td><b>M6</b></td><td><b>语言学习层</b>：逐句对照 + 慢速/复读 + 跟读比对 + 生词提取与生词本 + TTS 朗读</td><td>能在真实录音上完成一轮"听—看—复读—收词"闭环；生词判定误报率可接受；<b>导出功能可用</b></td><td class="warn">中</td></tr>
+<tr><td><b>M7</b></td><td>界面完善与长期试用</td><td>连续一周日常使用无明显问题；能耗与存储增长在预期内</td><td class="warn">中</td></tr>
+<tr><td><b>M8</b><br><span class="tag">已纳入</span></td><td><b>系统内录（会议模式）</b>：Broadcast Upload Extension + 两路音频汇入 + 模式切换 UI<br><span class="ok">2026-09-22 确认纳入范围</span></td><td>在线会议中能同时录到对方原声与我方声音，两路时间轴对齐；屏幕视频确认不落盘；<b>不阻塞任何核心功能，纯增量</b></td><td class="warn">中高</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>推进策略</b>：先做 M0 + M1 并<b>立刻真机验证 8 小时长录</b>。理由是「全时 + 锁屏 + 不断档」是本项目唯一的高风险项，且它一旦不成立，后面所有功能都没有意义。转写、说话人分离、翻译、语言学习虽然工程量大，但都属于"确定能做成"的部分，风险远低于录音内核。
+</div>
+
+<div class="card">
+<b>依赖顺序（不能颠倒的两处）</b>：① M4 存储层必须先于 M5 翻译层 —— 按需翻译的本质是缓存，没有稳定的数据模型就没有缓存；② M3 说话人分离必须先于 M6 学习层 —— 学习模式按句子组织材料，而句子边界与说话人身份都来自 M3 的产物。
+</div>
+
+<h2 id="risks">14. 风险登记册（Risk Register）</h2>
+
+<table>
+<thead><tr><th>编号</th><th>风险</th><th>影响</th><th>对策</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>R1</td><td>锁屏长录被系统挂起或被中断后无法自动恢复</td><td class="no">致命：核心功能不成立</td><td>正确的后台模式声明 + 完整的中断/路由变更监听 + 退避重试 + 分片滚动落盘限制损失；M1 以 8 小时实测为验收闸门</td><td>待验证</td></tr>
+<tr><td>R2</td><td>全时录音 + 推理导致耗电/发热不可接受</td><td class="no">高：用户会放弃使用</td><td>实时转写做成可关闭项；监听电量与热状态自动降档；终稿挪到充电时批处理</td><td>待实测</td></tr>
+<tr><td>R3</td><td>模型体积导致无法安装（200 MB 蜂窝限制）</td><td class="warn">中</td><td>模型不打进 ipa，首次启动按需下载</td><td>设计已规避</td></tr>
+<tr><td>R4</td><td>CoreML 转换失败或 ANE 加速不生效</td><td class="warn">中：速度不达标</td><td>CPU/Metal 路径必须先能跑通；CoreML 作为纯增益项，且转换步骤在 CI 中可选</td><td>设计已规避</td></tr>
+<tr><td>R5</td><td>声纹相似度阈值不当：同一人被拆成多人，或不同人被合并</td><td class="warn">中高：体验明显受损</td><td>阈值真机实测标定；保留每人多条向量；提供手动纠正入口；默认偏向"不误合并"</td><td>待标定</td></tr>
+<tr><td>R6</td><td>重叠说话导致说话人归属错误</td><td class="warn">中</td><td>标注为「可能多人」而非假装正确；保留文字、归属置「未知」</td><td>已知边界</td></tr>
+<tr><td>R7</td><td>降噪反而使识别准确率下降</td><td class="warn">中</td><td>双轨架构 + A/B 实测；降噪定位为"可验证选项"，默认值以数据为准</td><td>待实测</td></tr>
+<tr><td>R8</td><td>超长会话聚类内存/耗时不可接受</td><td class="warn">中</td><td>分块处理 + 质心跨块对齐；增量处理，避免停止后一次性等待</td><td>设计中</td></tr>
+<tr><td>R9</td><td>录音写满手机存储</td><td class="warn">中</td><td>Opus 压缩（约为 PCM 的 1/5）；滚动清理；剩余空间阈值自动停止</td><td>设计中</td></tr>
+<tr><td>R10</td><td>Whisper 幻觉（无语音处凭空生成文字）</td><td class="warn">中：内容可信度受质疑</td><td>VAD 严格把关；高重复文本黑名单过滤；无语音活动时输出空</td><td>设计中</td></tr>
+<tr><td>R11</td><td>whisper.cpp 与 sherpa-onnx 双库共存引发编译/体积问题</td><td class="warn">低中</td><td>两者推理后端不同（ggml / onnxruntime），无符号冲突；M0 即验证链接通过</td><td>待验证</td></tr>
+<tr><td>R12</td><td>低电量模式或系统内存压力导致后台被杀</td><td class="warn">中</td><td>主动降档降低被杀概率；分片落盘限制损失；重启后恢复并记录断口</td><td>设计中</td></tr>
+<tr><td>R13</td><td>系统 SQLite 不支持 FTS5 或 trigram 分词器</td><td class="warn">低中：检索失效</td><td>启动时运行时校验，不可用则降级为 <code>LIKE</code> 查询</td><td>设计中</td></tr>
+<tr><td>R14</td><td>录音涉及他人声音的合规与知情问题</td><td class="warn">中</td><td>产品层明确提示；不做任何暗示隐蔽性的表述；声纹为敏感信息，提供完整删除能力</td><td>产品决策</td></tr>
+<tr><td>R15</td><td>实时字幕"自我修正"被用户误认为乱码/故障</td><td class="warn">低中</td><td>UI 明确标识"识别中"的片段；在首次使用引导中说明这一特性</td><td>设计中</td></tr>
+<tr><td>R16</td><td><b>端侧翻译质量不足</b>（口语、俚语、长难句、专业术语明显失真）</td><td class="warn">中高：直接影响使用价值</td><td>双语对照为默认（原文永远可见）、术语表保护、允许人工修正并优先展示；若实测不足则评估引入本地小 LLM（路径 D）作为升级</td><td class="warn">待实测</td></tr>
+<tr><td>R17</td><td>系统翻译框架<b>语言对有限</b>，用户想要的目标语言不可用</td><td class="warn">中</td><td>选语言时用 <code>LanguageAvailability</code> 前置校验，按"已就绪/需下载/不支持"分组展示；<b>不可用必须明确提示，不得静默失败</b></td><td>设计中</td></tr>
+<tr><td>R18</td><td>冷启动时语言包未下载，首次切换语言不可用</td><td class="warn">低中</td><td>明确引导下载并显示体积；未就绪时仍可查看原文（原文始终可见，功能不阻塞）</td><td>设计中</td></tr>
+<tr><td>R19</td><td>译文缓存导致数据库持续膨胀</td><td class="warn">低</td><td>译文随会话删除而删除；提供「清理全部译文缓存」入口；缓存键含 <code>engine_version</code> 便于识别失效数据</td><td>设计中</td></tr>
+<tr><td>R20</td><td>生词判定误报 / 漏报（词频表不适配专业领域；中文分词存在歧义）</td><td class="warn">中</td><td>允许手动增删生词、支持自定义词表与可调水平档；接受"不追求 100% 准确"的定位，重点是<b>可纠正</b></td><td>设计中</td></tr>
+<tr><td>R21</td><td>跟读比对被误解为发音评分</td><td class="warn">低中</td><td>UI 文案明确这是"内容准确度"而非"发音打分"；不展示伪精确的小数分</td><td>设计中</td></tr>
+<tr><td>R22</td><td>学习模式交互成本过高导致功能不被实际使用</td><td class="warn">中高：做了等于没做</td><td>复读 / 收藏生词 / 切语言必须一屏内一步可达；M6 验收标准定为"能完成一轮听—看—复读—收词闭环"</td><td>设计中</td></tr>
+<tr><td>R23</td><td><b>两采集源互斥</b>：系统内录广播运行期间，主 App 可能无法再直采麦克风</td><td class="warn">中高：决定"两个模式"设计是否成立</td><td>设计上不做同时双采，改为模式切换（见 4.6）；<b>必须先真机实测确认互斥行为</b>再决定是否需要额外兜底</td><td class="warn">待实测</td></tr>
+<tr><td>R24</td><td>广播扩展<b>内存限制极严</b>，可能导致扩展被杀、录音中断</td><td class="warn">中</td><td>扩展内<b>不做任何推理与编码</b>，只搬运音频数据到 App Group 容器；主 App 负责落盘与处理</td><td>设计中</td></tr>
+<tr><td>R25</td><td>系统内录路径带来屏幕录制指示与额外耗电/发热；且审核对屏幕录制能力趋严</td><td class="warn">中</td><td>屏幕视频一律丢弃不落盘；模式只在需要时开启（不做常开）；用途声明明确写明"仅采集音频，不采集屏幕内容"</td><td>设计中</td></tr>
+<tr><td>R26</td><td>录制<b>通话对方的声音</b>在多数地区受更严格的法律约束</td><td class="warn">中高：合规风险</td><td>会议模式首次使用必须有显著提示并要求确认已知悉；不支持电话通话录音（平台能力缺失）</td><td>产品决策</td></tr>
+<tr><td>R27</td><td>会议模式下两路音频的时间戳对齐偏差</td><td class="warn">低中</td><td>两路使用同一时钟基准（单调时钟 monotonic clock）打时间戳；偏差超过阈值则在时间轴上标注可信度下降</td><td>设计中</td></tr>
+<tr><td>R28</td><td><b>音频会话策略的两难</b>：独占则让手机变砖（不能听歌看视频），共存则录音会混入本机外放的声音</td><td class="warn">中高：直接影响录音质量与产品可用性</td><td>默认共存（保"一直录"的核心承诺）+ 提供「高保真（独占）」开关 + 提示"建议佩戴耳机"；会议模式天然绕开该问题；最终以实测校准</td><td class="warn">待实测</td></tr>
+<tr><td>R29</td><td>其他 App 激活<b>非混音</b>会话时抢占我们，导致断口频繁出现</td><td class="warn">中</td><td>中断恢复机制兜底 + 断口如实标注（不假装连续）；实测常见 App 的抢占频率，若过于频繁则在 UI 上引导用户改用会议模式</td><td class="warn">待实测</td></tr>
+<tr><td>R30</td><td>实时音频线程内做重活导致<b>偶发丢帧/爆音</b>，且几乎无法事后定位</td><td class="warn">中高：数据静默损坏</td><td>从结构上规避（回调内只做 memcpy + 原子指针 + 预分配环形缓冲）；M1 用样本计数校验是否存在丢帧</td><td>设计中</td></tr>
+</tbody>
+</table>
+
+<h2 id="open">15. 待确认事项（Open Questions）</h2>
+
+<table>
+<thead><tr><th>编号</th><th>事项</th><th>倾向</th><th>需何时定</th></tr></thead>
+<tbody>
+<tr><td>Q1</td><td>App 名称与 Bundle ID（须纯 ASCII）</td><td>显示名「时刻」，Bundle ID <code>com.xfish.shike</code></td><td>M0 之前</td></tr>
+<tr><td>Q2</td><td>音频默认保留期</td><td>7 天，可调至 3/7/30/永久</td><td>M4 之前</td></tr>
+<tr><td>Q3</td><td>是否长期保留降噪轨</td><td>默认不存；仅 A/B 实测期临时开启</td><td>M3 期间</td></tr>
+<tr><td>Q4</td><td>是否需要"录音中打标记（书签）"</td><td>建议做，成本低价值高</td><td>M5 之前</td></tr>
+<tr><td>Q5</td><td>是否需要 iCloud 备份（音频/文本/声纹）</td><td>v1 不做；声纹是敏感数据，默认不上云</td><td>M5 之后</td></tr>
+<tr><td>Q6</td><td>终稿转写默认用哪条轨（原始/降噪）</td><td>原始轨；以 M3 实测数据最终确定</td><td>M3 之后</td></tr>
+<tr><td>Q7</td><td>是否引入语音活动之外的"关键词唤醒"快速标记</td><td>v2 评估</td><td>M5 之后</td></tr>
+<tr><td>Q8</td><td>是否需要在录音中显示"当前正在说话的人"（实时说话人）</td><td>成本高（需实时聚类），建议 v2</td><td>M3 之后</td></tr>
+<tr><td>Q9</td><td><b>默认提供哪些目标语言</b></td><td>建议中、英、日、韩、法、德、西（最终以系统 <code>supportedLanguages</code> 运行时查询为准）</td><td>M5 之前</td></tr>
+<tr><td>Q10</td><td><b>「我正在学的语言」是哪一门</b></td><td>需用户明确指定，它决定生词判定的方向与学习模式的默认显示</td><td>M6 之前</td></tr>
+<tr><td>Q11</td><td>是否需要导出（Anki CSV / Markdown）</td><td>建议做，成本低、价值高（生词本只进不出会变成死数据）</td><td>M6 之前</td></tr>
+<tr><td>Q12</td><td>是否需要术语表（人名/专有名词不翻译）</td><td>建议做；端侧翻译对人名地名的处理尤其不可靠</td><td>M5 之前</td></tr>
+<tr><td>Q13</td><td>翻译触发方式：选中语言即自动翻译，还是需手动点「翻译」</td><td>建议自动（选语言即翻），翻译中可中断</td><td>M5 之前</td></tr>
+<tr><td>Q14</td><td>是否需要「只看目标语言的句子」筛选</td><td>建议做，依赖 7.5 的逐段语言检测，成本很低但对学习场景价值高</td><td>M6 之前</td></tr>
+<tr><td>Q15</td><td>实时翻译（边录边译）是否需要</td><td>v1 不做（能耗与延迟不可接受，且实时稿本身还在被修正）；v2 评估</td><td>M7 之后</td></tr>
+<tr><td>Q16</td><td><b>是否要系统内录（会议模式）</b></td><td class="ok"><b>✅ 2026-09-22 已确认：纳入范围</b>，排在核心链路之后（M8）。它是纯增量、不阻塞任何核心功能，但能拿到在线会议对方的数字原声，对翻译与语言学习价值显著</td><td class="ok">已确定</td></tr>
+<tr><td>Q17</td><td>默认录制模式</td><td>环境模式（麦克风直采）；会议模式需用户显式切换</td><td>M1 之前</td></tr>
+<tr><td>Q18</td><td>会议模式下是否<u>默认同时</u>采集麦克风（<code>audioMic</code>）</td><td>建议默认开启（否则只有对方声音、没有自己的），但需实测两路汇入的稳定性</td><td>M8 之前</td></tr>
+<tr><td>Q19</td><td><b>音频会话默认策略</b>（共存 / 独占）</td><td>倾向<b>共存</b>（保"一直录"的体验），正式访谈时可切「高保真（独占）」（见 4.8）</td><td>M1 之前</td></tr>
+<tr><td>Q20</td><td>检测到本机正在外放音频时，是否自动提示"建议佩戴耳机"</td><td>建议做（成本低，直接改善录音质量）；也可作为「高保真」模式的引导</td><td>M1 期间</td></tr>
+<tr><td>Q21</td><td>默认音频保留期与码率（32 / 48 kbps）</td><td>建议 32 kbps + 保留 7 天；若实测发现 32 kbps 影响转写准确率则升到 48 kbps</td><td>M2 之后</td></tr>
+</tbody>
+</table>
+
+<h2 id="glossary">附录 A：术语表（中英对照）</h2>
+
+<table>
+<thead><tr><th>中文</th><th>英文</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td>语音识别 / 自动语音识别</td><td>ASR (Automatic Speech Recognition)</td><td>把音频转成文字</td></tr>
+<tr><td>语音活动检测</td><td>VAD (Voice Activity Detection)</td><td>判断音频里"有没有人在说话"，用于切段与省电</td></tr>
+<tr><td>说话人分离 / 说话人日记化</td><td>Speaker Diarization</td><td>判断"哪一段是谁说的"</td></tr>
+<tr><td>声纹 / 说话人嵌入向量</td><td>Speaker Embedding / Voiceprint</td><td>把一段语音压缩成一个定长向量，代表说话人音色特征</td></tr>
+<tr><td>声纹库</td><td>Speaker Profile Registry</td><td>长期保存的声纹集合，用于跨录音认人</td></tr>
+<tr><td>声纹录入</td><td>Enrollment</td><td>主动录一段语音把某人登记进声纹库</td></tr>
+<tr><td>聚类</td><td>Clustering</td><td>把相似的向量自动归成一组</td></tr>
+<tr><td>跨块身份对齐</td><td>Speaker Linking</td><td>把不同时间段/不同分块的说话人身份统一起来</td></tr>
+<tr><td>重叠说话</td><td>Overlapping Speech</td><td>多人同时说话，是分离算法的公认难点</td></tr>
+<tr><td>两遍转写</td><td>Two-Pass Transcription</td><td>先低延迟出草稿，再高精度出终稿</td></tr>
+<tr><td>滑窗</td><td>Sliding Window</td><td>边录边反复重解当前片段以模拟实时效果</td></tr>
+<tr><td>批式 / 流式</td><td>Batch / Streaming</td><td>Whisper 是批式模型，因此实时效果需自行模拟</td></tr>
+<tr><td>幻觉</td><td>Hallucination</td><td>模型在无语音处凭空生成文字</td></tr>
+<tr><td>字错误率</td><td>WER (Word Error Rate)</td><td>评估识别准确率的核心指标</td></tr>
+<tr><td>语音增强 / 降噪</td><td>Speech Enhancement / Denoising</td><td>压制背景噪声</td></tr>
+<tr><td>失真伪影</td><td>Artifact / Musical Noise</td><td>降噪算法自身引入的失真，可能反噬识别准确率</td></tr>
+<tr><td>回声消除</td><td>AEC (Acoustic Echo Cancellation)</td><td>消除扬声器声音被麦克风重新拾取造成的回声</td></tr>
+<tr><td>自动增益控制</td><td>AGC (Automatic Gain Control)</td><td>自动调整音量大小</td></tr>
+<tr><td>神经引擎</td><td>ANE (Apple Neural Engine)</td><td>Apple 芯片中专门跑神经网络推理的单元</td></tr>
+<tr><td>量化</td><td>Quantization</td><td>把模型参数降精度以缩小体积、加快推理</td></tr>
+<tr><td>音频会话</td><td>Audio Session</td><td>iOS 中管理录音/播放行为与系统交互的机制</td></tr>
+<tr><td>音频会话中断</td><td>Interruption</td><td>来电等事件导致录音被迫停止</td></tr>
+<tr><td>路由变更</td><td>Route Change</td><td>输入/输出设备切换（如拔耳机）</td></tr>
+<tr><td>后台处理任务</td><td>BGProcessingTask</td><td>系统调度的后台重任务窗口，可要求"充电+网络"条件</td></tr>
+<tr><td>热控降频</td><td>Thermal Throttling</td><td>设备过热时系统主动降频</td></tr>
+<tr><td>原子重命名</td><td>Atomic Rename</td><td>先写临时文件再改名，避免产生半截文件</td></tr>
+<tr><td>全文搜索</td><td>FTS5 (Full-Text Search 5)</td><td>SQLite 的全文索引扩展</td></tr>
+<tr><td>三元组分词器</td><td>Trigram Tokenizer</td><td>按 3 字符滑窗切词，适合无空格的中文子串检索</td></tr>
+<tr><td>音频编码（本项目采用）</td><td>AAC-LC</td><td>系统原生的有损音频编码，16 kHz 单声道 32 kbps 下体积约为未压缩 PCM 的 1/8</td></tr>
+<tr><td>音频编码（原方案，已修正）</td><td>Opus</td><td>专为语音优化的开源编码。在 Apple 音频栈中主要以<b>解码</b>形态存在，<b>编码</b>路径不确定，故不采用（见 4.4 修正二）</td></tr>
+<tr><td>音频会话类别</td><td>Audio Session Category</td><td>决定录音/播放行为以及与其他 App 音频的关系（<code>.record</code> / <code>.playAndRecord</code> 等）</td></tr>
+<tr><td>混音选项</td><td>Mix With Others</td><td>允许本 App 与其他 App 的音频共存；不设置则会中断其他音频会话</td></tr>
+<tr><td>独占 / 共存会话</td><td>Exclusive / Coexistent Session</td><td>本项目两种音频会话策略，分别换得"录音干净"与"手机可用"（见 4.8）</td></tr>
+<tr><td>实时线程纪律</td><td>Real-time Thread Discipline</td><td>音频回调运行在实时线程上，禁止分配内存、加锁、I/O，否则会静默丢帧</td></tr>
+<tr><td>环形缓冲</td><td>Ring Buffer</td><td>实时线程与后台线程之间传递音频的无锁缓冲结构</td></tr>
+<tr><td>编码器启动延迟</td><td>Encoder Priming Delay</td><td>有损编码器在每个文件开头引入的样本偏移，是跨分片时间戳偏差的来源</td></tr>
+<tr><td>看门狗</td><td>Watchdog</td><td>独立于系统通知的健康检查机制：长时间收不到音频即判定停滞并自愈</td></tr>
+<tr><td>状态机</td><td>State Machine</td><td>录音内核的单一权威状态来源，禁止多处改状态</td></tr>
+<tr><td>孤儿分片</td><td>Orphan Segment</td><td>文件已落盘但数据库无记录的分片，由启动期扫描修复</td></tr>
+<tr><td>断口</td><td>Gap</td><td>录音中断造成的时间轴空白，本项目中必须如实标注而非隐藏</td></tr>
+<tr><td>零样本 / 端侧</td><td>On-Device</td><td>模型完全在设备上运行，不联网</td></tr>
+<tr><td>机器翻译</td><td>MT / NMT (Neural Machine Translation)</td><td>用神经网络把一种语言的文本转成另一种语言</td></tr>
+<tr><td>端侧翻译</td><td>On-Device Translation</td><td>翻译在手机本地完成，文本不出设备</td></tr>
+<tr><td>翻译层</td><td>Translation Layer</td><td>本项目中位于转写之后、独立负责多语言输出的模块</td></tr>
+<tr><td>按需翻译</td><td>Lazy / On-Demand Translation</td><td>用户选语言时才翻译，而不是预先翻好所有语言</td></tr>
+<tr><td>翻译缓存</td><td>Translation Cache</td><td>已翻结果按（段落, 语言）存库，再次切换语言时直接命中</td></tr>
+<tr><td>语言可用性</td><td>Language Availability</td><td>查询某语言对是否被支持、语言包是否已下载</td></tr>
+<tr><td>双语对照</td><td>Bilingual / Parallel Text</td><td>原文与译文逐句并排呈现，是语言学习的标准材料形态</td></tr>
+<tr><td>术语表</td><td>Glossary</td><td>指定某些词（人名、专有名词）不翻译或固定译法的对照表</td></tr>
+<tr><td>逐段语言检测</td><td>Per-Segment Language Detection</td><td>对每个句子单独判定其语言，用于处理中英夹杂的对话</td></tr>
+<tr><td>系统端侧语言模型</td><td>System Language Model / Foundation Models</td><td>iOS 26 内置的端侧大语言模型，可免费调用做生成式任务</td></tr>
+<tr><td>文本转语音</td><td>TTS (Text-to-Speech)</td><td>把文字读出来</td></tr>
+<tr><td>跟读</td><td>Shadowing</td><td>跟着原声复述，语言学习中训练听说的高频方法</td></tr>
+<tr><td>音素级发音评分</td><td>Phoneme-level Pronunciation Scoring</td><td>对发音本身打分（本项目明确不做，只做内容准确度比对）</td></tr>
+<tr><td>时间伸缩 / 变速不变调</td><td>Time-Stretching / Pitch Preservation</td><td>慢放音频时保持音高不变，是慢速复读不失真的前提</td></tr>
+<tr><td>词形还原</td><td>Lemmatization</td><td>把 buy / bought / buying 归并为同一个词，避免生词本被同一词占满</td></tr>
+<tr><td>分词</td><td>Tokenization / Word Segmentation</td><td>把连续文本切成词；中文无空格，必须专门分词</td></tr>
+<tr><td>词频表</td><td>Frequency Table / Word List</td><td>按出现频率排序的词汇表，用于判断"是不是常见词"</td></tr>
+<tr><td>生词本</td><td>Vocabulary Book</td><td>跨会话累积的个人生词集合</td></tr>
+<tr><td>间隔重复</td><td>SRS (Spaced Repetition System)</td><td>按遗忘曲线安排复习的算法（本项目 v1 不做）</td></tr>
+<tr><td>释义 / 讲解</td><td>Definition / Explanation</td><td>结合上下文说明词义与用法，由端侧 LLM 生成</td></tr>
+<tr><td>采集源</td><td>Capture Source</td><td>音频数据的来源，本项目有麦克风直采与系统内录两种</td></tr>
+<tr><td>系统内录</td><td>System Audio Capture</td><td>捕获设备上其他 App 播放出来的音频（而非它们采集的麦克风输入）</td></tr>
+<tr><td>广播上传扩展</td><td>Broadcast Upload Extension</td><td>ReplayKit 提供的独立 App 扩展，是 iOS 上实现系统内录的唯一合法途径</td></tr>
+<tr><td>屏幕采集器</td><td>RPScreenRecorder / RPSystemBroadcastPickerView</td><td>ReplayKit 的录制对象与系统启动入口；后者是用户手动开启系统内录的入口</td></tr>
+<tr><td>采样缓冲类型</td><td>RPSampleBufferType (audioApp / audioMic)</td><td>区分"其他 App 的音频输出"与"麦克风输入"两类采样</td></tr>
+<tr><td>独占资源</td><td>Exclusive Resource</td><td>同一时刻只能被一个 App 持有的系统资源；麦克风即属此类，这是"无法录其他 App 麦克风输入"的根因</td></tr>
+<tr><td>环境模式 / 会议模式</td><td>Ambient Mode / Meeting Mode</td><td>本项目两种互斥的录制模式，分别对应麦克风直采与系统内录</td></tr>
+<tr><td>共享容器</td><td>App Group Shared Container</td><td>主 App 与扩展之间交换数据的共享目录，用于把扩展采到的音频交给主 App</td></tr>
+<tr><td>单调时钟</td><td>Monotonic Clock</td><td>不受系统时间调整影响的计时基准，用于两路音频的时间戳对齐</td></tr>
+</tbody>
+</table>
+
+</article>
+</main>
+
+<aside class="toc" id="toc">
+<div class="toc-title">目录</div>
+<a href="#overview">1. 项目概述</a>
+<a class="sub" href="#overview-goal">1.1 目标</a>
+<a class="sub" href="#overview-nongoal">1.2 非目标</a>
+<a class="sub" href="#overview-fact">1.3 平台事实</a>
+<a href="#decisions">2. 核心技术决策</a>
+<a href="#runtime">3. 运行形态与约束</a>
+<a class="sub" href="#runtime-oneshot">3.1 目标形态</a>
+<a class="sub" href="#runtime-background">3.2 后台执行与保活</a>
+<a class="sub" href="#runtime-interrupt">3.3 中断与恢复</a>
+<a class="sub" href="#runtime-indicator">3.4 录音指示器</a>
+<a href="#capture">4. 音频采集链路</a>
+<a class="sub" href="#capture-params">4.1 采集参数</a>
+<a class="sub" href="#capture-dual">4.2 双轨处理架构</a>
+<a class="sub" href="#capture-chunk">4.3 分片落盘</a>
+<a class="sub" href="#capture-codec">4.4 编码与容量</a>
+<a class="sub" href="#capture-cleanup">4.5 自动清理</a>
+<a class="sub" href="#capture-source">4.6 采集源与系统内录</a>
+<a class="sub" href="#kernel-state">4.7 录音内核状态机</a>
+<a class="sub" href="#kernel-session">4.8 音频会话：独占 vs 共存</a>
+<a class="sub" href="#kernel-engine">4.9 采集引擎与实时线程纪律</a>
+<a class="sub" href="#kernel-format">4.10 采样率与格式转换</a>
+<a class="sub" href="#kernel-writer">4.11 分片落盘实现</a>
+<a class="sub" href="#kernel-interrupt">4.12 中断与恢复实现</a>
+<a class="sub" href="#kernel-guard">4.13 看门狗与资源守卫</a>
+<a class="sub" href="#kernel-accept">4.14 权限、日志与验收矩阵</a>
+<a class="sub" href="#kernel-unknown">4.15 M1 已知不确定点</a>
+<a href="#asr">5. 转写引擎 whisper.cpp</a>
+<a class="sub" href="#asr-twopass">5.1 两遍转写</a>
+<a class="sub" href="#asr-window">5.2 滑窗与自我修正</a>
+<a class="sub" href="#asr-model">5.3 模型选型</a>
+<a class="sub" href="#asr-accel">5.4 加速后端</a>
+<a class="sub" href="#asr-delivery">5.5 模型分发</a>
+<a class="sub" href="#asr-alt">5.6 备选方案</a>
+<a href="#speech">6. 语音处理 sherpa-onnx</a>
+<a class="sub" href="#speech-vad">6.1 VAD</a>
+<a class="sub" href="#speech-denoise">6.2 GTCRN 降噪</a>
+<a class="sub" href="#speech-diar">6.3 说话人分离链路</a>
+<a class="sub" href="#speech-registry">6.4 声纹库与认人</a>
+<a class="sub" href="#speech-long">6.5 超长会话分块</a>
+<a class="sub" href="#speech-overlap">6.6 重叠说话局限</a>
+<a href="#translate">7. 翻译层</a>
+<a class="sub" href="#translate-position">7.1 在链路中的位置</a>
+<a class="sub" href="#translate-engine">7.2 引擎选型</a>
+<a class="sub" href="#translate-lazy">7.3 按需翻译与缓存</a>
+<a class="sub" href="#translate-quality">7.4 质量边界与对策</a>
+<a class="sub" href="#translate-mixed">7.5 逐段语言检测</a>
+<a href="#learn">8. 语言学习层</a>
+<a class="sub" href="#learn-stance">8.1 设计立场</a>
+<a class="sub" href="#learn-align">8.2 逐句对照</a>
+<a class="sub" href="#learn-listen">8.3 听与跟读</a>
+<a class="sub" href="#learn-tts">8.4 朗读 TTS</a>
+<a class="sub" href="#learn-vocab">8.5 生词提取与生词本</a>
+<a class="sub" href="#learn-mode">8.6 学习模式</a>
+<a class="sub" href="#learn-boundary">8.7 明确不做的事</a>
+<a href="#storage">9. 存储与检索</a>
+<a class="sub" href="#storage-schema">9.1 数据模型</a>
+<a class="sub" href="#storage-fts">9.2 中文全文检索</a>
+<a class="sub" href="#storage-replay">9.3 点句回听</a>
+<a class="sub" href="#storage-layout">9.4 文件布局</a>
+<a href="#architecture">10. 应用架构</a>
+<a class="sub" href="#architecture-layers">10.1 分层职责</a>
+<a class="sub" href="#architecture-tree">10.2 目录结构</a>
+<a class="sub" href="#architecture-api">10.3 关键接口</a>
+<a class="sub" href="#architecture-energy">10.4 能耗与降档</a>
+<a href="#ui">11. 界面设计</a>
+<a class="sub" href="#ui-list">11.1 页面清单</a>
+<a class="sub" href="#ui-live">11.2 录音页</a>
+<a class="sub" href="#ui-detail">11.3 会话详情</a>
+<a class="sub" href="#ui-speaker">11.4 说话人管理</a>
+<a class="sub" href="#ui-language">11.5 语言选择界面</a>
+<a class="sub" href="#ui-study">11.6 学习模式界面</a>
+<a href="#ci">12. 构建分发与调试</a>
+<a class="sub" href="#ci-flow">12.1 CI 流水线</a>
+<a class="sub" href="#ci-model">12.2 模型与资源</a>
+<a class="sub" href="#ci-debug">12.3 调试策略</a>
+<a href="#milestones">13. 里程碑</a>
+<a href="#risks">14. 风险登记册</a>
+<a href="#open">15. 待确认事项</a>
+<a href="#glossary">附录 A 术语表</a>
+</aside>
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    return document.getElementById(id);
+  });
+  function highlight() {
+    var best = 0;
+    var offset = 120;
+    for (var i = 0; i < targets.length; i++) {
+      var el = targets[i];
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= offset) best = i;
+    }
+    links.forEach(function (a, i) {
+      if (i === best) a.classList.add('active');
+      else a.classList.remove('active');
+    });
+  }
+  window.addEventListener('scroll', highlight, { passive: true });
+  window.addEventListener('resize', highlight);
+  highlight();
+})();
+</script>
+
+</body>
+</html>

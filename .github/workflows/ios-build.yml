@@ -1,0 +1,164 @@
+name: ios-build
+
+# 无 Mac 开发链路：在 GitHub 托管的 macOS runner 上构建【未签名 ipa】，
+# 下载后由 Windows 侧的 Sideloadly 侧载到 iPhone。
+#
+# 分发方式（2026-09-22 决策，见 docs/设计文档.html 12.1）：
+#   M0–M1 阶段只走这条「未签名 ipa + USB 侧载」路径，不接 Ad Hoc，
+#   因此不需要 App Store Connect 的任何配置，也不需要在仓库里配 Secrets。
+#   付费账号下侧载的描述文件有效期为 1 年（非免费账号的 7 天），不存在每周重签问题。
+#   Ad Hoc 作为后续可随时切换的升级路径保留：届时新增一条工作流即可，App 代码不用动。
+#
+# 关于 Xcode / SDK 版本：
+#   部署目标定为 iOS 18.0，而不是 26.0。原因是 runner 上默认可用的 Xcode 决定了
+#   它能编译的最高 SDK，部署目标高于 SDK 会直接构建失败。
+#   后续 M5/M6 引入 iOS 26 专属能力时，需要在本文件显式指定 Xcode 版本
+#   （或改用更新的 macOS runner）。
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build unsigned ipa
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # 注入构建指纹：把本次提交号与构建时间写进 App 界面，
+      # 避免"设备上装的到底是哪一版"这个高频误判点。
+      - name: Inject build info
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          BUILT_AT=$(date -u '+%Y-%m-%d %H:%M UTC')
+          {
+            echo 'import Foundation'
+            echo ''
+            echo 'enum BuildInfo {'
+            echo "    static let commit = \"$SHA\""
+            echo "    static let builtAt = \"$BUILT_AT\""
+            echo '}'
+          } > Sources/App/BuildInfo.swift
+          cat Sources/App/BuildInfo.swift
+
+      - name: Build for device (unsigned)
+        run: |
+          xcodebuild build \
+            -project Moments.xcodeproj \
+            -scheme Moments \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CONFIGURATION_BUILD_DIR="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Moments.app Payload/
+          echo "=== .app 内文件明细 ==="
+          find Payload -type f -exec ls -l {} \;
+          zip -qr Moments-unsigned.ipa Payload
+          ls -lh Moments-unsigned.ipa
+
+      # 产物自检：CI 报成功不等于 ipa 可安装。
+      # 这里校验的每一项都对应设计文档里一条"必须在设备上成立的前提"：
+      #   · 可执行文件 → 产物是不是真的 App
+      #   · arm64 Mach-O → 能不能在真机跑
+      #   · Bundle ID 已展开 → 有没有把构建变量漏进产物
+      #   · UIBackgroundModes[0]=audio → 锁屏能否继续录音（设计文档 3.2）
+      #   · NSMicrophoneUsageDescription → 麦克风权限弹窗能否出现（设计文档 4.14）
+      # 任一不满足即构建失败（fail-fast），避免"能编译但不能用"的坏产物流到侧载环节。
+      - name: Verify ipa contents
+        run: |
+          set -e
+          rm -rf verify && mkdir verify
+          unzip -q Moments-unsigned.ipa -d verify
+
+          echo "=== ipa 解包清单 ==="
+          find verify -type f -exec ls -l {} \;
+
+          APP_BIN="verify/Payload/Moments.app/Moments"
+          if [ ! -f "$APP_BIN" ]; then
+            echo "::error::ipa 中缺少可执行文件: $APP_BIN"
+            exit 1
+          fi
+
+          # 关键判据用 file 的类型判定，而不是体积阈值：
+          # 极小的 App 二进制可能只有几十 KB，体积阈值容易误报。
+          FILE_INFO=$(file "$APP_BIN")
+          echo "file = $FILE_INFO"
+          echo "executable size = $(stat -f%z "$APP_BIN") bytes"
+          case "$FILE_INFO" in
+            *Mach-O*arm64*) ;;
+            *)
+              echo "::error::可执行文件不是 arm64 Mach-O 产物，构建产物异常"
+              exit 1
+              ;;
+          esac
+
+          PLIST="verify/Payload/Moments.app/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            echo "::error::ipa 中缺少 Info.plist"
+            exit 1
+          fi
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST")
+          echo "CFBundleIdentifier = $BUNDLE_ID"
+          case "$BUNDLE_ID" in
+            com.xfish.moments) ;;
+            *) echo "::error::Bundle ID 不是预期的 com.xfish.moments，实际为 '$BUNDLE_ID'"; exit 1 ;;
+          esac
+
+          DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$PLIST")
+          echo "CFBundleDisplayName = $DISPLAY_NAME"
+
+          # 锁屏继续录音的硬前提（设计文档 3.2）
+          BG=$(/usr/libexec/PlistBuddy -c "Print :UIBackgroundModes:0" "$PLIST" 2>/dev/null || true)
+          echo "UIBackgroundModes[0] = $BG"
+          if [ "$BG" != "audio" ]; then
+            echo "::error::UIBackgroundModes[0] 应为 audio（锁屏录音前提），实际为 '$BG'"
+            exit 1
+          fi
+
+          # 麦克风权限弹窗的硬前提（设计文档 4.14）
+          MIC=$(/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$PLIST" 2>/dev/null || true)
+          if [ -z "$MIC" ]; then
+            echo "::error::缺少 NSMicrophoneUsageDescription，麦克风权限弹窗不会出现"
+            exit 1
+          fi
+          echo "NSMicrophoneUsageDescription 已配置 (${#MIC} 字符)"
+
+          # 反向校验：本项目不使用 Apple 语音识别框架，
+          # 不应出现该权限声明（保持最小权限面，见设计文档 4.14）
+          if /usr/libexec/PlistBuddy -c "Print :NSSpeechRecognitionUsageDescription" "$PLIST" >/dev/null 2>&1; then
+            echo "::warning::产物中存在 NSSpeechRecognitionUsageDescription —— 本项目不使用该框架，应移除"
+          fi
+
+          echo "verify passed"
+
+      - name: Upload ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moments-unsigned-ipa
+          path: Moments-unsigned.ipa
+          retention-days: 30
