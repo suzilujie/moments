@@ -21,7 +21,12 @@ import Foundation
 /// 持有 C 指针，**不是线程安全的**，必须在单一线程/队列上使用。
 final class SherpaDenoiser {
 
-    private var handle: UnsafePointer<SherpaOnnxOfflineSpeechDenoiser>?
+    /// 不透明句柄。
+    ///
+    /// 与 SherpaVad 同理，**必须用 `OpaquePointer`**：头文件里的
+    /// `SherpaOnnxOfflineSpeechDenoiser` 是不完整类型（只有 typedef，结构体从不定义），
+    /// Clang importer 对不完整结构体的指针不生成 Swift 类型名。
+    private var handle: OpaquePointer?
     private var retainedStrings: [UnsafeMutablePointer<CChar>] = []
 
     private(set) var lastError: String?

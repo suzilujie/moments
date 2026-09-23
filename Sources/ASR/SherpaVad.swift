@@ -24,7 +24,16 @@ final class SherpaVad {
         let samples: [Float]
     }
 
-    private var handle: UnsafePointer<SherpaOnnxVoiceActivityDetector>?
+    /// 不透明句柄。
+    ///
+    /// **必须用 `OpaquePointer` 而不是 `UnsafePointer<SherpaOnnxVoiceActivityDetector>`**：
+    /// 头文件里这个类型是**不完整类型**（只有
+    /// `typedef struct X X;`，结构体本身从不定义，属刻意的信息隐藏）。
+    /// Clang importer 对不完整结构体的指针不会生成 Swift 类型名，
+    /// 一律映射为 `OpaquePointer`（与 Swift 里用 SQLite 必须写 `OpaquePointer` 同理）。
+    /// 写成 `UnsafePointer<SherpaOnnxVoiceActivityDetector>` 会编译失败：
+    /// `cannot find type 'SherpaOnnxVoiceActivityDetector' in scope`。
+    private var handle: OpaquePointer?
     /// 传给 C 的字符串必须活到 detector 销毁为止。
     /// 直接传 Swift String 的临时指针会在调用返回后失效 —— 那类 bug 表现为
     /// "随机崩溃或读到乱码路径"，极难定位，因此这里显式持有并在 close 时释放。

@@ -509,6 +509,19 @@ jobs:
             echo "::warning::产物中存在 NSSpeechRecognitionUsageDescription —— 本项目不使用该框架，应移除"
           fi
 
+          # M3 内置模型必须真的进了包。
+          # 否则 VAD / 降噪 / 说话人分离会在设备上**静默降级**到 M2 的行为
+          # （代码里刻意做了失败降级），而用户完全不知道为什么 ——
+          # 这种"功能没生效但不报错"的情况，必须在这一步拦住。
+          APP_DIR="verify/Payload/Moments.app"
+          for f in silero_vad.onnx gtcrn_simple.onnx pyannote_segmentation_3_0.onnx campplus_zh_en_16k.onnx; do
+            if [ ! -f "$APP_DIR/$f" ]; then
+              echo "::error::内置模型未打进包：$f"
+              exit 1
+            fi
+            echo "内置模型已打包 $f ($(stat -f%z "$APP_DIR/$f") bytes)"
+          done
+
           echo "verify passed"
 
       - name: Upload ipa artifact
