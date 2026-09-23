@@ -756,3 +756,72 @@
   提交并推送，触发 CI 重新编译；构建通过后再交付 M0 自检页的操作指引。
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-23] 阶段十：M1 完整实现并编译通过
+--------------------------------------------------------------------------------
+
+■ 用户决策
+  1) 交付批次：方案 A —— M1–M6 连续做，M1 先交付真机实测
+  2) 正在学习的语言：英语
+  3) 未定选项：由实现方定合理默认值，做成运行时可改
+
+■ 新增文件（14 个，其中 M1 主体 12 个）
+  Sources/Capture/
+    CapturePipeline.swift      后台消费管线（重采样 + 编码 + 分片收尾，承担全部重活）
+    CaptureWatchdog.swift      停滞看门狗（单调时钟 + 环形缓冲累计写入帧数作进度探针）
+    RecordingSession.swift     内核状态机（单点权威、失败不丢数据、幂等）
+    SegmentWriter.swift        m4a 分片写入（样本计数时间轴、原子重命名、stop 收尾）
+  Sources/Store/
+    AppSettings.swift          可配置项（默认值 + 运行时修改）
+    RecordingLibrary.swift     清单读写、会话枚举、异常会话识别、孤儿修复、过期清理
+    SessionManifest.swift      会话清单（阶段性地以 JSON 文件替代 SQLite）
+  Sources/Features/
+    Record/RecordView.swift    录音页
+    Sessions/SessionListView.swift  记录列表 + 详情 + 分片播放
+    Settings/SettingsView.swift     设置页
+  Sources/App/
+    MainTabView.swift          录音 / 记录 / 自检 三标签页
+
+■ 修改文件（8 个）
+  AudioCaptureEngine  环形缓冲所有权移交会话层；stop 高亮丢弃帧；支持 rebuild
+  AudioEventObserver  新增对外回调（中断/路由/音频图变更/媒体服务重置），标 @MainActor
+  AudioRingBuffer     新增 totalWritten 进度探针（供看门狗用）
+  AppDelegate / MomentsApp / RootView  接入主框架与异常会话收尾
+  .github/workflows/ios-build.yml  编译诊断转 GitHub 注解 + 日志 artifact
+  SessionManifest     补 durationMs（修复编译错误）
+
+■ 修复的设计文档逻辑漏洞（重要，已同步到概念）
+  设计文档 4.12 原文「恢复后新分片的 start_ms 由样本累计推导，中断期间会自动体现为间隔」
+  是错误的：样本计数只累加实际写入的帧，恢复后新分片的 startMs 恰好等于上一片 endMs，
+  时间轴看起来完全连续，断口根本不会出现。
+  修正：新增 SegmentWriter.advanceTimeline + CapturePipeline.skipGap，
+  恢复前把时间轴按中断时长前移；中断瞬间先收尾当前分片，保证无分片跨过断口。
+
+■ 编译修复记录（验证了"诊断注解"机制有效）
+  1) SessionListView.swift:147 类型检查超时 → 把重表达式拆成预计算字符串
+  2) GapEntry 缺 durationMs → 补派生属性
+  两次都是通过 check-runs 注解通道自行读取并修复，无需用户贴日志。
+
+■ 编译结果
+  commit 664e120，CI 状态 success。至此 M1 代码完整且编译通过。
+
+■ 影响范围
+  新增约 2400 行 Swift（M1 主体），App 主界面由自检页扩展为三标签页。
+  未接入 whisper.cpp / sherpa-onnx 等任何外部依赖（那是 M2/M3）。
+
+■ 潜在风险（待真机验证，见设计文档 4.15）
+  1) 锁屏后 tap 是否持续回调 —— 决定产品是否成立
+  2) 会话策略（共存/独占）实测
+  3) AAC 编码器启动延迟的实际数值
+  4) 长时间录音内存增长与耗电
+  5) 后台看门狗定时器是否触发
+  这些全部只能在真机 8 小时长录中得出，属于 M1 验收动作。
+
+■ 下一步
+  1) 用户下载最新 ipa（commit 664e120）侧载到手机
+  2) 录音页点「开始」，验证：能录、锁屏继续、来电/插拔耳机后自动恢复、
+     「记录」页出现会话、分片可播放、断口如实显示
+  3) 关键验收：锁屏连续录 8 小时不断档（验收矩阵第 2 项）
+  4) 通过后进入 M2（whisper.cpp 转写）
+================================================================================
+
