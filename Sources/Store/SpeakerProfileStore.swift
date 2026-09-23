@@ -89,14 +89,29 @@ final class SpeakerProfileStore: ObservableObject {
     private func persist() {
         guard let fileURL else { return }
         let snapshot = profiles
-        queue.async { [weak self] in
-            guard let self else { return }
+
+        // **在进入后台队列之前**就把 JSON 编好。
+        //
+        // 原因不是性能，而是隔离：`encoder` 是本 @MainActor 类型的属性，
+        // 在 `queue.async` 的闭包里引用它属于跨隔离域访问 ——
+        // 编译会给出告警（main actor-isolated property can not be referenced
+        // from a Sendable closure），并在 Swift 6 语言模式下变成**错误**。
+        // 顺带的好处是编码不再占用主线程（档案多起来时编码不是零成本）。
+        let data: Data
+        do {
+            data = try encoder.encode(snapshot)
+        } catch {
+            Log.shared.error(.storage, "声纹库编码失败｜\(error.localizedDescription)")
+            return
+        }
+
+        // 闭包里不再捕获 self，因此也就无需 weak self
+        queue.async {
             do {
                 try FileManager.default.createDirectory(
                     at: fileURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                let data = try self.encoder.encode(snapshot)
                 try data.write(to: fileURL, options: .atomic)
             } catch {
                 Log.shared.error(.storage, "声纹库写入失败｜\(error.localizedDescription)")
