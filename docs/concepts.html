@@ -201,7 +201,7 @@ li{margin:6px 0}
 <article>
 
 <h1>时刻（Moments）· 概念文档</h1>
-<p class="meta">用途：持续收集本项目讨论过程中产生的概念（concept）、术语（term）、决策（decision）与已知边界 ｜ 起始日期 2026-09-22 ｜ 最近更新：新增 M1 录音内核实现相关概念，并修正编码选型（Opus → AAC） ｜ 配套文档：<code>设计文档.html</code></p>
+<p class="meta">用途：持续收集本项目讨论过程中产生的概念（concept）、术语（term）、决策（decision）与已知边界 ｜ 起始日期 2026-09-22 ｜ 最近更新：新增 M2–M6 实现相关概念（双稿分离、能量门限、窗口冻结、可重建索引 vs 用户资产、译文入索引、源语言不可自动判定、人工校正优先、词频判定生词、跟读比对、生词本独立目录、编排层／worker 层分层、actor 隔离判断依据、非定位型错误通道、资源随包内置），并新增待实测项 P23–P28 ｜ 配套文档：<code>设计文档.html</code></p>
 
 <div class="card">
 <b>使用约定</b>：本文件<b>持续追加</b>，不追求结构完美，追求不丢信息。每产生一个新概念即补一条，记录「是什么、为什么出现、当前状态、与什么相关」。完整方案与实现细节以 <code>设计文档.html</code> 为准。
@@ -511,6 +511,30 @@ li{margin:6px 0}
 <td>设计阶段记入备选；<span class="ok">备而不用</span>。因 sherpa-onnx 已在技术栈内，切换零增量成本</td>
 <td>whisper.cpp、sherpa-onnx</td>
 </tr>
+<tr>
+<td><b>双稿分离</b><br>Dual-Pass Separation</td>
+<td>实时稿与终稿各存一份文件，而不是"一稿两用"</td>
+<td>M2 实现阶段确定；<span class="ok">已落地</span>。理由：终稿是事后批量补跑，若共用一份文件，写终稿就要"读取 + 重写"整份实时稿，<b>中途失败会连实时稿一起毁掉</b></td>
+<td>两遍转写、实时字幕</td>
+</tr>
+<tr>
+<td><b>静音幻觉</b><br>Silence Hallucination</td>
+<td>whisper 面对纯噪声或静音会"编造"出语法通顺、看上去很像真的文本</td>
+<td>设计阶段登记；M2 实现；<span class="ok">已有对策</span>。对策是能量门限 + VAD 闸门。<b>取向是宁多勿漏</b>——漏掉是"录音没录上"，多一句错字只是可忽略的噪声</td>
+<td>VAD、能量门限</td>
+</tr>
+<tr>
+<td><b>能量门限</b><br>Energy Gate</td>
+<td>用均方根幅度做下限判断，低于阈值的一段不送识别</td>
+<td>M2 实现阶段引入；<span class="ok">已落地</span>。<b>刻意做成"极简"</b>：只挡静音与纯噪声，不做精细 VAD —— 精细的分段是 M3 的职责，这里只是防止实时字幕在无人说话时空转</td>
+<td>静音幻觉、VAD</td>
+</tr>
+<tr>
+<td><b>窗口冻结与「识别中」</b><br>Provisional Freeze</td>
+<td>滑窗内的话一律标记"识别中"，离开窗口后才冻结为定稿</td>
+<td>M2 实现阶段确定；<span class="ok">已落地</span>。让"文字跳动"变成<b>可理解的行为而不是故障</b>（R15 的落地）</td>
+<td>滑窗与自我修正、双稿分离</td>
+</tr>
 </tbody>
 </table>
 
@@ -653,6 +677,18 @@ li{margin:6px 0}
 <td>沿用既有项目约定；<span class="ok">已定</span>。不存无时区字符串，避免时区偏移导致的判定错误</td>
 <td>数据模型</td>
 </tr>
+<tr>
+<td><b>可重建索引 vs 用户资产</b><br>Rebuildable Index vs User Asset</td>
+<td>存储分两类：索引可从磁盘重建，用户资产不可重建</td>
+<td>M2/M4/M5/M6 逐步确立；<span class="ok">已固化为架构纪律</span>。<b>索引</b>（SQLite + FTS5）删掉可以重建；<b>用户资产</b>（译文、声纹库、生词本）各自落 JSON。<b>边界清楚，坏了也只坏一个文件</b>——不会因为哪天重建逻辑写错，赔掉用户几个月的积累</td>
+<td>SQLite、译文存储、声纹库、生词本</td>
+</tr>
+<tr>
+<td><b>译文入同一索引</b><br>Translation in FTS</td>
+<td>把译文与原文放进同一张 FTS 表，用 lang 列区分</td>
+<td>M5 实现；<span class="ok">已落地</span>（schema v1 → v2 迁移）。满足"能在原文与译文中搜索"，比建两套 FTS 简单得多。命中行<b>必须标出"某语言译文"</b>，否则用户会以为自己录音里真的说了那句译文</td>
+<td>中文全文检索、来源标注</td>
+</tr>
 </tbody>
 </table>
 
@@ -726,6 +762,18 @@ li{margin:6px 0}
 <td>受模型体积限制，离线翻译在口语、俚语、方言、长难句、专业术语、人名地名上明显失真，属<b>必然结果而非缺陷</b></td>
 <td>设计阶段确立为<b>必须向用户诚实告知的平台事实</b>；<span class="ok">已接受</span>。对策是"原文永远可见、译文可修正"，而非宣称准确</td>
 <td>双语对照、术语表</td>
+</tr>
+<tr>
+<td><b>源语言不可自动判定</b><br>No Auto Source Language</td>
+<td>系统翻译框架要求显式指定源语言与目标语言</td>
+<td>M5 由 CI 编译错误暴露；<span class="ok">已接受</span>。<code>LanguageAvailability.status(from:to:)</code> 的两个参数都非可选。<b>这与 whisper 不同</b>——那里可以自动判定。因此会话详情必须提供源语言选择器，并固定在顶部工具条（高频操作）</td>
+<td>语言可用性、语言选择界面</td>
+</tr>
+<tr>
+<td><b>人工校正优先</b><br>Human Edit Wins</td>
+<td>用户手改过的译文，永不被后续自动翻译覆盖</td>
+<td>M5 实现；<span class="ok">已落地</span>。重跑一次翻译就把用户手改的成果抹掉，是最令人恼火的一类 bug。合并时遇到"已人工校正"的条目直接跳过并计数上报</td>
+<td>按需翻译与缓存、译文存储</td>
 </tr>
 </tbody>
 </table>
@@ -825,6 +873,24 @@ li{margin:6px 0}
 <td>设计阶段<b>明确推迟</b>；<span class="warn">v1 不做</span>，只做生词本 + 手动标记已掌握</td>
 <td>生词本</td>
 </tr>
+<tr>
+<td><b>词频判定生词</b><br>Frequency-Based Vocabulary Detection</td>
+<td>用固定词频表判断"这个词对学习者算不算生词"，不用 LLM</td>
+<td>M6 实现阶段确定；<span class="ok">已落地</span>。<b>决定性理由是"可复现"</b>：LLM 同一句话两次跑可能给出不同判断，而"今天标出的生词明天变了"会直接毁掉复习计划。固定词表另有离线、微秒级的好处。四条判定规则全部可解释——学习工具里"为什么这个词被标出来了"必须能回答</td>
+<td>词频表、生词本、<a href="#rejected">被否方案：LLM 判生词</a></td>
+</tr>
+<tr>
+<td><b>跟读比对</b><br>Shadowing Comparison</td>
+<td>把用户跟读的录音识别一遍，与参考句做词级对齐，给出"读对了没有"</td>
+<td>M6 实现；<span class="ok">已落地</span>。<b>明确不是音素级发音评分</b>：把 think 读成 sink 会被判错，但读成舌位略偏的 think（仍被听成 think）看不出任何差别。这条边界<b>写进了界面</b>而不只是注释——否则用户会对它的沉默产生错误信任</td>
+<td>音素级发音评分（明确不做）、编辑距离对齐</td>
+</tr>
+<tr>
+<td><b>生词本独立目录</b><br>Vocabulary as User Asset</td>
+<td>生词本存 <code>Vocabulary/</code> 下的 JSON，与音频目录分开</td>
+<td>M6 实现；<span class="ok">已落地</span>。与声纹库同理：<b>跨会话的长期资产不该随音频保留期被清理</b>。混在一起就会出现"清理音频时把生词本一起删掉"</td>
+<td>可重建索引 vs 用户资产、声纹库</td>
+</tr>
 </tbody>
 </table>
 
@@ -899,6 +965,30 @@ li{margin:6px 0}
 <td>沿用既有经验；<span class="ok">已登记</span>。iOS 编译在 CI 的 macOS 上不受影响；但模型转换等 Python 脚本应在纯 ASCII 路径（或 junction）下执行</td>
 <td>CI 流水线、模型转换</td>
 </tr>
+<tr>
+<td><b>编排层 / worker 层分层</b><br>Orchestrator / Worker Split</td>
+<td>@MainActor 只做状态发布与编排，重活交给非隔离 worker（自有串行队列）</td>
+<td>M2 实现中修正后确立；<span class="ok">已固化为纪律</span>。起因是初版把转写服务写成 @MainActor 却从后台队列调它——属隔离违规。与 M1 把重活放进 <code>CapturePipeline</code> 是同一个理由。后台回调统一用 <code>Task { @MainActor in }</code>，<b>不用 <code>DispatchQueue.main.async</code></b>（后者不被识别为主 actor 上下文）</td>
+<td>实时线程纪律、actor 隔离</td>
+</tr>
+<tr>
+<td><b>actor 隔离的判断依据</b><br>Isolation Follows Callee</td>
+<td>一个类要不要标 @MainActor，取决于<b>它调用的东西</b>是否 @MainActor</td>
+<td>M6 实现中由自查发现；<span class="ok">已记录</span>。跟读录音器起初写成普通类，而它要调用的 <code>AudioSessionManager</code> 是 @MainActor。<b>判断依据不是"它看起来是不是 UI 代码"</b>——这个误解很容易让人写出编译不过的代码</td>
+<td>编排层 / worker 层分层</td>
+</tr>
+<tr>
+<td><b>非定位型错误通道</b><br>Non-Located Error Channel</td>
+<td>CI 诊断除"文件:行:列: error:"之外，另抓链接错误与日志尾部</td>
+<td>M2 实现中发现；<span class="ok">已落地</span>。起因是"构建失败却零条错误注解"——链接错误（<code>ld: Undefined symbols</code>）不带行列号，原正则全部漏掉。<b>本机是 Windows，注解是唯一观测通道</b>；补强后一次就定位到真实错误（缺 CoreML.framework）</td>
+<td>CI 流水线、无 Xcode 环境下的调试策略</td>
+</tr>
+<tr>
+<td><b>资源随包内置 + 打包后断言</b><br>Bundled Resources with Verification</td>
+<td>模型之外的资源由 CI 下载并内置随包；打包后逐个断言其存在</td>
+<td>M3/M6 实现；<span class="ok">已落地</span>。与正文 12.2 设想的"App 内下载"不同：<b>"下不下来"会直接让功能失效</b>，而词频表尤其必须固定不变。"构建成功"不等于资源可用——XcodeGen 路径写错不会报错，只会静默少打包，而缺失的表现是<b>功能无声失效</b></td>
+<td>CI 流水线、词频表、语音处理模型</td>
+</tr>
 </tbody>
 </table>
 
@@ -939,6 +1029,9 @@ li{margin:6px 0}
 <tr><td><b>在实时音频线程内做编码 / 加锁 / I-O</b></td><td>会导致偶发丢帧与爆音（数据静默损坏），且几乎无法事后定位；改为预分配环形缓冲 + 后台队列</td></tr>
 <tr><td>以「独占会话」为默认</td><td>录音虽干净，但会让用户一整天不能听音乐看视频；对"全时录音"是灾难级体验，故降级为可选开关</td></tr>
 <tr><td>用墙钟时间推导分片时间轴</td><td>编码器启动延迟会让偏差逐片累积；改用样本计数推导</td></tr>
+<tr><td><b>用 LLM（或端侧语言模型）判生词</b></td><td><b>不可复现</b>：同一句话两次跑可能给出不同判断，而"今天标出的生词明天变了"会直接毁掉复习计划；另有两项次要代价——慢（一句一次推理，几百句的会话不可接受）、要联网（与纯离线冲突）。改用固定词频表：离线、微秒级、结果永远一致</td></tr>
+<tr><td><b>做音素级发音评分（GOP 打分）</b></td><td>需要专门的发音评测模型，本项目不引入。用 whisper 只能做到"读对了没有"这一层；<b>与其做一个会把"读得不准"报成满分的发音评分，不如明确叫「跟读比对」并说清边界</b></td></tr>
+<tr><td><b>把模型/资源做成"App 内首次使用时下载"</b></td><td>正文 12.2 原设想的方式。改为 CI 内置随包：合计约 35 MB，而"下不下来"会直接让功能失效；词频表更必须固定不变（联网取会随上游更新而变，判据就不稳定了）</td></tr>
 </tbody>
 </table>
 
@@ -969,6 +1062,12 @@ li{margin:6px 0}
 <tr><td>P20</td><td>AAC 编码器启动延迟的实际数值</td><td class="warn">待实测（决定时间轴补偿量）</td><td>M1</td></tr>
 <tr><td>P21</td><td>8 小时连续录音的内存增长（是否存在泄漏）</td><td class="warn">待实测（决定是否会被系统杀掉）</td><td>M1</td></tr>
 <tr><td>P22</td><td>后台状态下看门狗定时器是否仍正常触发</td><td class="warn">待实测（决定看门狗是否有效）</td><td>M1</td></tr>
+<tr><td>P23</td><td>whisper 各模型在真机上的实时倍率（&lt;1.0 才算快于实时）</td><td class="no">待实测（直接决定 base/small 的选型与实时字幕是否可行）</td><td>M2</td></tr>
+<tr><td>P24</td><td>降噪前后的实际差异（对照稿已备好，需人工对照）</td><td class="warn">待实测</td><td>M3</td></tr>
+<tr><td>P25</td><td>系统翻译支持的语言对范围；端侧翻译在真实口语上的失真程度</td><td class="warn">待实测（只能真机确认）</td><td>M5</td></tr>
+<tr><td>P26</td><td>跟读比对的误判率 —— 尤其带口音时的"读成别的词"比例</td><td class="warn">待实测（决定是否需要在界面上给出"仅供参考"提示）</td><td>M6</td></tr>
+<tr><td>P27</td><td>生词判定的实际噪声水平（人名/专有名词被误标的比例）</td><td class="warn">待实测（决定专有名词启发式是否够用）</td><td>M6</td></tr>
+<tr><td>P28</td><td><b>M2–M6 全部功能的真机验收</b></td><td class="no">待验收（CI 只证明"能编译、能链接、资源已打包"，不证明"功能可用"）</td><td>M2–M6</td></tr>
 </tbody>
 </table>
 

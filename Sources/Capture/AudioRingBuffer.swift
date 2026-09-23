@@ -98,7 +98,7 @@ final class AudioRingBuffer {
             droppedSamples += (count - toWrite)
         }
 
-        var index = writeCount & mask
+        let index = writeCount & mask
         let firstChunk = min(toWrite, capacity - index)
         memcpy(storage + index, source, firstChunk * MemoryLayout<Float>.size)
         if toWrite > firstChunk {
@@ -124,7 +124,7 @@ final class AudioRingBuffer {
         guard available > 0 else { return 0 }
 
         let toRead = min(available, maxCount)
-        var index = readCount & mask
+        let index = readCount & mask
         let firstChunk = min(toRead, capacity - index)
         memcpy(destination, storage + index, firstChunk * MemoryLayout<Float>.size)
         if toRead > firstChunk {

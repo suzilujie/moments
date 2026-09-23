@@ -206,7 +206,7 @@ li{margin:6px 0}
 <article>
 
 <h1>时刻（Moments）· iOS 全时录音转写 App 设计文档</h1>
-<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.3（新增 M1 录音内核详细设计） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
+<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.4（新增附录 B：M2–M6 实现偏差与补充记录） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
 
 <div class="card">
 <b>一句话定义</b>：在 iPhone 上实现一个「点一下就一直在录」的随身语音记录器 —— 锁屏、切 App 都不中断，全程<b>纯离线</b>（无任何网络请求、无服务器、无 API 费用）把周围说话人的声音转成文字、区分「谁在说」、<b>翻成任意目标语言</b>，并把真实录音变成可跟读、可收藏生词的<b>语言学习材料</b>。
@@ -1984,6 +1984,163 @@ protocol TaskScheduling {
 </tbody>
 </table>
 
+<h2 id="impl-notes">附录 B：实现偏差与补充记录（M2–M6）</h2>
+
+<div class="card">
+<b>这份附录的用途</b>：正文写的是<b>设计</b>，本附录记录<b>实现</b> —— 既包括与正文不同的地方，也包括正文没写、但实现时必须自己决定的事。
+<p><b>记录原则</b>：只记"看代码看不出为什么"的决定。纯命名差异、目录微调不记（读代码即可知）。判断标准是：后人只看代码，会不会误以为这是随手写的、然后"顺手改掉"？会，就记在这里。</p>
+<p><b>范围</b>：M2（转写）～M6（语言学习）。M0–M1 的偏差已记在正文对应章节。每条都标注了对应的正文小节，便于对照。</p>
+</div>
+
+<h3 id="impl-build">B.1 构建与依赖：只能靠 CI 实测发现的事（正文 12.1 / 12.2）</h3>
+
+<table>
+<thead><tr><th>项</th><th>实现做法</th><th>为什么与直觉不同</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>必须链接 <code>CoreML.framework</code></b></td>
+  <td>whisper.cpp 静态库由官方脚本构建，但工程仍需<b>显式</b>链接 CoreML</td>
+  <td>即使<b>完全不使用</b> CoreML 编码器，库里也已包含它的目标文件（<code>whisper-encoder.o</code> 等），它们引用了 <code>MLMultiArray</code> / <code>MLPredictionOptions</code>。<b>目标文件在库里，符号就必须解析</b>。失败形态是链接错误（<code>ld: Undefined symbols</code>），不带行列号 —— 初次表现为"构建失败却一条错误都没有"</td>
+</tr>
+<tr>
+  <td>CI 诊断注解补强</td>
+  <td>除 <code>文件:行:列: error:</code> 外，另加两条通道：非定位型错误（<code>ld:</code> / <code>Undefined symbol</code> / <code>framework not found</code> / <code>Build input file cannot be found</code>）与<b>日志尾部 15 行</b></td>
+  <td>本机是 Windows：看不到 xcframework 内部、无法试链接、也读不到 Actions 原始日志（需认证）。<b>注解是唯一观测通道</b>，必须让它能承载链接错误 —— 否则问题永远定位不到</td>
+</tr>
+<tr>
+  <td>资源全部由 CI 下载并内置随包</td>
+  <td>除 whisper 模型外的资源：silero VAD、GTCRN、pyannote 分割、campplus 声纹（M3）；英语词频表（M6）</td>
+  <td>正文 12.2 设想的是"App 内首次使用时下载"。实现改为<b>随包内置</b>：合计约 35 MB，而"下不下来"会直接让功能失效。<b>词频表尤其必须固定不变</b> —— 若联网获取，同一句话昨天不是生词、今天变成生词，复习计划就毁了</td>
+</tr>
+<tr>
+  <td>verify 步骤断言资源真的进了包</td>
+  <td>打包后对 <code>Payload/Moments.app/</code> 逐个断言资源存在并打印体积；词频表另有<b>行数下限校验</b></td>
+  <td>"构建成功"不等于资源可用：XcodeGen 资源路径写错时不会报错，只会静默少打包。<b>缺失的表现是功能无声失效</b>（如"这段材料没有生词"），在真机上极难归因</td>
+</tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>一条值得单独记住的经验</b>：依赖官方脚本产出二进制时，<b>它内部启用了哪些可选特性（这里是 CoreML）必须靠实测发现</b>，不能从"我不用它"推断出"链接时不需要它"。同理，"构建失败却零条错误注解"本身就是一条诊断信息 —— 它说明失败形态是链接错误。
+</div>
+
+<h3 id="impl-asr">B.2 转写层（正文 5.x）</h3>
+
+<table>
+<thead><tr><th>正文</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>5.4 加速后端（未定，倾向 Metal）</td>
+    <td>先只用 <b>CPU 路径</b>，且不改 params 里的 GPU 字段（用官方默认值）。理由：<b>"能不能转写"比"转写多快"更基础</b>，Metal 的表现需真机实测再谈。线程数取 CPU 核心数的一半，把另一半留给系统与音频链路 —— 转写吃满 CPU 会拖累录音</td></tr>
+<tr><td>5.5 模型分发（App 内下载 + sha256 校验）</td>
+    <td><b>每个模型同时内置主站与国内镜像两个地址，可切换</b>（交付环境实测存在 <code>huggingface.co</code> 不可达的情况）；<b>不做 sha256 校验</b> —— 几百 MB 读两遍代价明显，改为"下载到 <code>.download</code> 临时文件 → 体积校验 → 原子改名"。正确性交给加载时验证</td></tr>
+<tr><td>5.2 滑窗与自我修正</td>
+    <td>实现为"<b>窗口内一律标 <code>isProvisional</code>、离开窗口才冻结</b>"。这让文字跳动变成可理解的行为而非故障（R15 的落地）</td></tr>
+<tr><td>5.1 两遍转写</td>
+    <td>两稿<b>分离持久化</b>（<code>transcript-live.json</code> / <code>transcript-final.json</code>）。理由：终稿是事后批量补跑，若共用一份文件，写终稿就要"读取 + 重写"整份实时稿，中途失败会连实时稿一起毁掉。<b>终稿开跑时暂停实时字幕引擎</b> —— 两者同时跑会互相抢 CPU 并拖累录音</td></tr>
+<tr><td>正文未写：静音幻觉</td>
+    <td>whisper 面对纯噪声会编造出很像真的文本（字幕幻觉）。实现用<b>极简能量门限</b>（均方根幅度）挡掉大部分。取向是<b>宁多勿漏</b> —— 漏掉是"录音没录上"，多一句错字只是可忽略的噪声</td></tr>
+<tr><td>正文未写：时间轴映射</td>
+    <td>把"相对分片"的毫秒映射为"相对会话"的毫秒，单独抽成<b>纯函数</b>以便独立验证。算错的后果是点句回听"偏一点点"，在真机上极难发现</td></tr>
+</tbody>
+</table>
+
+<h3 id="impl-speech">B.3 语音处理层（正文 6.x）</h3>
+
+<table>
+<thead><tr><th>正文</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>6.1 / 6.2 / 6.3 三件能力</td>
+    <td>均按正文接入 sherpa-onnx，模型随包内置：silero VAD、GTCRN 降噪、pyannote 分割 + campplus 声纹</td></tr>
+<tr><td>6.4 声纹库</td>
+    <td>存 <code>Speakers/</code> 下的 JSON，<b>刻意与音频目录分开</b>：声纹库是跨会话的长期资产，而音频会按保留期被清理。混在一起就会出现"清理音频时把声纹库一起删掉"</td></tr>
+<tr><td>正文未写：对照稿</td>
+    <td>新增第三稿（降噪稿）：与终稿<b>同一模型</b>，唯一差别是音频先过降噪。这样两稿的差异可以<b>完全归因于降噪</b>，成为评价降噪效果的 A/B 材料</td></tr>
+</tbody>
+</table>
+
+<h3 id="impl-translate">B.4 翻译层（正文 7.x）</h3>
+
+<table>
+<thead><tr><th>正文</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>7.1 / 7.2 引擎选型</td>
+    <td>用系统翻译框架（<code>Translation.framework</code>）。<b>两个由 CI 才暴露的硬约束</b>：① <code>LanguageAvailability.status(from:to:)</code> 的两个参数<b>都非可选</b> —— 系统翻译<b>不支持源语言自动判定</b>（这点与 whisper 不同，那里可以自动判）；② 使用 <code>.translationTask(configuration)</code> 的文件必须 <code>import Translation</code> —— <b>框架是否链接与模块是否可见完全无关</b></td></tr>
+<tr><td>7.3 按需翻译与缓存</td>
+    <td>译文按需翻译并落 <code>translations.json</code>。<b>译文属于用户资产，不进可重建的索引库</b>：重建译文需要重新调用翻译引擎，而语言包可能已被系统清理、用户可能已离线</td></tr>
+<tr><td>7.4 质量边界与对策</td>
+    <td><b>人工修正的译文永不被自动翻译覆盖</b>。重跑一次翻译就把用户手改的成果抹掉，是最令人恼火的一类 bug；合并时遇到"已人工校正"的条目直接跳过并计数上报</td></tr>
+<tr><td>7.5 逐段语言检测</td>
+    <td><b>尚未实现</b>。目前源语言是"整篇一个"。原因是 whisper 的逐段语言结果当初没有落库，要做需回头补存该字段。<b>这是已知的能力缺口，不是 bug</b></td></tr>
+</tbody>
+</table>
+
+<h3 id="impl-learn">B.5 语言学习层（正文 8.x）</h3>
+
+<table>
+<thead><tr><th>正文</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>8.2 逐句对照</td>
+    <td>已达成：点句回听（<b>精确到句内偏移</b>，非仅分片级）+ 双语渲染 + 三档显示模式（原文／译文／对照）</td></tr>
+<tr><td>8.3 听与跟读</td>
+    <td>变速复读（0.5 / 0.75 / 1.0）与单句循环已做掉。跟读实现为<b>跟读比对</b>：用 whisper 做词级编辑距离对齐，比的是"模型听成了哪些词"</td></tr>
+<tr><td>8.5 生词提取（正文设想"结合上下文"，倾向端侧 LLM）</td>
+    <td><b>改用词频判定，不用 LLM</b>。三条理由按重要性排序：① LLM 判生词<b>不可复现</b> —— 同一句话两次跑可能给出不同判断，而"今天标出的生词明天变了"会直接毁掉复习计划；② 慢（一句一次推理）；③ 要联网（与纯离线冲突）。<b>一张固定词表则离线、微秒级、结果永远一致</b></td></tr>
+<tr><td>正文未写：判定规则</td>
+    <td>四条<b>可解释</b>的规则：只含拉丁字母、长度 ≥ 3、不是句中首字母大写（专有名词启发式）、词表排名超出阈值或不在表内。学习工具里"<b>为什么这个词被标出来了</b>"必须能回答，否则用户无法判断是自己不会还是工具错了</td></tr>
+<tr><td>正文未写：边界</td>
+    <td><b>生词判定只支持英语</b>。中文／日语需要形态素分析（分词），本项目不引入 MeCab 一类分词器 —— 未实现就是未实现。另：词形还原刻意只处理歧义最小的后缀，<b>且只在还原结果确实能查到排名时才采用</b>；完整词干化会把语义无关的词并到同一词干（universe / universal），而<b>误归类比不归类更糟</b> —— 它会把生词当成常用词漏掉，且漏判是无声的</td></tr>
+<tr><td>8.7 明确不做音素级发音评分</td>
+    <td>与正文一致。<b>并且这条边界被写进了界面</b>（跟读页的"这个功能测什么、不测什么"）：把 <code>think</code> 读成 <code>sink</code> 会被判错，但把 <code>think</code> 读成舌位略偏的 <code>think</code>（仍被听成 think）看不出任何差别。因此界面叫「跟读比对」而不是「发音评分」—— 只写在代码注释里等于没写，用户看到的是界面</td></tr>
+</tbody>
+</table>
+
+<h3 id="impl-storage">B.6 存储与检索（正文 9.x）</h3>
+
+<table>
+<thead><tr><th>正文</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>9.1 数据模型</td>
+    <td>SQLite + FTS5。定位是<b>"可从磁盘重建的索引"</b>：删掉它可以靠音频与 JSON 重建。因此<b>用户资产（译文、声纹库、生词本）一律不进这个库</b>，各自落 JSON —— 边界清楚，坏了也只坏一个文件</td></tr>
+<tr><td>9.2 中文全文检索</td>
+    <td>FTS5 + <code>lang</code> 列（schema v1 → v2 迁移），使一份索引同时覆盖原文与译文，满足"能在原文与译文中搜索"。命中行<b>必须标出"某语言译文"</b>，否则用户会以为自己录音里真的说了那句译文</td></tr>
+<tr><td>9.4 文件布局</td>
+    <td>新增两个与音频分离的目录：<code>Speakers/</code>（声纹库，M3）、<code>Vocabulary/</code>（生词本，M6）。共同理由：<b>都是跨会话的长期资产，不该随音频保留期被清理</b></td></tr>
+</tbody>
+</table>
+
+<h3 id="impl-arch">B.7 架构与线程纪律（正文 10.x）—— 实现中最容易写错的一处</h3>
+
+<p>全部代码遵循同一条分层规则，值得显式写明，因为<b>它是"看起来能跑、实际上会崩"的高发区</b>：</p>
+
+<table>
+<thead><tr><th>层</th><th>规则</th></tr></thead>
+<tbody>
+<tr><td>编排层（<code>@MainActor</code>）</td><td>只做状态发布与流程编排（如 <code>TranscriptionService</code>、<code>LiveTranscriber</code>、<code>PronunciationPractice</code>）</td></tr>
+<tr><td>worker 层（非隔离 + 自有串行队列）</td><td>承担全部重活（如 <code>TranscriptionWorker</code>、<code>PronunciationWorker</code>、<code>CapturePipeline</code>）</td></tr>
+<tr><td>后台回调进入主 actor</td><td>统一用 <code>Task { @MainActor in }</code>，<b>不用 <code>DispatchQueue.main.async</code></b> —— 后者不被编译器识别为主 actor 上下文，直接改 <code>@Published</code> 属隔离违规</td></tr>
+<tr><td>引擎实例归属</td><td>whisper 上下文<b>不是线程安全的</b>。因此实时字幕、终稿转写、跟读比对<b>各持一个独立引擎实例</b>，绝不共用</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>判断依据（比规则本身更重要）</b>：一个类要不要标 <code>@MainActor</code>，取决于<b>它调用的东西是否 <code>@MainActor</code></b>，而不是"它看起来是不是 UI 代码"。实现中曾把跟读录音器写成普通类，而它要调用的 <code>AudioSessionManager</code> 是 <code>@MainActor</code> —— 那就是隔离违规。
+</div>
+
+<h3 id="impl-pending">B.8 记在账上的事（未做 / 待真机验证）</h3>
+
+<table>
+<thead><tr><th>项</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>M2–M6 全部功能的真机验收</td><td><b>待做</b>。CI 只证明"能编译、能链接、资源已打包"，不证明"功能可用"</td></tr>
+<tr><td>whisper / sherpa 的 CPU 实测倍率</td><td>待真机实测；模型选型（base 做实时、small 做终稿）尚未被数据验证</td></tr>
+<tr><td>降噪前后的实际差异</td><td>需人工对照（对照稿已备好）</td></tr>
+<tr><td>系统翻译支持的语言对范围、端侧翻译在真实口语上的失真程度</td><td>只能真机确认；自检页与语言选择器已把它显式暴露，避免用户"选完才发现不可用"</td></tr>
+<tr><td>逐段语言检测（7.5）</td><td>未实现，需回头补存 whisper 的逐段语言字段</td></tr>
+<tr><td>生词本的间隔重复（SRS）</td><td>v1 不做（正文 8.5 已声明）；数据结构留了 <code>reviewCount</code> 但未使用 —— <b>刻意留的，不是遗漏</b></td></tr>
+<tr><td>M1 既有编译告警</td><td>M6 收尾时已清理（环形缓冲的两处 <code>let</code>、音频事件监听的一处非穷尽 switch 与一个已废弃的通知键）</td></tr>
+</tbody>
+</table>
+
 </article>
 </main>
 
@@ -2068,6 +2225,15 @@ protocol TaskScheduling {
 <a href="#risks">14. 风险登记册</a>
 <a href="#open">15. 待确认事项</a>
 <a href="#glossary">附录 A 术语表</a>
+<a href="#impl-notes">附录 B 实现偏差记录</a>
+<a class="sub" href="#impl-build">B.1 构建与依赖</a>
+<a class="sub" href="#impl-asr">B.2 转写层</a>
+<a class="sub" href="#impl-speech">B.3 语音处理层</a>
+<a class="sub" href="#impl-translate">B.4 翻译层</a>
+<a class="sub" href="#impl-learn">B.5 语言学习层</a>
+<a class="sub" href="#impl-storage">B.6 存储与检索</a>
+<a class="sub" href="#impl-arch">B.7 架构与线程纪律</a>
+<a class="sub" href="#impl-pending">B.8 记在账上的事</a>
 </aside>
 
 <script>

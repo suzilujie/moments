@@ -50,14 +50,16 @@ final class AudioEventObserver {
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { note in
-            // 只从通知里取出可跨并发域传递的原始值，避免捕获非 Sendable 的通知对象
+            // 只从通知里取出可跨并发域传递的原始值，避免捕获非 Sendable 的通知对象。
+            //
+            // 这里**不再读 AVAudioSessionInterruptionWasSuspendedKey**：
+            // 该键自 iOS 14.5 起已废弃、系统也不再提供（继续读只会拿到 nil，
+            // 同时换来一条编译告警）。官方口径是用 InterruptionReason 判断，
+            // 因此"此前是否被系统挂起"改由 reason 推导（见 handleInterruption）。
             let rawType = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
             let rawReason = (note.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
-            let wasSuspended = (note.userInfo?[AVAudioSessionInterruptionWasSuspendedKey] as? NSNumber)?.boolValue
             Task { @MainActor in
-                AudioEventObserver.shared.handleInterruption(
-                    rawType: rawType, rawReason: rawReason, wasSuspended: wasSuspended
-                )
+                AudioEventObserver.shared.handleInterruption(rawType: rawType, rawReason: rawReason)
             }
         })
 
@@ -124,9 +126,17 @@ final class AudioEventObserver {
 
     // MARK: - 事件处理
 
-    private func handleInterruption(rawType: UInt?, rawReason: UInt?, wasSuspended: Bool?) {
+    private func handleInterruption(rawType: UInt?, rawReason: UInt?) {
         let typeText = Self.interruptionTypeText(rawType)
         let reasonText = Self.interruptionReasonText(rawReason)
+
+        // "此前被系统挂起"改由 reason 推导（原 WasSuspendedKey 自 iOS 14.5 起废弃）。
+        // 之所以非要保留这一项：它对排查【锁屏后被静默停录】很关键 ——
+        // appWasSuspended 说明是系统主动挂起我们，而不是被来电/其他 App 抢占，
+        // 两者的处置完全不同（前者要靠后台保活，后者等对方让出即可）。
+        let wasSuspended: Bool? = rawReason.map {
+            $0 == AVAudioSession.InterruptionReason.appWasSuspended.rawValue
+        }
         let suspendedText = wasSuspended.map { $0 ? "是" : "否" } ?? "未提供"
 
         let isBegan = rawType == AVAudioSession.InterruptionType.began.rawValue
@@ -185,12 +195,28 @@ final class AudioEventObserver {
     }
 
     private static func interruptionReasonText(_ raw: UInt?) -> String {
-        guard let raw, let reason = AVAudioSession.InterruptionReason(rawValue: raw) else { return "未提供" }
-        switch reason {
-        case .default: return "default"
-        case .appWasSuspended: return "appWasSuspended(App 被系统挂起)"
-        case .builtInMicMuted: return "builtInMicMuted(内置麦克风被静音)"
-        @unknown default: return "其他(\(raw))"
+        guard let raw else { return "未提供" }
+
+        // 按**原始值**判断，而不是 switch 枚举本身。
+        //
+        // 原因：iOS 26 SDK 下对 AVAudioSession.InterruptionReason 做 switch
+        //（即使带 @unknown default）仍会报「switch must be exhaustive」，
+        // 即编译器认为存在这三种之外的情形。本机是 Windows，
+        // 无法查看 SDK 头文件确认它指的是哪一个 case。
+        //
+        // 取舍：本函数只负责把原因翻译成一句人话，任何未知值打出原始数字即可，
+        // 因此按原始值判断最稳 —— 既覆盖已知三种，也不会因将来 SDK 新增 case
+        // 而编译失败。代价是失去"枚举新增 case 时编译器会提醒"这一保护，
+        // 而这里的失效后果仅仅是多显示一个数字，可以接受。
+        switch raw {
+        case AVAudioSession.InterruptionReason.default.rawValue:
+            return "default"
+        case AVAudioSession.InterruptionReason.appWasSuspended.rawValue:
+            return "appWasSuspended(App 被系统挂起)"
+        case AVAudioSession.InterruptionReason.builtInMicMuted.rawValue:
+            return "builtInMicMuted(内置麦克风被静音)"
+        default:
+            return "其他(\(raw))"
         }
     }
 
