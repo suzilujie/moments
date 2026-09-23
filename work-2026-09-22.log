@@ -825,3 +825,74 @@
   4) 通过后进入 M2（whisper.cpp 转写）
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-23] 阶段十一：M2 转写层 —— whisper.cpp 集成方式调研与落地
+--------------------------------------------------------------------------------
+
+■ 需求
+  用户要求"全部写完"（即 M2–M6 一次做完，按此前确认的方案 A 连续推进）。
+
+■ 关键调研结论（三选一，只有一条可行）
+  1) whisper.cpp 官方 SwiftPM：❌ 已移除。最新 tag v1.9.4，仓库根目录只有
+     build-xcframework.sh / src / ggml / bindings，没有 Package.swift。
+     教训：此前方案里"whisper.cpp 支持 SwiftPM，可作为包依赖引入"的判断已过时。
+  2) 第三方封装 SwiftWhisper：❌ 已停更（最后提交 2024-05-23，两年多无更新），
+     与快速演进的 whisper.cpp 版本会脱节。
+  3) 官方 build-xcframework.sh：✅ 可行。脚本约 23K 字符，iOS 最低 16.4，
+     已内置 Metal 与 BLAS 配置、并把 Metal 着色器嵌入库中（GGML_METAL_EMBED_LIBRARY=ON）。
+  结论：只能由 CI 用官方脚本构建 xcframework 后链接。
+
+■ 集成方案（已落地）
+  · CI 新增步骤：按固定 tag 克隆 whisper.cpp → BUILD_STATIC_XCFRAMEWORK=ON
+    执行官方脚本 → 产出 build-apple/whisper.xcframework
+  · 选【静态】而非动态 xcframework 的理由：免去签名与嵌入步骤，对未签名构建更省事
+  · 缓存：actions/cache 缓存整个 third_party/whisper.cpp，key 绑定 tag，
+    日常改动不重复编译 C++
+  · 链接：project.yml 中作为 framework 依赖（embed: false），
+    并补充 Accelerate / Metal / MetalKit 三个系统框架与 -lc++（ggml 是 C++）
+  · Swift 访问 C API：静态库没有 Swift module map，故新增桥接头
+    Sources/Support/WhisperBridge.h，用 __has_include 双分支适配
+    framework 风格与扁平两种头文件布局，并在都找不到时给出明确 #error 提示
+    —— 因为本机是 Windows、无法预知 xcframework 内部布局
+
+■ 诊断可见性改进
+  CI 新增 "Report whisper artifact layout" 步骤：把产物中的
+  *.xcframework / whisper.h / module.modulemap 路径以 ::warning:: 注解输出。
+  原因：Actions 原始日志需认证（403），而注解可匿名读取；
+  这样即使链接路径写错，也能立刻看到真实目录结构，不必让用户贴日志。
+
+■ 新增文件
+  Sources/ASR/WhisperEngine.swift    whisper.cpp 的 Swift 封装
+    · 用官方默认参数构造上下文，不逐字段设置结构体 —— 其字段名在版本间会变动
+    · 提供 systemInfo / load / unload / transcribe(samples:language:translateToEnglish:)
+    · transcribe 记录【实时倍率】（耗时/音频时长），这是判断能否做实时字幕的关键指标
+    · loadSamples(from:) 直接读取 M1 落盘的 16kHz 单声道分片，附带采样率不符时的重采样兜底
+    · 线程数取 CPU 核心数的一半，把一半留给系统与音频链路（转写吃满 CPU 会拖累录音）
+  Sources/Support/WhisperBridge.h    桥接头
+  project.yml                        加入 xcframework 依赖、桥接头、系统框架
+  .gitignore                         排除 third_party/
+  Sources/Support/Log.swift          新增 asr / model 两个日志分类
+
+■ 影响范围
+  CI 单次构建时间显著增加（首次需编译 whisper + ggml，预计数分钟；
+  命中缓存后回落）。工程新增一个外部二进制依赖，此后升级 whisper 版本
+  需改 workflow 里的 WHISPER_TAG。
+
+■ 遇到并记录的问题
+  【推送被网络阻断】本地提交成功（f77b274），但 git push 持续失败：
+    · github.com:443 TCP 不可达（解析到 20.205.243.166）
+    · 而 api.github.com 可达 —— 典型的 git 端点被阻断、API 端点仍通
+    · 系统代理已配置但处于关闭状态（127.0.0.1:7897）
+    · 经该代理访问 github.com 同样失败（HTTP 与 socks5h 两种协议都试过），
+      说明代理自身的上游也不通
+  处置：不修改任何 git 配置（遵守既有约束），代码已安全提交在本地，
+  待网络恢复后由用户执行 git push 即可。
+  这一点值得记住：本项目的构建触发依赖 GitHub 推送，
+  网络受限时会直接卡住交付，属于外部依赖风险。
+
+■ 下一步
+  1) 等待网络恢复后推送，触发 CI 构建 whisper.xcframework
+  2) 依据注解里的真实产物结构，修正 project.yml 的链接路径（预计 1–2 轮迭代）
+  3) 链接通过后继续 M2 后半：模型下载管理 + 终稿转写 + 实时字幕 + 转写存储与界面
+================================================================================
+
