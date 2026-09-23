@@ -173,11 +173,41 @@ jobs:
             echo "=== 共 $(wc -l < errors.txt) 条编译错误，已转为注解 ==="
             emit "error" errors.txt
           elif [ -s warnings.txt ]; then
-            echo "=== 无错误，$(wc -l < warnings.txt) 条警告已转为注解 ==="
+            echo "=== 无编译错误，$(wc -l < warnings.txt) 条警告已转为注解 ==="
             emit "warning" warnings.txt
           else
             echo "无编译诊断"
           fi
+
+          # ── 补充通道：不带「行:列」的错误 ──
+          #
+          # 上面的正则只抓 `文件:行:列: error:` 这一种格式。但构建失败最常见的形态是
+          # 【链接错误】，它长这样：
+          #   ld: Undefined symbols: _whisper_init_from_file_with_params
+          #   ld: framework 'whisper' not found
+          #   error: Build input file cannot be found: .../whisper.xcframework
+          #   clang: error: linker command failed with exit code 1
+          # 全都不带行列号 —— 于是"构建失败却一条错误注解都没有"。
+          # 本机是 Windows、看不到 Actions 原始日志（需认证），注解是唯一观测通道，
+          # 因此这里必须把这类错误也捞出来。
+          echo "=== 非定位型错误 ==="
+          grep -E 'error:|ld:|Undefined symbol|framework not found|Build input file cannot be found|Command .* failed|unable to|No such file' build.log \
+            | grep -v -E ':[0-9]+:[0-9]+: (warning|error):' \
+            | tail -25 > raw.txt || true
+          grep -E 'error:|ld:|Undefined symbol|framework not found|Build input file cannot be found|Command .* failed|unable to|No such file' build.log \
+            | grep -v -E ':[0-9]+:[0-9]+: (warning|error):' \
+            | tail -25 || true
+          while IFS= read -r line; do
+            short=$(printf '%s' "$line" | cut -c1-280)
+            echo "::error::${short}"
+          done < raw.txt
+
+          # 日志尾部：链接失败时结论往往只在最后几行，而它们通常不含 "error:"
+          echo "=== 日志尾部 ==="
+          tail -15 build.log | while IFS= read -r line; do
+            short=$(printf '%s' "$line" | cut -c1-280)
+            echo "::warning title=build-tail::${short}"
+          done
 
       - name: Upload build log
         if: always()
