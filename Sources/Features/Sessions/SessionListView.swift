@@ -135,8 +135,7 @@ struct SessionDetailView: View {
             row("体积", manifest.sizeText)
 
             if manifest.totalGapMs > 0 {
-                Text("录音有效时长为 \(manifest.durationText())，而墙钟跨度为 \(wallClockText)，"
-                    + "差值即中断造成的漏录。两者不同是正常的，说明漏录被如实记录了。")
+                Text("录音有效时长 \(manifest.durationText())，墙钟跨度 \(wallClockText)。两者不同是正常的，差值即中断造成的漏录。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -145,11 +144,11 @@ struct SessionDetailView: View {
 
     private var gapSection: some View {
         Section("断口（漏录）") {
-            ForEach(Array(manifest.gaps.enumerated()), id: \.offset) { index, gap in
+            ForEach(gapRows) { row in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("第 \(index + 1) 处｜\(msText(gap.startMs)) → \(msText(gap.endMs))")
+                    Text(row.title)
                         .font(.subheadline)
-                    Text("时长 \(gap.durationMs / 1000) 秒｜原因：\(gap.reason)")
+                    Text(row.detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -172,27 +171,26 @@ struct SessionDetailView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ForEach(manifest.segments, id: \.seq) { segment in
+            ForEach(segmentRows) { row in
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("#\(segment.seq)　\(msText(segment.startMs)) → \(msText(segment.endMs))")
+                        Text(row.title)
                             .font(.subheadline)
                             .monospacedDigit()
-                        Text("\(ByteCountFormatter.string(fromByteCount: Int64(segment.bytes), countStyle: .file))"
-                            + "｜样本 \(segment.sampleCount)")
+                        Text(row.detail)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button {
-                        toggle(segment)
+                        toggle(row.segment)
                     } label: {
-                        Image(systemName: player.playingSegment == segment.fileName
+                        Image(systemName: player.playingSegment == row.fileName
                             ? "stop.circle.fill" : "play.circle.fill")
                             .font(.title2)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!fileExists(segment))
+                    .disabled(!row.exists)
                 }
             }
         }
@@ -257,6 +255,50 @@ struct SessionDetailView: View {
             Text(value).monospacedDigit()
         }
         .font(.subheadline)
+    }
+
+    // MARK: - 行数据（把重表达式拆成预计算字符串，避免 SwiftUI 类型检查超时）
+
+    private struct GapRow: Identifiable {
+        let id: Int
+        let title: String
+        let detail: String
+    }
+
+    private struct SegmentRow: Identifiable {
+        let id: Int
+        let fileName: String
+        let segment: SessionManifest.SegmentEntry
+        let title: String
+        let detail: String
+        let exists: Bool
+    }
+
+    private var gapRows: [GapRow] {
+        manifest.gaps.enumerated().map { index, gap in
+            GapRow(
+                id: index,
+                title: "第 \(index + 1) 处｜\(msText(gap.startMs)) → \(msText(gap.endMs))",
+                detail: "时长 \(gap.durationMs / 1000) 秒｜原因：\(gap.reason)"
+            )
+        }
+    }
+
+    private var segmentRows: [SegmentRow] {
+        manifest.segments.map { segment in
+            SegmentRow(
+                id: segment.seq,
+                fileName: segment.fileName,
+                segment: segment,
+                title: "#\(segment.seq)　\(msText(segment.startMs)) → \(msText(segment.endMs))",
+                detail: "\(byteText(segment.bytes))｜样本 \(segment.sampleCount)",
+                exists: fileExists(segment)
+            )
+        }
+    }
+
+    private func byteText(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
 
