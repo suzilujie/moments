@@ -1062,3 +1062,72 @@
   5) 进入 M3：sherpa-onnx（VAD / GTCRN 降噪 / 说话人分离 + 声纹库）
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-23] 阶段十四：M3a —— sherpa-onnx 接入（集成可验证）
+--------------------------------------------------------------------------------
+
+■ 推进策略（沿用 M2 的成功做法）
+  外部重型依赖一律**先做成"可验证的集成"**，再往上叠加业务能力。
+  M2 的经验证明这一步是对的：whisper 的链接问题（缺 CoreML）与业务逻辑无关，
+  却会阻塞一切；把它单独拎出来验证，问题边界清晰、定位快。
+
+■ 关键调研结论（联网核实，四个决定性的点）
+  1) **sherpa-onnx 的 release 里没有 iOS 产物**。
+     逐个核对 v1.13.8 的全部 asset：只有 Android（aar / termux 包）、
+     Windows / Linux / macOS 预编译库、WASM、Realtime 可执行文件，
+     **没有任何 iOS 相关包**。官方只提供构建脚本 → 只能自建。
+  2) 官方脚本 build-ios-no-tts.sh 会构建 **三个切片**
+     （SIMULATOR64 / SIMULATORARM64 / OS64）。本项目产物只用于真机侧载，
+     模拟器切片纯属浪费，会让 CI 时间成倍增加 → 只保留 OS64。
+  3) 官方脚本**不把 onnxruntime 合并进 sherpa-onnx.a**（只用 libtool 合并了
+     9 个 sherpa 自身的静态库），因此 onnxruntime 必须单独链接。
+     而 onnxruntime 的产物是没有 lib 前缀的 `onnxruntime`（在
+     onnxruntime.framework 内），`-l` 规则找不到它 —— 这是个隐蔽的坑。
+     处置：CI 里把 9 个 sherpa 库 + onnxruntime 一起 libtool 合并成
+     `libsherpa-onnx-all.a`，Xcode 侧只需 `-lsherpa-onnx-all`。
+  4) 官方脚本的 `-DCMAKE_TOOLCHAIN_FILE=./toolchains/...` 用的是相对路径，
+     而它当时的工作目录是 build-ios-no-tts/，**相对基准有歧义**。
+     处置：CI 里改用绝对路径，不给"路径对不对"留余地。
+
+■ 另一个必须查清的细节：Xcode 只能有**一个**桥接头
+  项目已有 WhisperBridge.h（M2），M3 又要加 SherpaBridge.h。
+  SWIFT_OBJC_BRIDGING_HEADER 是单值，因此新增 Bridges.h 收口两者
+  （用引号 include，同目录可直接找到，不需要额外搜索路径）。
+  设计上刻意**不**把两个第三方库的头混写在一个文件里 ——
+  那样任一库升级都会牵扯到另一个。
+
+■ 新增文件（3 个）
+  Sources/Support/SherpaBridge.h     sherpa-onnx C API 桥接头（__has_include 双分支）
+  Sources/Support/Bridges.h          统一桥接头（收口 whisper + sherpa）
+  Sources/ASR/SherpaOnnxEngine.swift 接入层（M3a 只做版本号冒烟验证）
+
+■ 修改文件（2 个）
+  project.yml                       桥接头改指 Bridges.h；新增 LIBRARY_SEARCH_PATHS /
+                                    HEADER_SEARCH_PATHS / OTHER_LDFLAGS(-lz -lsherpa-onnx-all)
+  .github/workflows/ios-build.yml   新增 sherpa 缓存 + 构建 + 产物布局注解；超时 60 → 120 分钟
+  Sources/App/RootView.swift        自检页新增 sherpa-onnx 一行；区名改为「离线引擎（M2/M3）」
+
+■ 已核实的 C API（为 M3b/M3c 铺路，避免下一轮再查）
+  · VAD：SherpaOnnxCreateVoiceActivityDetector
+    配置 SherpaOnnxVadModelConfig { silero_vad{model,threshold,min_silence_duration,
+    min_speech_duration,window_size,max_speech_duration}, sample_rate, num_threads,
+    provider, debug, ten_vad{...} }
+    用法：AcceptWaveform → Detected/Empty → Front/Pop，或 Flush 收尾
+  · 降噪：SherpaOnnxCreateOfflineSpeechDenoiser（GTCRN / DPDFNet 两种模型配置）
+  · 说话人分离：SherpaOnnxCreateOfflineSpeakerDiarization
+    （pyannote segmentation + speaker embedding + 快速聚类）
+    结果 SherpaOnnxOfflineSpeakerDiarizationSegment { start, end, speaker, confidence }
+    —— 注意 start/end 单位是**秒**，而本项目内部时间轴统一用毫秒，需要换算。
+  · 版本信息：SherpaOnnxGetVersionStr / GetGitSha1 / GetGitDate
+
+■ 影响范围
+  工程新增第二个外部二进制依赖；CI 单次构建时间进一步增加
+  （sherpa-onnx 代码量远大于 whisper，且要连带编译 onnxruntime 的依赖）。
+  命中缓存后回落。
+
+■ 下一步
+  1) 等 CI 结果；若链接失败，按注解定位（产物布局注解已就位）
+  2) M3b：VAD 与 GTCRN 降噪（含"双轨录制、可切换"的落地）
+  3) M3c：说话人分离 + 声纹库（跨会话认人）
+================================================================================
+
