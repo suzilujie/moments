@@ -10,6 +10,16 @@ struct MomentsApp: App {
 
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        // M4：启动时建立/校验检索索引。
+        //
+        // 刻意放在 init 里而不是某个页面的 onAppear：
+        // 检索应该是"打开就有用"的，不该等用户先访问某个页面才构建。
+        // 它**不阻塞启动** —— 全部工作在后台队列上进行，完成后才发布状态
+        // （见 SearchIndex.start）。
+        SearchIndex.shared.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             MainTabView()

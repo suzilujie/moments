@@ -193,6 +193,8 @@ final class TranscriptionService: ObservableObject {
                 + "｜\(document.characterCount) 字"
                 + "｜实时倍率 \(String(format: "%.2f", lastRealtimeRatio))"
             Log.shared.info(.asr, lastMessage ?? "")
+            // 转写完成即刻进检索索引：搜不到刚转写的内容，用户会以为功能坏了
+            SearchIndex.shared.index(sessionId: document.sessionId)
 
         case .cancelled(let document):
             stage = .cancelled

@@ -6,35 +6,121 @@ struct SessionListView: View {
 
     @State private var sessions: [SessionManifest] = []
     @State private var totalBytes: Int = 0
+    @ObservedObject private var index = SearchIndex.shared
+
+    @State private var searchQuery = ""
+    @State private var searchHits: [SearchHit] = []
+    @State private var isSearching = false
 
     var body: some View {
         NavigationStack {
             List {
-                if sessions.isEmpty {
+                if isSearchActive {
+                    searchResultSection
+                } else if sessions.isEmpty {
                     ContentUnavailableView(
                         "还没有录音",
                         systemImage: "waveform",
                         description: Text("到「录音」标签页点开始，录到的内容会出现在这里。")
                     )
                 } else {
-                    Section {
-                        ForEach(sessions, id: \.id) { item in
-                            NavigationLink {
-                                SessionDetailView(manifest: item)
-                            } label: {
-                                SessionRow(manifest: item)
-                            }
-                        }
-                        .onDelete(perform: delete)
-                    } footer: {
-                        Text("共 \(sessions.count) 次录音，占用 \(ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file))")
-                    }
+                    sessionSection
                 }
             }
             .navigationTitle("记录")
+            .searchable(text: $searchQuery, prompt: "搜索转写内容")
+            .task(id: searchQuery) { await runSearch() }
             .onAppear(perform: reload)
             .refreshable { reload() }
         }
+    }
+
+    private var isSearchActive: Bool {
+        !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var sessionSection: some View {
+        Section {
+            ForEach(sessions, id: \.id) { item in
+                NavigationLink {
+                    SessionDetailView(manifest: item)
+                } label: {
+                    SessionRow(manifest: item)
+                }
+            }
+            .onDelete(perform: delete)
+        } footer: {
+            Text("共 \(sessions.count) 次录音，占用 \(ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file))")
+        }
+    }
+
+    /// 检索结果。
+    ///
+    /// 点进去会**自动播放那一句**（见 SessionDetailView 的 focus 系列参数）——
+    /// 搜一句话的目的就是"听那一句"，让用户再从长列表里找一遍纯属多余。
+    private var searchResultSection: some View {
+        Section {
+            if isSearching {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("搜索中…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else if searchHits.isEmpty {
+                Text("没有找到包含该内容的句子。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(searchHits) { hit in
+                    if let target = sessions.first(where: { $0.id == hit.sessionId }) {
+                        NavigationLink {
+                            SessionDetailView(
+                                manifest: target,
+                                focusSegmentId: hit.id,
+                                focusStartMs: hit.startMs,
+                                focusEndMs: hit.endMs
+                            )
+                        } label: {
+                            searchHitRow(hit)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text(searchHits.isEmpty ? "搜索" : "命中 \(searchHits.count) 句")
+        } footer: {
+            Text("检索覆盖全部转写文本（实时稿与终稿均已索引）。"
+                + "索引能力：\(index.capability.title)。")
+        }
+    }
+
+    private func searchHitRow(_ hit: SearchHit) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(hit.text)
+                .font(.body)
+                .lineLimit(3)
+            Text("\(hit.sessionTitle)｜\(hit.timeText)｜\(hit.pass.title)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func runSearch() async {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            searchHits = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        let hits = await SearchIndex.shared.search(query)
+        // 边打字边搜会连续触发多次查询；只接受**与当前输入一致**的结果，
+        // 否则会出现"结果闪回上一次查询"的错乱，而用户会以为自己搜错了
+        guard query == searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        searchHits = hits
+        isSearching = false
     }
 
     private func reload() {
@@ -46,6 +132,8 @@ struct SessionListView: View {
         for index in offsets {
             let item = sessions[index]
             try? RecordingLibrary.shared.deleteSession(item.id)
+            // 同步移除检索索引，否则会搜到已经不存在的会话
+            SearchIndex.shared.remove(sessionId: item.id)
         }
         reload()
     }
@@ -99,7 +187,12 @@ private struct SessionRow: View {
 struct SessionDetailView: View {
 
     let manifest: SessionManifest
-    @StateObject private var player = SessionAudioPlayer()
+    /// 从搜索结果进入时要自动播放的那一句（M4）。
+    /// 给默认值是为了不破坏既有的 `SessionDetailView(manifest:)` 调用点。
+    var focusSegmentId: String? = nil
+    var focusStartMs: Int? = nil
+    var focusEndMs: Int? = nil
+    @StateObject private var player = SentencePlayer()
     @ObservedObject private var asr = TranscriptionService.shared
     @ObservedObject private var diarization = DiarizationService.shared
     @ObservedObject private var profiles = SpeakerProfileStore.shared
@@ -131,6 +224,7 @@ struct SessionDetailView: View {
         .onAppear {
             initializePass()
             reloadSpeakerTimeline()
+            playFocusedSentenceIfNeeded()
         }
         .onChange(of: selectedPass) { reloadTranscript() }
         .onChange(of: asr.stage) { reloadTranscript() }
@@ -211,7 +305,7 @@ struct SessionDetailView: View {
                     Button {
                         toggle(row.segment)
                     } label: {
-                        Image(systemName: player.playingSegment == row.fileName
+                        Image(systemName: player.playingSegmentId == row.fileName
                             ? "stop.circle.fill" : "play.circle.fill")
                             .font(.title2)
                     }
@@ -421,9 +515,15 @@ struct SessionDetailView: View {
             } else if let transcript, !transcript.isEmpty {
                 passPicker
                 transcriptActions
+                playbackControls
+                if let error = player.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 ForEach(transcriptRows) { row in
                     Button {
-                        playSegment(containingMs: row.startMs)
+                        playSentence(row)
                     } label: {
                         transcriptRowView(row)
                     }
@@ -472,6 +572,41 @@ struct SessionDetailView: View {
             }
             .font(.footnote)
             .disabled(!hasAnyAudio)
+        }
+    }
+
+    /// 播放控制：倍率与单句循环。
+    ///
+    /// 放在转写列表**上方**而不是收进菜单：慢放与复读是语言学习最高频的操作，
+    /// 跳两层才能按到等于没有（设计文档 8.3 / 11.6）。
+    /// 用 `.borderless` 是因为在 List 行里放多个按钮时，
+    /// 默认样式会让整行都触发第一个按钮。
+    private var playbackControls: some View {
+        HStack(spacing: 14) {
+            Button {
+                player.cycleRate()
+            } label: {
+                Label(player.rateText, systemImage: "gauge.with.needle")
+                    .font(.footnote)
+            }
+            .buttonStyle(.borderless)
+
+            Button {
+                player.toggleLoop()
+            } label: {
+                Label(player.isLooping ? "循环中" : "单句循环", systemImage: "repeat")
+                    .font(.footnote)
+                    .foregroundStyle(player.isLooping ? .green : .secondary)
+            }
+            .buttonStyle(.borderless)
+
+            Spacer()
+
+            if player.isPlaying {
+                Button("停止") { player.stop() }
+                    .font(.footnote)
+                    .buttonStyle(.borderless)
+            }
         }
     }
 
@@ -585,7 +720,8 @@ struct SessionDetailView: View {
                         .foregroundStyle(.blue)
                 }
                 Spacer()
-                Image(systemName: "play.circle")
+                Image(systemName: player.playingSegmentId == row.id
+                    ? "stop.circle.fill" : "play.circle")
                     .foregroundStyle(.tint)
             }
             Text(row.text)
@@ -595,16 +731,34 @@ struct SessionDetailView: View {
         .padding(.vertical, 2)
     }
 
-    /// 点句回听：先定位到**包含该句的分片**再播放。
+    /// 点句回听：播放**这一句**（从句子起点到终点）。
     ///
-    /// 为什么只做到分片级：精确到句内偏移需要给 AVAudioPlayer 设置 currentTime 并
-    /// 与样本计数推导出的时间轴对齐，属 M4「点句回听」的正式范围。
-    /// 现在先给出"能听到那句话所在的这一段"，比做一个不精确的跳转更诚实。
-    private func playSegment(containingMs ms: Int) {
-        guard let entry = manifest.segments.last(where: { $0.startMs <= ms }) else { return }
-        let url = RecordingLibrary.shared.segmentURL(sessionId: manifest.id, fileName: entry.fileName)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        player.play(url: url, segmentName: entry.fileName)
+    /// 这是 M4 相对 M2 的关键改进：M2 只能跳到所属分片（约 1 分钟），
+    /// 用户还得自己听出是哪一句 —— 那基本等于没做。现在精确到句，
+    /// 并支持变速不变调与单句循环（设计文档 9.3）。
+    private func playSentence(_ row: TranscriptRow) {
+        if player.playingSegmentId == row.id {
+            player.stop()
+        } else {
+            player.play(
+                sessionId: manifest.id,
+                segmentId: row.id,
+                startMs: row.startMs,
+                endMs: row.endMs
+            )
+        }
+    }
+
+    /// 从搜索结果进来时自动播放那一句。
+    /// 点搜索结果的目的就是"听这一句"，让用户再点一次纯属多余。
+    private func playFocusedSentenceIfNeeded() {
+        guard let focusSegmentId, let focusStartMs, let focusEndMs else { return }
+        player.play(
+            sessionId: manifest.id,
+            segmentId: focusSegmentId,
+            startMs: focusStartMs,
+            endMs: focusEndMs
+        )
     }
 
     private func initializePass() {
@@ -623,11 +777,16 @@ struct SessionDetailView: View {
     // MARK: - 播放
 
     private func toggle(_ segment: SessionManifest.SegmentEntry) {
-        let url = RecordingLibrary.shared.segmentURL(sessionId: manifest.id, fileName: segment.fileName)
-        if player.playingSegment == segment.fileName {
+        if player.playingSegmentId == segment.fileName {
             player.stop()
         } else {
-            player.play(url: url, segmentName: segment.fileName)
+            // 播整片：分片列表的语义就是"这一分钟"
+            player.play(
+                sessionId: manifest.id,
+                segmentId: segment.fileName,
+                startMs: segment.startMs,
+                endMs: segment.endMs
+            )
         }
     }
 
@@ -713,30 +872,6 @@ struct SessionDetailView: View {
     }
 }
 
-/// 分片播放器。M1 只做"逐片播放"，连续回放与点句回听属 M4。
-@MainActor
-final class SessionAudioPlayer: ObservableObject {
-
-    @Published private(set) var playingSegment: String?
-    private var player: AVAudioPlayer?
-
-    func play(url: URL, segmentName: String) {
-        stop()
-        do {
-            let audioPlayer = try AVAudioPlayer(contentsOf: url)
-            audioPlayer.prepareToPlay()
-            audioPlayer.play()
-            player = audioPlayer
-            playingSegment = segmentName
-            Log.shared.info(.storage, "开始播放分片 \(segmentName)")
-        } catch {
-            Log.shared.error(.storage, "播放失败｜\(segmentName)｜\(error.localizedDescription)")
-        }
-    }
-
-    func stop() {
-        player?.stop()
-        player = nil
-        playingSegment = nil
-    }
-}
+// 分片播放器（SessionAudioPlayer）已在 M4 被 SentencePlayer 取代：
+// 后者能精确到"句"而不是"整分钟"，且支持变速不变调与单句循环。
+// 留着旧类只会让"现在用的是哪个播放器"变成一个需要翻代码才能回答的问题。

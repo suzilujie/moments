@@ -143,6 +143,7 @@ struct RootView: View {
             row("已转写字数", model.characterCountText)
             row("说话人覆盖率", model.diarizationCoverageText)
             row("声纹库", model.voiceprintText)
+            row("检索索引", model.searchIndexText)
 
             if let message = TranscriptionService.shared.lastMessage {
                 note(message, color: .secondary)
@@ -156,6 +157,13 @@ struct RootView: View {
             )
 
             Button("刷新引擎信息") { model.refreshASR() }
+
+            Button("检索自检（在内存库跑真实 SQL）") { model.runSearchSelfTest() }
+            ForEach(Array(model.searchSelfTestLines.enumerated()), id: \.offset) { item in
+                Text(item.element)
+                    .font(.caption)
+                    .foregroundStyle(colorForSelfTestLine(item.element))
+            }
         }
     }
 
@@ -187,6 +195,16 @@ struct RootView: View {
             Text(value).multilineTextAlignment(.trailing)
         }
         .font(.subheadline)
+    }
+
+    /// 自检输出行的颜色：✓ 通过、✗ 失败、其余为说明。
+    ///
+    /// 用颜色而不是图标来区分，是因为自检结果里既有"通过"也有"跳过"，
+    /// 一眼扫过去要能立刻看出有没有红字。
+    private func colorForSelfTestLine(_ line: String) -> Color {
+        if line.hasPrefix("✗") { return .red }
+        if line.hasPrefix("✓") { return .green }
+        return .secondary
     }
 
     private func note(_ text: String, color: Color) -> some View {
@@ -227,6 +245,10 @@ final class SelfCheckModel: ObservableObject {
     @Published var diarizationCoverageText = "-"
     /// M3c：声纹库里已录入的人数
     @Published var voiceprintText = "-"
+    /// M4：检索索引能力与规模
+    @Published var searchIndexText = "-"
+    /// M4：检索自检的逐行结果
+    @Published var searchSelfTestLines: [String] = []
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -259,6 +281,9 @@ final class SelfCheckModel: ObservableObject {
         diarizationCoverageText = "\(diarizationCoverage.analyzed) / \(diarizationCoverage.total)"
         voiceprintText = "\(SpeakerProfileStore.shared.profiles.count) 人"
 
+        let search = SearchIndex.shared
+        searchIndexText = "\(search.capability.title)｜\(search.indexedSessions) 会话 / \(search.indexedSegments) 句"
+
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty
             ? "（无）"
@@ -271,6 +296,19 @@ final class SelfCheckModel: ObservableObject {
         let coverage = TranscriptStore.shared.coverage()
         coverageText = "\(coverage.transcribed) / \(coverage.total)"
         characterCountText = "\(TranscriptStore.shared.totalCharacterCount())"
+    }
+
+    /// 运行检索自检。
+    ///
+    /// 这一步不能省：本项目的 CI 只能验证「能编译、能链接」，
+    /// **运行期 SQL 错误它一条都抓不到**（跑不了 iOS App）。
+    /// schema 写错、FTS5 建不起来、参数绑定错 —— 都不会让构建失败，
+    /// 只会在用户点下搜索时安静地什么也不返回。
+    /// 自检用内存库跑**与正式代码同一套语句**，逐条报告结果。
+    func runSearchSelfTest() {
+        let lines = SearchIndex.shared.selfTest()
+        searchSelfTestLines = lines
+        Log.shared.info(.storage, "检索自检执行｜\(lines.joined(separator: " ／ "))")
     }
 
     func requestPermission() async {

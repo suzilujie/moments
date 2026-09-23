@@ -83,7 +83,11 @@ targets:
         # ggml 与 sherpa-onnx 都是 C++ 实现，需要 C++ 标准库；
         # -lz 是 onnxruntime 静态库的常见依赖；
         # -lsherpa-onnx-all 是 CI 合并出的「sherpa-onnx + onnxruntime」单一静态库。
-        OTHER_LDFLAGS: "-lc++ -lz -lsherpa-onnx-all"
+        # -lsqlite3：M4 的存储与检索用系统 SQLite（含 FTS5 全文索引）。
+        # 刻意**不引入第三方封装**（GRDB / SQLite.swift）：本项目已有两个
+        # 手工构建的二进制依赖，再多一个来源不同的依赖，只会增加"哪一层坏了"的排查成本。
+        # 系统 SQLite 的 C API 写起来啰嗦一点，但确定可用、零版本风险。
+        OTHER_LDFLAGS: "-lc++ -lz -lsherpa-onnx-all -lsqlite3"
         # ═══ sherpa-onnx（M3）═══
         # 刻意**不走 xcframework**：本项目的 iOS 产物只用于真机侧载，
         # 只需要真机切片；直接链接 CI 合并出的 .a + 头文件目录，
