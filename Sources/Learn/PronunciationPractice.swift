@@ -54,7 +54,8 @@ final class PracticeRecorder {
     var isRecording: Bool { recorder?.isRecording ?? false }
 
     func start(mode: AudioSessionMode) throws -> URL {
-        stop()
+        // 先收掉可能残留的上一次录音（返回值是旧文件，这里不要）
+        _ = stop()
 
         guard AudioSessionManager.shared.activate(mode) else {
             throw PracticeError.sessionActivationFailed
