@@ -240,6 +240,8 @@ struct SessionDetailView: View {
     /// 每句的生词候选（按片段 id 索引）
     @State private var segmentVocabulary: [String: [VocabularyCandidate]] = [:]
     @State private var highlightsVocabulary = true
+    /// 跟读比对的目标句（非 nil 时弹出跟读页）
+    @State private var practiceTarget: TranscriptRow?
 
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
@@ -298,6 +300,11 @@ struct SessionDetailView: View {
             Text("命名后，这个人的声纹会存入声纹库；以后再录到他，会自动标出名字。")
         }
         .onDisappear { player.stop() }
+        // M6b：跟读比对。用 sheet(item:) 而不是 sheet(isPresented:) ——
+        // 前者把"要读的是哪一句"作为数据带过去，不必再维护一份"当前选中句"的状态
+        .sheet(item: $practiceTarget) { row in
+            PracticeView(referenceText: row.text)
+        }
     }
 
     private var overviewSection: some View {
@@ -738,6 +745,17 @@ struct SessionDetailView: View {
                         transcriptRowView(row)
                     }
                     .buttonStyle(.plain)
+                    // M6b：跟读入口放在左滑。不挤进行内，是因为一行里已经有
+                    // 时间、识别中标记、播放、生词 chips —— 再加图标会让主操作
+                    //（点句子听音频）变得难以点准。
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button {
+                            practiceTarget = row
+                        } label: {
+                            Label("跟读", systemImage: "mic.fill")
+                        }
+                        .tint(.orange)
+                    }
                 }
                 if let note = transcript.note {
                     Text(note)
@@ -882,8 +900,9 @@ struct SessionDetailView: View {
     }
 
     private var transcriptFooterText: String {
-        "点句子可播放它所在的那一段音频。"
-            + "M2 只能定位到所属分片（约 1 分钟），精确到句内位置属 M4。"
+        "点句子播放这一句。左滑句子可进入「跟读比对」——"
+            + "它比的是「模型听成了哪些词」，不是音素级发音评分。"
+            + "句子下方的蓝色词是该句的生词，点一下就收进生词本。"
             + "实时稿是「先出、再改对」的，准确文本以终稿为准。"
     }
 
