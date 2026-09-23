@@ -35,3 +35,4 @@ third_party/
 # 由 CI 下载到此目录并打进 ipa。不纳入版本控制：二进制文件不适合进 git，
 # 且它们与 CI 中固定的 sherpa tag 是一组，应当一起演进。
 Resources/SherpaModels/
+Resources/WordLists/

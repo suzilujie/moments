@@ -235,6 +235,12 @@ struct SessionDetailView: View {
     /// 各语言对的可用性（前置校验结果，界面必须显示出来）
     @State private var languageStatus: [String: String] = [:]
 
+    // M6 生词
+    @ObservedObject private var vocabulary = VocabularyStore.shared
+    /// 每句的生词候选（按片段 id 索引）
+    @State private var segmentVocabulary: [String: [VocabularyCandidate]] = [:]
+    @State private var highlightsVocabulary = true
+
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
     }
@@ -275,6 +281,8 @@ struct SessionDetailView: View {
         .onChange(of: targetLanguage) { reloadTranslationMap() }
         // 源语言变了，所有语言对的可用性都会变，必须重查
         .onChange(of: sourceLanguage) { Task { await refreshLanguageStatus() } }
+        // 关掉生词高亮后不必重算，但重新打开必须重算（之前的结果已被清空）
+        .onChange(of: highlightsVocabulary) { reloadVocabulary() }
         .onChange(of: translation.stage) { reloadTranslationMap() }
         // 系统翻译框架要求由**视图**拿到 TranslationSession，
         // 因此把真正的执行挂在这里（见 TranslationService 里对两段式设计的说明）
@@ -666,6 +674,47 @@ struct SessionDetailView: View {
             .texts(for: targetLanguage)
     }
 
+    // MARK: - 生词（M6）
+
+    /// 一句里的生词 chips。点一下即收录 —— 收录动作必须**零成本**：
+    /// 若要点进另一个页面才能存词，用户就会放弃存词，
+    /// 而"存不下来"等于这个功能不存在。
+    @ViewBuilder
+    private func vocabularyChips(_ candidates: [VocabularyCandidate], sentence: String) -> some View {
+        let shown = Array(candidates.prefix(4))
+        HStack(spacing: 6) {
+            ForEach(shown) { candidate in
+                let inBook = vocabulary.contains(candidate.word)
+                Button {
+                    guard !inBook else { return }
+                    vocabulary.add(
+                        word: candidate.word,
+                        displayWord: candidate.surface,
+                        sourceSessionId: manifest.id,
+                        sourceSentence: sentence,
+                        rank: candidate.rank
+                    )
+                } label: {
+                    Text(candidate.word)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background((inBook ? Color.green : Color.blue).opacity(0.14), in: Capsule())
+                        .foregroundStyle(inBook ? Color.green : Color.blue)
+                }
+                .buttonStyle(.borderless)
+            }
+
+            if candidates.count > shown.count {
+                Text("+\(candidates.count - shown.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+
     // MARK: - 文字稿（M2）
 
     private var transcriptSection: some View {
@@ -760,6 +809,12 @@ struct SessionDetailView: View {
                     .foregroundStyle(player.isLooping ? .green : .secondary)
             }
             .buttonStyle(.borderless)
+
+            // M6：生词高亮开关。放在这一排是因为它和倍率、循环同属
+            // "读这段材料时的辅助手段"，不该藏进设置。
+            Toggle("生词", isOn: $highlightsVocabulary)
+                .font(.footnote)
+                .fixedSize()
 
             Spacer()
 
@@ -903,6 +958,9 @@ struct SessionDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if let candidates = segmentVocabulary[row.id], !candidates.isEmpty {
+                vocabularyChips(candidates, sentence: row.text)
+            }
         }
         .padding(.vertical, 2)
     }
@@ -948,6 +1006,28 @@ struct SessionDetailView: View {
 
     private func reloadTranscript() {
         transcript = TranscriptStore.shared.load(sessionId: manifest.id, pass: selectedPass)
+        reloadVocabulary()
+    }
+
+    /// 逐句提取生词。
+    ///
+    /// **在文本加载时算一次**，而不是每行渲染时算：一份转写可能有几百句，
+    /// 放进 View 的 body 会导致每次滚动、每次状态变化都重算一遍分词与查表。
+    /// 提取本身很轻（切词 + 字典查询），一次算完即可。
+    private func reloadVocabulary() {
+        // 词频表是懒加载的（首次查询时才读文件），这里主动触发
+        WordFrequencyTable.shared.loadIfNeeded()
+        guard highlightsVocabulary else {
+            segmentVocabulary = [:]
+            return
+        }
+
+        var result: [String: [VocabularyCandidate]] = [:]
+        for segment in transcriptSegments {
+            let candidates = VocabularyExtractor.extract(from: segment.text)
+            if !candidates.isEmpty { result[segment.id] = candidates }
+        }
+        segmentVocabulary = result
     }
 
     // MARK: - 播放

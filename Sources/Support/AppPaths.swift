@@ -54,6 +54,17 @@ enum AppPaths {
         return dir
     }
 
+    /// 生词本目录（M6 起使用）。
+    ///
+    /// 与声纹库同理，**刻意与音频目录分开**：生词本是长期积累的学习资产，
+    /// 而音频会按保留期被清理。混在一起就会出现"清理音频时把生词本一起删掉" ——
+    /// 这正是用户最不可接受的损失。
+    static func vocabularyDirectory() throws -> URL {
+        let dir = try appRoot().appendingPathComponent("Vocabulary", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     /// 目录的简短显示形式（完整路径太长，且沙盒路径对用户无意义）。
     static func shortPath(_ url: URL) -> String {
         url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")

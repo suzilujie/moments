@@ -308,6 +308,34 @@ jobs:
             fi
           done
 
+      # ═══════════════════════════════════════════════════════════════
+      # 英语词频表（M6 生词判定）—— 同样内置随包
+      #
+      # 为什么内置：它就是"生词判定"的判据本身，必须**固定不变**。
+      # 若做成联网获取，词表会随上游更新而变 —— 同一句话昨天不是生词、
+      # 今天变成生词，复习计划就毁了。74 KB，没有任何理由做成下载。
+      #
+      # 行数下限校验是刻意加的：词表被截断/换源时若静默通过，
+      # 后果是**大面积误判**（几乎所有词都成了"词表之外"的生词），
+      # 而这类错误在真机上看起来只是"标得有点多"，很难追查。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Fetch word frequency list (bundled into ipa)
+        run: |
+          DEST=Resources/WordLists
+          mkdir -p "$DEST"
+          if [ ! -f "$DEST/en_top10k.txt" ]; then
+            curl -fL --retry 3 -o "$DEST/en_top10k.txt" \
+              "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa.txt" \
+              || { echo "::error::下载英语词频表失败"; exit 1; }
+          fi
+          LINES=$(wc -l < "$DEST/en_top10k.txt" | tr -d ' ')
+          echo "词频表行数 = $LINES"
+          if [ "$LINES" -lt 5000 ]; then
+            echo "::error::词频表行数异常（$LINES 行），生词判定会大面积误判"
+            exit 1
+          fi
+          echo "::notice::wordlist en_top10k.txt $LINES 行 $(stat -f%z "$DEST/en_top10k.txt") bytes"
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -521,6 +549,13 @@ jobs:
             fi
             echo "内置模型已打包 $f ($(stat -f%z "$APP_DIR/$f") bytes)"
           done
+
+          # M6 词频表同理：它是生词判定的判据，缺了会让该功能静默失效
+          if [ ! -f "$APP_DIR/en_top10k.txt" ]; then
+            echo "::error::词频表未打进包：en_top10k.txt"
+            exit 1
+          fi
+          echo "词频表已打包 en_top10k.txt ($(stat -f%z "$APP_DIR/en_top10k.txt") bytes)"
 
           echo "verify passed"
 
