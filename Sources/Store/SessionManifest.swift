@@ -50,6 +50,8 @@ struct SessionManifest: Codable {
         var startMs: Int
         var endMs: Int
         var reason: String
+
+        var durationMs: Int { max(0, endMs - startMs) }
     }
 
     // MARK: - 派生属性
