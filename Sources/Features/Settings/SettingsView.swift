@@ -18,6 +18,7 @@ struct SettingsView: View {
                 storageSection
                 transcriptionSection
                 modelSection
+                bundledModelSection
                 languageSection
                 aboutSection
             }
@@ -94,6 +95,13 @@ struct SettingsView: View {
         Section {
             Toggle("实时字幕", isOn: $settings.realtimeTranscriptionEnabled)
             Text("录音时当场显示文字。关掉它只是省电 —— 录音与终稿转写都不受影响。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Toggle("实时字幕使用降噪音频", isOn: $settings.realtimeDenoiseEnabled)
+            Text("默认关。降噪会引入失真伪影，有可能反而让识别更差 —— "
+                + "因此它是「可对照验证的选项」，不是默认增强。"
+                + "录音的原始音频始终保留，随时可关掉重来。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -200,6 +208,35 @@ struct SettingsView: View {
                 models.download(model.id, preferMirror: settings.preferModelMirror)
             }
             .font(.footnote)
+        }
+    }
+
+    // MARK: - 内置模型（M3）
+
+    private var bundledModelSection: some View {
+        Section {
+            ForEach(SherpaBundledModel.allCases, id: \.self) { model in
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.displayName)
+                            .font(.subheadline)
+                        Text(model.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(model.isAvailable ? "已内置" : "缺失")
+                        .font(.caption)
+                        .foregroundStyle(model.isAvailable ? .green : .red)
+                }
+            }
+        } header: {
+            Text("内置模型（M3：VAD / 降噪 / 说话人分离）")
+        } footer: {
+            Text("这些模型随安装包一起提供（合计约 "
+                + ByteCountFormatter.string(fromByteCount: SherpaBundledModel.totalBytes, countStyle: .file)
+                + "），不需要下载 —— 它们的原始托管地址在交付环境实测不可达，"
+                + "做成下载会让这些功能直接不可用。")
         }
     }
 

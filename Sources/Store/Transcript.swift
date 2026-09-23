@@ -12,11 +12,18 @@ enum TranscriptPass: String, Codable, CaseIterable {
     case live
     /// 事后补跑的终稿
     case final
+    /// 对照稿：与终稿用**同一个模型**，唯一差别是音频先经过降噪。
+    ///
+    /// 存在的唯一目的：让「降噪到底让识别更准还是更差」这个问题
+    /// 由数据回答，而不是靠猜。降噪会引入失真伪影，可能反而抹掉
+    /// 模型需要的语音细节（见 SherpaDenoiser），因此必须可对照验证。
+    case control
 
     var title: String {
         switch self {
         case .live: return "实时稿"
         case .final: return "终稿"
+        case .control: return "对照稿"
         }
     }
 
@@ -24,6 +31,7 @@ enum TranscriptPass: String, Codable, CaseIterable {
         switch self {
         case .live: return "录音过程中生成，可能仍在修正"
         case .final: return "事后用更大模型重新转写，用于留档"
+        case .control: return "与终稿同一模型，但音频先降噪，用于比较降噪是否更准"
         }
     }
 }

@@ -244,7 +244,11 @@ struct RecordView: View {
             return
         }
         liveHint = nil
-        live.start(modelURL: modelURL, language: settings.transcriptionLanguage)
+        live.start(
+            modelURL: modelURL,
+            language: settings.transcriptionLanguage,
+            denoiseEnabled: settings.realtimeDenoiseEnabled
+        )
     }
 
     private func row(_ title: String, _ value: String) -> some View {

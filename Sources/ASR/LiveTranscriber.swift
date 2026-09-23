@@ -59,6 +59,16 @@ final class LiveTranscriptionEngine {
     private var language = "auto"
     private var didFailLoading = false
 
+    // M3：真 VAD 与降噪器。都按需加载、且只在本引擎队列上使用 ——
+    // 这两个类都持有 C 指针、不是线程安全的，因此一路一实例、不共享。
+    private var denoiseEnabled = false
+    private var vad: SherpaVad?
+    private var denoiser: SherpaDenoiser?
+    private var didAttemptLoadingHelpers = false
+    /// 降噪失败只提示一次：滑窗每几秒跑一次，若每次都记日志会把日志刷爆，
+    /// 而"降噪失败"这件事看一次就够了。
+    private var hasReportedDenoiseFailure = false
+
     /// 结果回调。**在本引擎队列上触发**，调用方需自行切回主线程。
     var onSegments: (([TranscriptSegment]) -> Void)?
     /// 状态回调（模型加载中 / 运行中 / 已暂停 / 失败）。同样在引擎队列上触发。
@@ -69,7 +79,9 @@ final class LiveTranscriptionEngine {
     // MARK: - 生命周期
 
     /// 开始实时字幕。可在录音开始时调用。
-    func start(modelURL: URL, language: String) {
+    /// - Parameter denoiseEnabled: 是否先把窗口音频降噪再识别（M3）。
+    ///   默认关 —— 降噪会引入失真伪影，可能反而更差（见 SherpaDenoiser）。
+    func start(modelURL: URL, language: String, denoiseEnabled: Bool = false) {
         lock.lock()
         pending.removeAll()
         fedSamples = 0
@@ -81,30 +93,101 @@ final class LiveTranscriptionEngine {
             guard let self else { return }
             self.modelURL = modelURL
             self.language = language
+            self.denoiseEnabled = denoiseEnabled
             self.window = []
             self.display = []
             self.lastRunSampleIndex = 0
             self.didFailLoading = false
+            self.prepareHelpersIfNeeded()
 
             guard self.engine == nil else {
                 self.startTimer()
-                self.onStatus?("实时字幕已启动")
+                self.onStatus?(self.runningStatusText)
                 return
             }
 
             self.onStatus?("正在加载实时字幕模型…")
             let engine = WhisperEngine(modelPath: modelURL.path)
-            engine.isQuiet = true   // 见下方说明：实时字幕日志必须静音，否则会把日志淹掉
+            engine.isQuiet = true   // 见 WhisperEngine.isQuiet：否则会把日志淹掉
             if engine.load() {
                 self.engine = engine
                 self.startTimer()
-                self.onStatus?("实时字幕已启动")
+                self.onStatus?(self.runningStatusText)
             } else {
                 self.didFailLoading = true
                 self.onStatus?("实时字幕模型加载失败：\(engine.lastError ?? "未知原因")")
                 Log.shared.error(.asr, "实时字幕模型加载失败｜\(engine.lastError ?? "未知原因")")
             }
         }
+    }
+
+    /// 状态文案要把「实际生效的能力」写出来。
+    /// 用户开了降噪却发现没效果、或 VAD 模型缺失导致行为变化，
+    /// 都应该能从界面上看出来，而不是靠猜。
+    private var runningStatusText: String {
+        var parts = ["实时字幕已启动"]
+        if vad != nil { parts.append("VAD 已启用") }
+        if denoiseEnabled {
+            parts.append(denoiser != nil ? "降噪已启用" : "降噪不可用（模型缺失）")
+        }
+        return parts.joined(separator: "｜")
+    }
+
+    /// 按需加载 VAD 与降噪模型。
+    ///
+    /// VAD 与降噪都是 M3 才引入的，且都内置在 App 包里（见 SherpaBundledModel）。
+    /// 这里刻意**允许失败并降级**：模型缺失时回退到 M2 的行为
+    /// （能量门限 / 原始音频），而不是让整个实时字幕不可用 ——
+    /// 少一个增强能力，好过少一个主功能。
+    private func prepareHelpersIfNeeded() {
+        if !didAttemptLoadingHelpers {
+            didAttemptLoadingHelpers = true
+
+            if let vadURL = SherpaBundledModel.sileroVad.url {
+                vad = SherpaVad(modelPath: vadURL.path)
+                if vad == nil {
+                    Log.shared.warn(.asr, "VAD 模型加载失败，回退到能量门限判定")
+                }
+            } else {
+                Log.shared.warn(.asr, "未找到内置 VAD 模型，回退到能量门限判定")
+            }
+        }
+
+        guard denoiseEnabled else { return }
+        guard denoiser == nil else { return }
+
+        guard let denoiserURL = SherpaBundledModel.gtcrn.url else {
+            Log.shared.warn(.asr, "未找到内置降噪模型，将使用原始音频")
+            return
+        }
+        denoiser = SherpaDenoiser(modelPath: denoiserURL.path)
+        if denoiser == nil {
+            Log.shared.warn(.asr, "降噪器加载失败，将使用原始音频")
+        }
+    }
+
+    /// 窗口内是否有人声：优先用真 VAD，模型缺失时回退到 M2 的能量门限。
+    private func windowContainsSpeech(_ samples: [Float]) -> Bool {
+        if let vad {
+            return vad.containsSpeech(in: samples)
+        }
+        return TranscriptMath.hasSpeech(samples)
+    }
+
+    /// 按设置可选地对窗口降噪。
+    ///
+    /// **失败必须回退到原始音频**：为了一次降噪失败而丢掉整窗字幕是不可接受的
+    /// （降噪是增强项，字幕是主功能）。
+    private func maybeDenoise(_ samples: [Float]) -> [Float] {
+        guard denoiseEnabled, let denoiser else { return samples }
+        guard let enhanced = denoiser.denoise(samples), !enhanced.isEmpty else {
+            if !hasReportedDenoiseFailure {
+                hasReportedDenoiseFailure = true
+                Log.shared.warn(.asr, "降噪失败，已回退到原始音频（后续不再重复提示）")
+            }
+            return samples
+        }
+        return enhanced
     }
 
     func stop() {
@@ -118,6 +201,14 @@ final class LiveTranscriptionEngine {
             self.stopTimer()
             self.engine?.unload()
             self.engine = nil
+            // M3 的两个模型也要显式释放：它们各自持有 ONNX 会话，
+            // 不释放会一直占内存（本项目的会话可能连续录 8 小时，内存必须能回收）
+            self.vad?.close()
+            self.vad = nil
+            self.denoiser?.close()
+            self.denoiser = nil
+            self.didAttemptLoadingHelpers = false
+            self.hasReportedDenoiseFailure = false
             self.window = []
             self.display = []
             self.lastRunSampleIndex = 0
@@ -197,12 +288,17 @@ final class LiveTranscriptionEngine {
         lastRunSampleIndex = fed
 
         // 窗口之前的部分已经定稿，重算没有意义；无语音时直接跳过，
-        // 避免 whisper 对静音"编造"文本
-        guard TranscriptMath.hasSpeech(window) else { return }
+        // 避免 whisper 对静音"编造"文本。
+        //
+        // M3 起这里优先用真 VAD（Silero）判定 —— 能量门限分不清"人声"与
+        // "稳定的噪声"，空调声/风扇声都能越过它，幻觉文本照样出现。
+        guard windowContainsSpeech(window) else { return }
 
         let windowStartMs = Int(Double(fed - window.count) / Double(sampleRate) * 1000.0)
+        // 降噪在这里临时施加（原始音频始终没有被动过）
+        let audio = maybeDenoise(window)
         let local = engine.transcribe(
-            samples: window,
+            samples: audio,
             language: language == "auto" ? nil : language,
             translateToEnglish: false
         )
@@ -283,10 +379,14 @@ final class LiveTranscriber: ObservableObject {
     }
 
     /// 开始实时字幕。需要调用方（录音页）先确认模型已下载。
-    func start(modelURL: URL, language: String) {
+    func start(modelURL: URL, language: String, denoiseEnabled: Bool = false) {
         segments = []
         statusText = "正在启动…"
-        LiveTranscriptionEngine.shared.start(modelURL: modelURL, language: language)
+        LiveTranscriptionEngine.shared.start(
+            modelURL: modelURL,
+            language: language,
+            denoiseEnabled: denoiseEnabled
+        )
     }
 
     func stop() {

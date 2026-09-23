@@ -251,6 +251,63 @@ jobs:
             echo "::warning::$BASE 不存在，sherpa-onnx 未构建"
           fi
 
+      # ═══════════════════════════════════════════════════════════════
+      # sherpa-onnx 模型 —— **内置随包**，不做运行时下载
+      #
+      # 与 whisper 模型刻意做成相反的两种策略，判据是「体积 + 可靠性」：
+      #   · 这四个模型合计约 35 MB，远低于蜂窝下载 200 MB 的上限；
+      #   · 它们的原始托管在 GitHub Releases，而交付环境实测 github.com
+      #     不可达（见工作日志阶段十一、十四）。若做成运行时下载，
+      #     「降噪 / VAD / 说话人分离」就会在用户手上直接不可用 ——
+      #     那是把一个可用的功能做成不可用。
+      # 内置之后，M3 的全部能力永久可用、不依赖任何网络。
+      #
+      # 注意 tag 名 speaker-recongition-models 里的拼写错误是上游原样，
+      # 不是本项目的笔误 —— 改成正确拼写反而会 404。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Fetch sherpa-onnx models (bundled into ipa)
+        run: |
+          DEST=Resources/SherpaModels
+          mkdir -p "$DEST"
+          BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+
+          fetch() {
+            name="$1"; url="$2"
+            if [ -f "$DEST/$name" ]; then
+              echo "已存在 $name，跳过"
+              return 0
+            fi
+            echo "下载 $name"
+            curl -fL --retry 3 -o "$DEST/$name" "$url" \
+              || { echo "::error::下载 $name 失败：$url"; exit 1; }
+          }
+
+          fetch silero_vad.onnx "$BASE/asr-models/silero_vad.onnx"
+          fetch gtcrn_simple.onnx "$BASE/speech-enhancement-models/gtcrn_simple.onnx"
+          fetch campplus_zh_en_16k.onnx \
+            "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+
+          # pyannote 分割模型是 tar.bz2 包，解出其中的 model.onnx 并改名
+          if [ ! -f "$DEST/pyannote_segmentation_3_0.onnx" ]; then
+            curl -fL --retry 3 -o /tmp/seg.tar.bz2 \
+              "$BASE/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2" \
+              || { echo "::error::下载 pyannote 分割模型失败"; exit 1; }
+            tar -xjf /tmp/seg.tar.bz2 -C /tmp
+            cp /tmp/sherpa-onnx-pyannote-segmentation-3-0/model.onnx \
+               "$DEST/pyannote_segmentation_3_0.onnx" \
+              || { echo "::error::解包 pyannote 分割模型失败"; exit 1; }
+          fi
+
+          echo "=== 内置模型清单 ==="
+          ls -lh "$DEST"
+          for f in silero_vad.onnx gtcrn_simple.onnx pyannote_segmentation_3_0.onnx campplus_zh_en_16k.onnx; do
+            if [ -f "$DEST/$f" ]; then
+              echo "::notice::bundled-model $f $(stat -f%z "$DEST/$f") bytes"
+            else
+              echo "::error::bundled-model 缺失 $f"
+            fi
+          done
+
       - name: Generate Xcode project
         run: xcodegen generate
 

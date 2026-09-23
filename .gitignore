@@ -26,6 +26,12 @@ scripts/tmp/
 scripts/out/
 
 # ---- 第三方依赖源码与构建产物 ----
-# whisper.cpp 由 CI 在构建前克隆并编译成 xcframework（官方已移除 SwiftPM 支持）。
+# whisper.cpp 与 sherpa-onnx 都由 CI 在构建前克隆并编译。
 # 不纳入版本控制：体积大、且必须与 CI 中固定的 tag 保持一致。
 third_party/
+
+# ---- 内置模型（CI 构建时下载，随 ipa 打包）----
+# sherpa-onnx 的四个模型（VAD / 降噪 / 说话人分割 / 声纹，合计约 35 MB）
+# 由 CI 下载到此目录并打进 ipa。不纳入版本控制：二进制文件不适合进 git，
+# 且它们与 CI 中固定的 sherpa tag 是一组，应当一起演进。
+Resources/SherpaModels/

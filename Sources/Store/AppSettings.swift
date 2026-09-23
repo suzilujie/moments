@@ -72,6 +72,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(transcriptionLanguage, forKey: Keys.transcriptionLang) }
     }
 
+    /// 实时字幕是否先对音频降噪（M3）。
+    ///
+    /// 默认**关**。理由必须说清楚：降噪会引入失真伪影（artifact），
+    /// 而 whisper 本身对噪声已相当鲁棒 —— 降噪有可能反而让字错误率上升。
+    /// 因此它是"可对照、可验证的选项"，不是默认开启的"增强"。
+    /// 原始音频始终保存，降噪只在转写时临时施加，随时可关掉重来。
+    @Published var realtimeDenoiseEnabled: Bool {
+        didSet { defaults.set(realtimeDenoiseEnabled, forKey: Keys.realtimeDenoise) }
+    }
+
     /// 模型下载是否优先走镜像。
     /// 保留这个开关是因为交付环境实测存在 huggingface.co 不可达的情况，
     /// 而模型下不下来会直接让转写功能失效（见 ModelManager）。
@@ -112,6 +122,7 @@ final class AppSettings: ObservableObject {
         finalModelId = defaults.string(forKey: Keys.finalModel) ?? WhisperModelCatalog.finalDefaultId
         transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
+        realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
         learningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh"
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
@@ -141,6 +152,7 @@ final class AppSettings: ObservableObject {
         static let finalModel = "moments.asr.finalModel"
         static let transcriptionLang = "moments.asr.language"
         static let modelMirror = "moments.model.preferMirror"
+        static let realtimeDenoise = "moments.asr.realtimeDenoise"
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"
         static let export = "moments.export.enabled"

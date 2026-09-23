@@ -136,6 +136,7 @@ struct RootView: View {
         Section("离线引擎（M2 / M3）") {
             row("whisper 后端", model.whisperBackend)
             row("sherpa-onnx", model.sherpaVersion)
+            row("内置模型（M3）", model.bundledModelsText)
             row("已安装模型", model.installedModelsText)
             row("模型占用", model.modelBytesText)
             row("转写覆盖率", model.coverageText)
@@ -218,6 +219,8 @@ final class SelfCheckModel: ObservableObject {
     @Published var whisperBackend = "-"
     /// M3 语音处理（sherpa-onnx）—— 版本号能取到即证明静态库已链接
     @Published var sherpaVersion = "-"
+    /// M3 内置模型（VAD / 降噪 / 说话人分割 / 声纹）的齐备情况
+    @Published var bundledModelsText = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -244,6 +247,7 @@ final class SelfCheckModel: ObservableObject {
     func refreshASR() {
         whisperBackend = WhisperEngine.systemInfo
         sherpaVersion = SherpaOnnxEngine.summary
+        bundledModelsText = SherpaBundledModel.summary
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty

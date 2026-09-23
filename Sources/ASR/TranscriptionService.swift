@@ -84,7 +84,8 @@ final class TranscriptionService: ObservableObject {
         sessionId: String,
         pass: TranscriptPass = .final,
         modelId: String? = nil,
-        language: String = "auto"
+        language: String = "auto",
+        denoise: Bool = false
     ) {
         guard !isBusy else {
             Log.shared.warn(.asr, "已有转写任务在跑，忽略本次请求｜\(sessionId)")
@@ -134,14 +135,17 @@ final class TranscriptionService: ObservableObject {
             descriptor: descriptor,
             modelURL: modelURL,
             language: language,
-            existing: TranscriptStore.shared.load(sessionId: sessionId, pass: pass)
+            existing: TranscriptStore.shared.load(sessionId: sessionId, pass: pass),
+            applyDenoise: denoise
         )
 
         runningSessionId = sessionId
         processedSegments = 0
         totalSegments = manifest.segments.count
         stage = .loadingModel
-        lastMessage = "开始\(pass.title)｜\(manifest.segments.count) 个分片｜模型 \(descriptor.displayName)"
+        lastMessage = "开始\(pass.title)｜\(manifest.segments.count) 个分片"
+            + "｜模型 \(descriptor.displayName)"
+            + (denoise ? "｜音频已降噪" : "｜音频为原始轨")
 
         // 让实时字幕避让：两者同时跑会互相抢 CPU，结果是录音被拖累（设计文档 5.4）
         LiveTranscriber.shared.setPaused(true)
@@ -216,6 +220,10 @@ final class TranscriptionWorker {
         let modelURL: URL
         let language: String
         let existing: TranscriptDocument?
+        /// M3：是否在识别前对音频降噪。
+        /// 只有「对照稿」会置为 true —— 终稿按设计**始终使用原始音频**，
+        /// 以免降噪伪影影响留档质量（见 SherpaDenoiser）。
+        let applyDenoise: Bool
     }
 
     enum Outcome {
@@ -271,6 +279,27 @@ final class TranscriptionWorker {
             return
         }
 
+        // M3：真 VAD 与（可选的）降噪。同样**允许失败并降级** ——
+        // 模型缺失时回退到 M2 的能量门限与原始音频：
+        // 少一个增强能力，好过整次转写失败。
+        let vad: SherpaVad? = SherpaBundledModel.sileroVad.url.flatMap {
+            SherpaVad(modelPath: $0.path)
+        }
+        if vad == nil {
+            Log.shared.warn(.asr, "VAD 不可用，本次转写回退到能量门限判定寂静")
+        }
+
+        var denoiser: SherpaDenoiser?
+        if inputs.applyDenoise {
+            denoiser = SherpaBundledModel.gtcrn.url.flatMap {
+                SherpaDenoiser(modelPath: $0.path)
+            }
+            if denoiser == nil {
+                // 明确说出来：否则"对照稿"会静默地等同于终稿，用户会得出错误结论
+                Log.shared.warn(.asr, "降噪不可用，本次对照稿将等同终稿（请检查内置模型是否齐备）")
+            }
+        }
+
         // 续跑：已有未完成的稿时，从已覆盖时间点之后接着做。
         // 避免"跑了两小时被系统杀掉、重启又要从头再来"。
         var segments: [TranscriptSegment] = []
@@ -302,9 +331,15 @@ final class TranscriptionWorker {
                 do {
                     let samples = try WhisperEngine.loadSamples(from: url)
 
-                    if TranscriptMath.hasSpeech(samples) {
+                    // 语音判定：优先真 VAD，缺失时回退 M2 的能量门限
+                    let hasSpeech = vad?.containsSpeech(in: samples)
+                        ?? TranscriptMath.hasSpeech(samples)
+
+                    if hasSpeech {
+                        // 降噪只在对照稿里施加；失败时回退原始音频（见 SherpaDenoiser）
+                        let audio = denoiser?.denoise(samples) ?? samples
                         let local = engine.transcribe(
-                            samples: samples,
+                            samples: audio,
                             language: inputs.language == "auto" ? nil : inputs.language,
                             translateToEnglish: false
                         )
@@ -340,6 +375,10 @@ final class TranscriptionWorker {
         }
 
         engine.unload()
+        // M3 的两个模型也显式释放：各自持有 ONNX 会话，占内存；
+        // 一次转写可能跑几百个分片，跑完必须还回去
+        vad?.close()
+        denoiser?.close()
 
         if isCancelled {
             onFinished?(.cancelled(makeDocument(segments: segments, isComplete: false, note: "已取消，可再次点击继续")))

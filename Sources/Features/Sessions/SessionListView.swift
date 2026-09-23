@@ -225,6 +225,7 @@ struct SessionDetailView: View {
                 transcribingView
             } else if let transcript, !transcript.isEmpty {
                 passPicker
+                transcriptActions
                 ForEach(transcriptRows) { row in
                     Button {
                         playSegment(containingMs: row.startMs)
@@ -253,6 +254,29 @@ struct SessionDetailView: View {
             }
         } footer: {
             Text(transcriptFooterText)
+        }
+    }
+
+    /// 转写相关的动作。
+    ///
+    /// 「对照转写」的存在理由：降噪会引入失真伪影，**可能反而让识别更差**。
+    /// 与其争论，不如让用户在**同一段音频**上用**同一个模型**跑两次
+    /// （终稿 = 原始音频，对照稿 = 降噪音频），直接比较文字 ——
+    /// 这是本项目对"降噪到底有没有用"给的唯一诚实答案。
+    private var transcriptActions: some View {
+        HStack {
+            Button("重新转写") {
+                asr.transcribe(sessionId: manifest.id, pass: .final)
+            }
+            .font(.footnote)
+
+            Spacer()
+
+            Button("对照转写（降噪）") {
+                asr.transcribe(sessionId: manifest.id, pass: .control, denoise: true)
+            }
+            .font(.footnote)
+            .disabled(!hasAnyAudio)
         }
     }
 

@@ -35,6 +35,15 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      # 资源目录：目前只有内置的 sherpa 模型（CI 下载后随包打包）。
+      # 排除 Info.plist —— 它由 INFOPLIST_FILE 单独引用，
+      # 若再被当作普通资源拷进包内会产生重复与告警。
+      # 注意资源会被**平铺到包根目录**，因此代码里可以直接用
+      # Bundle.main.bundleURL.appendingPathComponent(fileName) 定位（见 SherpaBundledModel）。
+      - path: Resources
+        buildPhase: resources
+        excludes:
+          - Info.plist
     dependencies:
       # ═══ whisper.cpp（M2 转写引擎）═══
       # 官方已移除 SwiftPM 支持，因此由 CI 用官方 build-xcframework.sh
