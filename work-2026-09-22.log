@@ -1131,3 +1131,88 @@
   3) M3c：说话人分离 + 声纹库（跨会话认人）
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-23] 阶段十五：M3b —— VAD 与 GTCRN 降噪（构建通过）
+--------------------------------------------------------------------------------
+
+■ 结果
+  M3a 共 2 轮：d8b7710 失败 → 89edcf8 成功。
+  M3b 共 2 轮：3e56486 编译失败 → b54a166 **success**。
+
+■ M3a 的失败与修复（一轮定位）
+  现象：sherpa 构建步骤 exit 1，且**没有任何注解**（当时该步骤尚未分阶段落日志）。
+  原因：`SHERPA_ONNXRUNTIME_LIB_DIR` 写成了 onnxruntime.framework 内部路径。
+    官方脚本的两个环境变量口径**不一致**：
+      · LIB_DIR     = onnxruntime.framework 的**父目录**
+      · INCLUDE_DIR = .../onnxruntime.framework/Headers
+  修复：按官方口径写准；同时把该步骤拆为 5 个阶段（下载/配置/编译/安装/合并）
+    各自落日志，任一失败即把日志尾部转成 ::error:: 注解。
+    结果：修复后一轮即成功。
+
+■ M3b 的失败与修复（一轮定位）
+  现象：SherpaVad.swift:27 与 SherpaDenoiser.swift:24 报
+    `cannot find type 'SherpaOnnxVoiceActivityDetector' in scope`
+  关键线索：**配置结构体能找到、偏偏不透明句柄找不到**。
+  原因：头文件里这两个类型是**不完整类型**（只有 `typedef struct X X;`，
+    结构体本身从不定义 —— 属刻意的信息隐藏）。Clang importer 对
+    不完整结构体的指针**不生成 Swift 类型名**，一律映射为 `OpaquePointer`
+    （与 Swift 里用 SQLite 必须写 `OpaquePointer` 同理）。
+  修复：handle 改用 `OpaquePointer?`。
+
+■ 关键设计决定：sherpa 模型【内置随包】而非运行时下载
+  与 whisper 模型做成**相反**的两种策略，判据是「体积 + 可靠性」：
+    · whisper：单个 57～539 MB → 必须下载（否则超蜂窝 200 MB 上限，部分用户装不上）
+    · sherpa ：四个合计约 35 MB → 内置（原始托管在 GitHub Releases，
+      而交付环境实测 github.com 不可达；做成下载会让 VAD/降噪/说话人分离
+      在用户手上直接不可用 —— 那是把可用功能做成不可用）
+  实测打包结果：silero_vad 643,854 B｜gtcrn 535,638 B｜
+    pyannote_segmentation_3_0 5,992,913 B｜campplus_zh_en_16k 28,281,164 B
+
+■ 新增文件（4 个）
+  Sources/ASR/SherpaBundledModel.swift  内置模型目录与路径解析
+  Sources/ASR/SherpaVad.swift           VAD 封装（替代 M2 的能量门限）
+  Sources/ASR/SherpaDenoiser.swift      GTCRN 降噪封装
+  （另 M3a 的 SherpaOnnxEngine / SherpaBridge.h / Bridges.h 见阶段十四）
+
+■ 修改文件（8 个）
+  Sources/Store/Transcript.swift       新增 TranscriptPass.control（对照稿）
+  Sources/Store/AppSettings.swift      新增 realtimeDenoiseEnabled（默认关）
+  Sources/ASR/LiveTranscriber.swift    VAD 判定 + 可选降噪 + 状态文案明示生效能力
+  Sources/ASR/TranscriptionService.swift  worker 接入 VAD；降噪仅对照稿施加
+  Sources/Features/Record/RecordView.swift     传降噪开关
+  Sources/Features/Sessions/SessionListView.swift 新增「对照转写（降噪）」按钮
+  Sources/Features/Settings/SettingsView.swift    降噪开关 + 内置模型状态
+  Sources/App/RootView.swift           自检页新增内置模型齐备情况
+  .github/workflows/ios-build.yml      新增内置模型下载步骤 + verify 断言
+  project.yml                          Resources 作为资源目录（排除 Info.plist）
+  .gitignore                           排除 Resources/SherpaModels/
+
+■ 为什么把降噪做成"对照稿"而不是直接开启
+  降噪会引入**失真伪影（artifact）**，而 whisper 本身对噪声已相当鲁棒 ——
+  降噪有可能反而让字错误率上升。这不是靠调参能消除的问题，只能靠实测。
+  因此本项目的做法是：**同一段音频、同一个模型跑两次**
+  （终稿 = 原始音频，对照稿 = 降噪音频），让用户直接比较文字。
+  这是对"降噪有没有用"唯一诚实的回答，也是设计文档里
+  「降噪是可验证的选项而非默认增强」的落地。
+
+■ 两处刻意的"失败降级"
+  · VAD 模型缺失/加载失败 → 回退到 M2 的均方根能量门限
+  · 降噪失败 → 回退到原始音频，且只提示一次（滑窗每几秒一次，不能刷屏）
+  理由：这些都是增强项，**少一个增强能力，好过让主功能停摆**。
+
+■ 潜在风险 / 待真机验证（新增）
+  1) 实时字幕现在是「VAD + 降噪 + whisper」三级串联，
+     单窗耗时明显上升 —— 实时倍率是否仍满足要求必须实测（原设计已列 R 项）。
+  2) VAD 的 min_silence_duration=0.5s 等参数是经验默认值，需按真实语料调。
+  3) 降噪与 VAD 都会占内存（各持一个 ONNX 会话），
+     与"8 小时长录"叠加后是否触发系统回收需实测。
+
+■ 下一步
+  M3c：说话人分离 + 声纹库（跨会话认人）
+    · pyannote 分割 → 声纹嵌入 → 聚类 → 回填到转写片段
+    · 注意 C API 里 diarization 段的时间单位是**秒**，
+      而本项目内部时间轴统一用**毫秒**，必须换算
+    · 声纹库：手动录入人物 → 聚类质心比对（余弦相似度 + 阈值）
+    · 重叠说话为全行业难题，UI 必须明确标注"可能重叠"而非假装准确
+================================================================================
+
