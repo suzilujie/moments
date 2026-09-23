@@ -67,11 +67,24 @@ targets:
         DEVELOPMENT_TEAM: "S2GX2R7LD5"
         INFOPLIST_FILE: Resources/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
-        # 桥接头：把 whisper.cpp 的 C API 暴露给 Swift。
-        # 静态 xcframework 没有 Swift module map，无法直接 import。
-        SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/WhisperBridge.h
-        # ggml 是 C++ 实现，链接时需要 C++ 标准库
-        OTHER_LDFLAGS: "-lc++"
+        # 桥接头：把两个第三方 C 库（whisper.cpp、sherpa-onnx）暴露给 Swift。
+        # 注意 Xcode 只能指定**一个**桥接头，因此收口到 Bridges.h，
+        # 由它分别 include WhisperBridge.h 与 SherpaBridge.h。
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/Bridges.h
+        # ggml 与 sherpa-onnx 都是 C++ 实现，需要 C++ 标准库；
+        # -lz 是 onnxruntime 静态库的常见依赖；
+        # -lsherpa-onnx-all 是 CI 合并出的「sherpa-onnx + onnxruntime」单一静态库。
+        OTHER_LDFLAGS: "-lc++ -lz -lsherpa-onnx-all"
+        # ═══ sherpa-onnx（M3）═══
+        # 刻意**不走 xcframework**：本项目的 iOS 产物只用于真机侧载，
+        # 只需要真机切片；直接链接 CI 合并出的 .a + 头文件目录，
+        # 比走 framework bundle 少一层"切片选择 / Info.plist / modulemap"的坑。
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/third_party/sherpa-onnx/build-ios-os64/build/os64"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/third_party/sherpa-onnx/build-ios-os64/install/include"
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
         MARKETING_VERSION: "0.1"

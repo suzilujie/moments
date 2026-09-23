@@ -130,11 +130,12 @@ struct RootView: View {
         }
     }
 
-    // MARK: - 转写引擎（M2）
+    // MARK: - 离线引擎（M2 转写 / M3 语音处理）
 
     private var asrSection: some View {
-        Section("转写引擎（M2）") {
+        Section("离线引擎（M2 / M3）") {
             row("whisper 后端", model.whisperBackend)
+            row("sherpa-onnx", model.sherpaVersion)
             row("已安装模型", model.installedModelsText)
             row("模型占用", model.modelBytesText)
             row("转写覆盖率", model.coverageText)
@@ -145,12 +146,13 @@ struct RootView: View {
             }
 
             note(
-                "「whisper 后端」非空即证明 whisper.cpp 的 xcframework 已真正链接（而不是编译通过的空壳）。"
+                "「whisper 后端」与「sherpa-onnx」非空即证明两个第三方静态库都已真正链接"
+                    + "（而不是编译通过的空壳）—— 这是集成类里程碑最硬的验收依据。"
                     + "转写覆盖率 = 已有文字稿的会话数 / 总会话数。",
                 color: .secondary
             )
 
-            Button("刷新转写信息") { model.refreshASR() }
+            Button("刷新引擎信息") { model.refreshASR() }
         }
     }
 
@@ -214,6 +216,8 @@ final class SelfCheckModel: ObservableObject {
 
     // M2 转写
     @Published var whisperBackend = "-"
+    /// M3 语音处理（sherpa-onnx）—— 版本号能取到即证明静态库已链接
+    @Published var sherpaVersion = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -239,6 +243,7 @@ final class SelfCheckModel: ObservableObject {
     /// 这比"编译通过"强得多（编译通过也可能只是没引用而已）。
     func refreshASR() {
         whisperBackend = WhisperEngine.systemInfo
+        sherpaVersion = SherpaOnnxEngine.summary
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty

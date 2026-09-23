@@ -25,13 +25,20 @@ jobs:
   build:
     name: Build unsigned ipa
     runs-on: macos-15
-    # 60 分钟：whisper.cpp + ggml 的 xcframework 首次构建需要数分钟，
-    # 命中缓存后才会恢复到几十秒量级。
-    timeout-minutes: 60
+    # 120 分钟：两个 C/C++ 大依赖（whisper.cpp、sherpa-onnx）的**首次**构建
+    # 各自都需要数分钟到十几分钟；命中缓存后才会回落到几分钟。
+    # 原为 60 分钟，M3 加入 sherpa-onnx 后上调。
+    timeout-minutes: 120
 
     env:
       # whisper.cpp 固定 tag（官方已移除 SwiftPM 支持，只能自建 xcframework）
       WHISPER_TAG: v1.9.4
+      # sherpa-onnx 固定 tag。
+      # 注意：其 release 里只有 Android / Windows / macOS / WASM 产物，
+      # **没有 iOS**，官方只提供构建脚本，因此必须自建（M3）。
+      SHERPA_TAG: v1.13.8
+      # sherpa-onnx 依赖的 onnxruntime iOS 静态库版本（官方脚本里的默认值）
+      ORT_VERSION: 1.28.2
 
     steps:
       - name: Checkout
@@ -98,6 +105,127 @@ jobs:
             done
           else
             echo "::warning::third_party/whisper.cpp/build-apple 不存在，xcframework 未生成"
+          fi
+
+      # ═══════════════════════════════════════════════════════════════
+      # sherpa-onnx（M3）→ 合并静态库
+      #
+      # 与官方 build-ios-no-tts.sh 的三点差异（都是刻意的）：
+      #  1) **只构建真机切片（PLATFORM=OS64）**。官方脚本还会构建
+      #     SIMULATOR64 与 SIMULATORARM64 两个模拟器切片，而本项目产物
+      #     只用于真机侧载，模拟器切片纯属浪费、会让 CI 时间成倍增加。
+      #  2) **把 sherpa-onnx 与 onnxruntime 合并成一个 .a**。两者都是静态库；
+      #     合并后 Xcode 侧只需 `-l` 一个库名，省掉 framework bundle、
+      #     切片选择，以及 onnxruntime 产物无 lib 前缀（-l 找不到）的麻烦。
+      #  3) **toolchain 用绝对路径**。官方脚本写的是
+      #     `-DCMAKE_TOOLCHAIN_FILE=./toolchains/ios.toolchain.cmake`，
+      #     而它当时的工作目录是 build-ios-no-tts/，相对基准有歧义；
+      #     这里直接给绝对路径，不给"路径对不对"留任何余地。
+      #
+      # 缓存整个 third_party/sherpa-onnx（源码 + 产物），key 绑定 tag 与
+      # onnxruntime 版本：日常改动不重编 C++，只有升级版本时才重编。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Cache sherpa-onnx (source + built lib)
+        id: sherpa-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/sherpa-onnx
+          key: sherpa-${{ env.SHERPA_TAG }}-ort${{ env.ORT_VERSION }}-${{ runner.os }}
+
+      - name: Build sherpa-onnx static lib (device only)
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p third_party
+          if [ ! -d third_party/sherpa-onnx/.git ]; then
+            git clone --depth 1 --branch "${SHERPA_TAG}" \
+              https://github.com/k2-fsa/sherpa-onnx third_party/sherpa-onnx
+          fi
+
+          cd third_party/sherpa-onnx
+          SRC_ROOT="$PWD"
+          mkdir -p build-ios-os64
+          cd build-ios-os64
+
+          echo "=== 1/4 下载 onnxruntime iOS 静态库 ==="
+          ORT_DIR="ios-onnxruntime/${ORT_VERSION}"
+          mkdir -p "$ORT_DIR"
+          cd "$ORT_DIR"
+          if [ ! -d onnxruntime.xcframework ]; then
+            # 官方脚本用的是 wget -c，但 macOS runner 不保证装有 wget，改用 curl
+            curl -fL --retry 3 -o ort.zip \
+              "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${ORT_VERSION}/onnxruntime-ios-static-xcframework-${ORT_VERSION}.xcframework.zip"
+            unzip -q ort.zip
+            rm -f ort.zip
+          fi
+          cd ../..
+
+          ORT_ROOT="$PWD/ios-onnxruntime/${ORT_VERSION}/onnxruntime.xcframework/ios-arm64/onnxruntime.framework"
+          export SHERPA_ONNXRUNTIME_LIB_DIR="$ORT_ROOT"
+          export SHERPA_ONNXRUNTIME_INCLUDE_DIR="$ORT_ROOT/Headers"
+          ls -la "$ORT_ROOT" || true
+
+          echo "=== 2/4 配置并编译（仅真机 OS64）==="
+          cmake \
+            -DSHERPA_ONNX_ENABLE_TTS=OFF \
+            -DBUILD_PIPER_PHONMIZE_EXE=OFF \
+            -DBUILD_PIPER_PHONMIZE_TESTS=OFF \
+            -DBUILD_ESPEAK_NG_EXE=OFF \
+            -DBUILD_ESPEAK_NG_TESTS=OFF \
+            -S "$SRC_ROOT" \
+            -DCMAKE_TOOLCHAIN_FILE="$SRC_ROOT/toolchains/ios.toolchain.cmake" \
+            -DPLATFORM=OS64 \
+            -DENABLE_BITCODE=0 \
+            -DENABLE_ARC=1 \
+            -DENABLE_VISIBILITY=0 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSHERPA_ONNX_ENABLE_PYTHON=OFF \
+            -DSHERPA_ONNX_ENABLE_BINARY=OFF \
+            -DSHERPA_ONNX_ENABLE_TESTS=OFF \
+            -DSHERPA_ONNX_ENABLE_CHECK=OFF \
+            -DSHERPA_ONNX_ENABLE_PORTAUDIO=OFF \
+            -DSHERPA_ONNX_ENABLE_JNI=OFF \
+            -DSHERPA_ONNX_ENABLE_C_API=ON \
+            -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF \
+            -DDEPLOYMENT_TARGET=13.0 \
+            -B build/os64
+
+          cmake --build build/os64 -j 4
+
+          echo "=== 3/4 安装头文件 ==="
+          cmake --build build/os64 --target install
+          ls -la install/include/sherpa-onnx/c-api/ || true
+
+          echo "=== 4/4 合并静态库（sherpa-onnx + onnxruntime）==="
+          libtool -static -o build/os64/libsherpa-onnx-all.a \
+            build/os64/lib/libkaldi-native-fbank-core.a \
+            build/os64/lib/libkissfft-float.a \
+            build/os64/lib/libsherpa-onnx-c-api.a \
+            build/os64/lib/libsherpa-onnx-core.a \
+            build/os64/lib/libsherpa-onnx-fst.a \
+            build/os64/lib/libsherpa-onnx-fstfar.a \
+            build/os64/lib/libsherpa-onnx-kaldifst-core.a \
+            build/os64/lib/libkaldi-decoder-core.a \
+            build/os64/lib/libssentencepiece_core.a \
+            "$ORT_ROOT/onnxruntime"
+          ls -lh build/os64/libsherpa-onnx-all.a
+
+      # 与 whisper 同样的理由（见下）：本机看不到 Actions 原始日志，
+      # 注解是唯一观测通道。这里把三个关键产物路径直接报出来 ——
+      # 链接失败时，"路径到底存不存在"是第一个要排除的可能。
+      - name: Report sherpa-onnx artifact layout
+        if: always()
+        run: |
+          BASE=third_party/sherpa-onnx/build-ios-os64
+          if [ -d "$BASE" ]; then
+            echo "::notice::sherpa-onnx 构建目录已生成"
+            echo "::warning::sherpa-lib $(ls -1 "$BASE/build/os64/libsherpa-onnx-all.a" 2>/dev/null || echo '缺失 libsherpa-onnx-all.a')"
+            echo "::warning::sherpa-header $(ls -1 "$BASE/install/include/sherpa-onnx/c-api/c-api.h" 2>/dev/null || echo '缺失 c-api.h')"
+            echo "::warning::sherpa-ort $(ls -1 "$BASE/ios-onnxruntime/${ORT_VERSION}/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime" 2>/dev/null || echo '缺失 onnxruntime')"
+          else
+            echo "::warning::$BASE 不存在，sherpa-onnx 未构建"
           fi
 
       - name: Generate Xcode project
