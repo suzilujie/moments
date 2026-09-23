@@ -116,6 +116,9 @@ final class TranslationService: ObservableObject {
 
     private struct PendingRequest {
         let sessionId: String
+        /// 源语言。**必须指定**：系统翻译的语言可用性查询与配置都要求给出源语言，
+        /// 不支持"源语言自动判定"（这与 whisper 的识别不同，那里可以自动判）。
+        let source: String
         let target: String
         let pass: TranscriptPass
         /// 需要翻译的片段（已扣掉缓存命中的部分）
@@ -150,10 +153,15 @@ final class TranslationService: ObservableObject {
     ///
     /// **必须前置校验**：系统翻译的语言对是有限的，而且语言包需要单独下载。
     /// 不查就翻，用户会得到"点了没反应"，那是最糟的失败方式（设计文档 7.4）。
-    func availability(to target: String, from source: String? = nil) async -> LanguageAvailability.Status {
+    ///
+    /// 注意：`status(from:to:)` 的两个参数都是**非可选**的，
+    /// 系统不支持"源语言自动判定" —— 因此源语言必须由调用方给定。
+    func availability(from source: String, to target: String) async -> LanguageAvailability.Status {
         let availability = LanguageAvailability()
-        let sourceLanguage = source.map { Locale.Language(identifier: $0) }
-        return await availability.status(from: sourceLanguage, to: Locale.Language(identifier: target))
+        return await availability.status(
+            from: Locale.Language(identifier: source),
+            to: Locale.Language(identifier: target)
+        )
     }
 
     /// 把状态翻译成用户能看懂的话，并明确**下一步该做什么**。
@@ -177,6 +185,7 @@ final class TranslationService: ObservableObject {
     /// - Parameter existing: 已缓存的（segmentId → 译文），用来跳过已翻好的句子
     func requestTranslation(
         sessionId: String,
+        source: String,
         target: String,
         pass: TranscriptPass,
         segments: [TranscriptSegment],
@@ -205,13 +214,19 @@ final class TranslationService: ObservableObject {
         message = "准备翻译 \(missing.count) 句 → \(TranslationLanguageCatalog.name(for: target))"
         stage = .preparing
 
-        pending = PendingRequest(sessionId: sessionId, target: target, pass: pass, missing: missing)
+        pending = PendingRequest(
+            sessionId: sessionId,
+            source: source,
+            target: target,
+            pass: pass,
+            missing: missing
+        )
 
-        // 源语言留空 = 由系统自动判定。
-        // 本项目录音里中英夹杂很常见，强制指定源语言会把另一种语言判错
-        // （与 WhisperModelCatalog 里"识别语言默认自动"是同一考虑）。
+        // 源语言必须显式给出（系统不提供自动判定）。
+        // 这一点与 whisper 的识别不同 —— 那里可以自动判语言，这里不行，
+        // 所以界面必须让用户选源语言，而不是假装它自己知道。
         configuration = TranslationSession.Configuration(
-            source: nil,
+            source: Locale.Language(identifier: source),
             target: Locale.Language(identifier: target)
         )
     }

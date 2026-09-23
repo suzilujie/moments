@@ -1,5 +1,9 @@
 import AVFoundation
 import SwiftUI
+// 必须 import：`.translationTask` 这个 SwiftUI 修饰器定义在 Translation 模块里，
+// 不 import 的话会报 "value of type 'some View' has no member 'translationTask'"
+// —— 这条错误与"框架没链接"无关，纯粹是模块可见性问题。
+import Translation
 
 /// 记录列表：按时间浏览所有录音。
 struct SessionListView: View {
@@ -222,6 +226,9 @@ struct SessionDetailView: View {
     /// 不在属性初始化式里直接读 AppSettings（那是 @MainActor 隔离的属性，
     /// 在非隔离的初始化式里访问会构成隔离问题）。
     @State private var targetLanguage = ""
+    /// 源语言。系统翻译**不支持"源语言自动判定"**，必须显式指定，
+    /// 因此界面上必须有这一项 —— 假装它自己知道是错的。
+    @State private var sourceLanguage = "zh-Hans"
     @State private var displayMode: TranscriptDisplayMode = .bilingual
     /// 当前语言已翻好的片段（segmentId → 译文）
     @State private var translationMap: [String: String] = [:]
@@ -250,6 +257,12 @@ struct SessionDetailView: View {
             if targetLanguage.isEmpty {
                 targetLanguage = AppSettings.shared.defaultTargetLanguage
             }
+            // 源语言与目标语言相同是无效组合（自己翻自己）。
+            // 默认值确实可能撞车（用户既以中文为主要语言、默认目标也可能是中文），
+            // 与其让用户点一次才发现在报错，不如在这里纠正一次。
+            if sourceLanguage == targetLanguage {
+                targetLanguage = (sourceLanguage == "en") ? "zh-Hans" : "en"
+            }
             reloadTranslationMap()
             playFocusedSentenceIfNeeded()
         }
@@ -260,6 +273,8 @@ struct SessionDetailView: View {
         .onChange(of: asr.stage) { reloadTranscript() }
         .onChange(of: diarization.stage) { reloadSpeakerTimeline() }
         .onChange(of: targetLanguage) { reloadTranslationMap() }
+        // 源语言变了，所有语言对的可用性都会变，必须重查
+        .onChange(of: sourceLanguage) { Task { await refreshLanguageStatus() } }
         .onChange(of: translation.stage) { reloadTranslationMap() }
         // 系统翻译框架要求由**视图**拿到 TranslationSession，
         // 因此把真正的执行挂在这里（见 TranslationService 里对两段式设计的说明）
@@ -556,6 +571,12 @@ struct SessionDetailView: View {
     /// 不藏在设置里），显示模式决定用户看到的每一行，必须一眼可见。
     private var translationControls: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Picker("源语言", selection: $sourceLanguage) {
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Text(language.name).tag(language.code)
+                }
+            }
+
             Picker("翻译成", selection: $targetLanguage) {
                 ForEach(TranslationLanguageCatalog.all) { language in
                     Text(languageOptionTitle(language)).tag(language.code)
@@ -583,6 +604,7 @@ struct SessionDetailView: View {
                 Button(translateButtonTitle) {
                     translation.requestTranslation(
                         sessionId: manifest.id,
+                        source: sourceLanguage,
                         target: targetLanguage,
                         pass: selectedPass,
                         segments: transcriptSegments,
@@ -627,9 +649,11 @@ struct SessionDetailView: View {
 
     /// 前置校验各语言对。不能省：不查就翻，用户会得到"点了没反应"。
     private func refreshLanguageStatus() async {
+        let source = sourceLanguage
         var result: [String: String] = [:]
-        for language in TranslationLanguageCatalog.all {
-            let status = await translation.availability(to: language.code)
+        // 跳过源语言自身（自己翻自己没有意义）
+        for language in TranslationLanguageCatalog.all where language.code != source {
+            let status = await translation.availability(from: source, to: language.code)
             result[language.code] = TranslationService.describe(status)
         }
         languageStatus = result
