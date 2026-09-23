@@ -101,10 +101,16 @@ struct SessionDetailView: View {
     let manifest: SessionManifest
     @StateObject private var player = SessionAudioPlayer()
     @ObservedObject private var asr = TranscriptionService.shared
+    @ObservedObject private var diarization = DiarizationService.shared
+    @ObservedObject private var profiles = SpeakerProfileStore.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var transcript: TranscriptDocument?
     @State private var selectedPass: TranscriptPass = .final
+    @State private var speakerTimeline: SpeakerTimeline?
+    /// 正在命名哪个说话人（弹窗）
+    @State private var namingSpeakerIndex: Int?
+    @State private var draftSpeakerName = ""
 
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
@@ -113,6 +119,7 @@ struct SessionDetailView: View {
     var body: some View {
         List {
             transcriptSection
+            speakerSection
             overviewSection
             if manifest.hasGap { gapSection }
             if let note = manifest.note { noteSection(note) }
@@ -121,9 +128,20 @@ struct SessionDetailView: View {
         }
         .navigationTitle(manifest.title)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { initializePass() }
+        .onAppear {
+            initializePass()
+            reloadSpeakerTimeline()
+        }
         .onChange(of: selectedPass) { reloadTranscript() }
         .onChange(of: asr.stage) { reloadTranscript() }
+        .onChange(of: diarization.stage) { reloadSpeakerTimeline() }
+        .alert("命名说话人", isPresented: namingBinding) {
+            TextField("姓名", text: $draftSpeakerName)
+            Button("取消", role: .cancel) { namingSpeakerIndex = nil }
+            Button("保存") { commitSpeakerName() }
+        } message: {
+            Text("命名后，这个人的声纹会存入声纹库；以后再录到他，会自动标出名字。")
+        }
         .onDisappear { player.stop() }
     }
 
@@ -215,6 +233,183 @@ struct SessionDetailView: View {
         } footer: {
             Text("将同时删除音频分片与这份记录，不可恢复。")
         }
+    }
+
+    // MARK: - 说话人（M3c）
+
+    private var namingBinding: Binding<Bool> {
+        Binding(
+            get: { namingSpeakerIndex != nil },
+            set: { if !$0 { namingSpeakerIndex = nil } }
+        )
+    }
+
+    private var speakerSection: some View {
+        Section {
+            if diarization.runningSessionId == manifest.id {
+                diarizingView
+            } else if let speakerTimeline, !speakerTimeline.isEmpty {
+                speakerList(speakerTimeline)
+            } else {
+                emptySpeakerView
+            }
+        } header: {
+            HStack {
+                Text("说话人")
+                Spacer()
+                if let speakerTimeline, !speakerTimeline.isEmpty {
+                    Text(speakerTimeline.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            Text(speakerFooterText)
+        }
+    }
+
+    private var diarizingView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(diarization.stage.text)
+                .font(.subheadline)
+                .bold()
+            ProgressView(value: diarization.progress)
+                .progressViewStyle(.linear)
+            Text("已处理 \(diarization.processedChunks) / \(diarization.totalChunks) 块音频")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("长录音会分段处理，再用声纹把各段的「说话人1」接续成同一个人。可随时取消。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("取消分析", role: .destructive) {
+                diarization.cancel()
+            }
+            .font(.footnote)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func speakerList(_ timeline: SpeakerTimeline) -> some View {
+        ForEach(speakerRows(timeline)) { row in
+            Button {
+                guard !row.isNamed else { return }
+                draftSpeakerName = ""
+                namingSpeakerIndex = row.index
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(row.displayName)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                        Text(row.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if row.isNamed {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("命名")
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var emptySpeakerView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(emptySpeakerHint)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Button("识别说话人") {
+                diarization.analyze(sessionId: manifest.id)
+            }
+            .disabled(!hasAnyAudio || !SherpaBundledModel.isReady)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var emptySpeakerHint: String {
+        guard hasAnyAudio else {
+            return "音频已按保留期清理，无法再做说话人分离。"
+        }
+        if !SherpaBundledModel.isReady {
+            let missing = SherpaBundledModel.missingModels.map { $0.displayName }.joined(separator: "、")
+            return "缺少内置模型（\(missing)），说话人分离不可用。"
+        }
+        return "尚未分析。全程在本机离线完成，音频不会离开设备。"
+    }
+
+    private var speakerFooterText: String {
+        "重叠说话（多人同时讲）准确率会明显下降，这类片段标注为「可能重叠」，"
+            + "而不是假装判断正确。未命名的说话人可点一下命名 —— 命名后声纹入库，以后再录到会自动认出。"
+    }
+
+    private struct SpeakerRow: Identifiable {
+        let id: Int
+        let index: Int
+        let displayName: String
+        let detail: String
+        let isNamed: Bool
+    }
+
+    private func speakerRows(_ timeline: SpeakerTimeline) -> [SpeakerRow] {
+        let grouped = Dictionary(grouping: timeline.turns, by: { $0.speakerIndex })
+        return grouped.keys.sorted().map { index in
+            let turns = grouped[index] ?? []
+            let durationMs = turns.reduce(0) { $0 + $1.durationMs }
+            var detail = "\(turns.count) 段｜共 \(durationMs / 1000) 秒"
+            if turns.contains(where: { $0.mayOverlap }) { detail += "｜含可能重叠" }
+            return SpeakerRow(
+                id: index,
+                index: index,
+                displayName: timeline.displayName(for: index),
+                detail: detail,
+                isNamed: turns.contains { $0.personName != nil }
+            )
+        }
+    }
+
+    private func commitSpeakerName() {
+        defer { namingSpeakerIndex = nil }
+        guard let index = namingSpeakerIndex, let name = normalizedSpeakerName() else { return }
+        guard var timeline = speakerTimeline,
+              let centroids = timeline.centroids,
+              index >= 0, index < centroids.count else {
+            Log.shared.warn(.asr, "无法命名说话人 \(index)：时间轴里没有声纹质心")
+            return
+        }
+
+        // 命名即入库：质心早就随时间轴存下了，不需要重新录音或重跑分离
+        SpeakerProfileStore.shared.upsert(name: name, centroid: centroids[index], source: "session")
+
+        for position in timeline.turns.indices where timeline.turns[position].speakerIndex == index {
+            timeline.turns[position].personName = name
+        }
+        speakerTimeline = timeline
+        try? SpeakerTimelineStore.shared.save(timeline)
+    }
+
+    private func normalizedSpeakerName() -> String? {
+        let trimmed = draftSpeakerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func reloadSpeakerTimeline() {
+        speakerTimeline = SpeakerTimelineStore.shared.load(sessionId: manifest.id)
+    }
+
+    /// 转写片段的说话人：取**时间重叠最多**的那一段。
+    /// 不用"起点落在谁里面"是因为两个时间轴边界不会对齐，用重叠量更稳。
+    private func speakerName(fromMs: Int, toMs: Int) -> String? {
+        guard let speakerTimeline else { return nil }
+        guard let turn = speakerTimeline.dominantTurn(fromMs: fromMs, toMs: toMs) else { return nil }
+        return speakerTimeline.displayName(for: turn.speakerIndex)
     }
 
     // MARK: - 文字稿（M2）
@@ -348,6 +543,8 @@ struct SessionDetailView: View {
     private struct TranscriptRow: Identifiable {
         let id: String
         let startMs: Int
+        /// 结束时间：用于按**时间重叠**回填说话人（见 speakerName(fromMs:toMs:)）
+        let endMs: Int
         let timeText: String
         let text: String
         let isProvisional: Bool
@@ -359,6 +556,7 @@ struct SessionDetailView: View {
             TranscriptRow(
                 id: segment.id,
                 startMs: segment.startMs,
+                endMs: segment.endMs,
                 timeText: segment.timeText,
                 text: segment.text,
                 isProvisional: segment.isProvisional
@@ -380,6 +578,11 @@ struct SessionDetailView: View {
                     Text("识别中")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                }
+                if let speaker = speakerName(fromMs: row.startMs, toMs: row.endMs) {
+                    Text(speaker)
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
                 }
                 Spacer()
                 Image(systemName: "play.circle")

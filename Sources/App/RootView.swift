@@ -141,6 +141,8 @@ struct RootView: View {
             row("模型占用", model.modelBytesText)
             row("转写覆盖率", model.coverageText)
             row("已转写字数", model.characterCountText)
+            row("说话人覆盖率", model.diarizationCoverageText)
+            row("声纹库", model.voiceprintText)
 
             if let message = TranscriptionService.shared.lastMessage {
                 note(message, color: .secondary)
@@ -221,6 +223,10 @@ final class SelfCheckModel: ObservableObject {
     @Published var sherpaVersion = "-"
     /// M3 内置模型（VAD / 降噪 / 说话人分割 / 声纹）的齐备情况
     @Published var bundledModelsText = "-"
+    /// M3c：说话人覆盖率（已分离的会话数 / 总会话数）
+    @Published var diarizationCoverageText = "-"
+    /// M3c：声纹库里已录入的人数
+    @Published var voiceprintText = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -248,6 +254,10 @@ final class SelfCheckModel: ObservableObject {
         whisperBackend = WhisperEngine.systemInfo
         sherpaVersion = SherpaOnnxEngine.summary
         bundledModelsText = SherpaBundledModel.summary
+
+        let diarizationCoverage = SpeakerTimelineStore.shared.coverage()
+        diarizationCoverageText = "\(diarizationCoverage.analyzed) / \(diarizationCoverage.total)"
+        voiceprintText = "\(SpeakerProfileStore.shared.profiles.count) 人"
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty
