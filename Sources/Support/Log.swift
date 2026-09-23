@@ -16,6 +16,10 @@ enum LogCategory: String, CaseIterable {
     case disk
     case storage
     case system
+    /// M2 起：转写（模型加载、转写耗时与实时倍率）
+    case asr
+    /// M2 起：模型下载与校验
+    case model
 }
 
 enum LogLevel: String {

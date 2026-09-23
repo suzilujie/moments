@@ -25,7 +25,13 @@ jobs:
   build:
     name: Build unsigned ipa
     runs-on: macos-15
-    timeout-minutes: 30
+    # 60 分钟：whisper.cpp + ggml 的 xcframework 首次构建需要数分钟，
+    # 命中缓存后才会恢复到几十秒量级。
+    timeout-minutes: 60
+
+    env:
+      # whisper.cpp 固定 tag（官方已移除 SwiftPM 支持，只能自建 xcframework）
+      WHISPER_TAG: v1.9.4
 
     steps:
       - name: Checkout
@@ -38,6 +44,61 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      # ═══════════════════════════════════════════════════════════════
+      # whisper.cpp → xcframework
+      #
+      # 为什么要在 CI 里自己构建：whisper.cpp 官方已经移除了 SwiftPM 支持
+      # （仓库根目录没有 Package.swift 了），第三方封装 SwiftWhisper 也已停更。
+      # 官方唯一支持的集成方式是 build-xcframework.sh，它会把 ggml 与 Metal
+      # 着色器一并处理，产出可直接链接的 xcframework（本项目用静态形式，
+      # 免去签名与嵌入步骤）。
+      #
+      # 缓存整个 third_party/whisper.cpp（源码 + 产物）：key 绑定 tag，
+      # 这样日常改动不会重复编译 C++，只有升级 whisper 版本时才重编。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Cache whisper.cpp (source + xcframework)
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper.cpp
+          key: whisper-${{ env.WHISPER_TAG }}-${{ runner.os }}
+
+      - name: Build whisper.xcframework
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p third_party
+          if [ ! -d third_party/whisper.cpp/.git ]; then
+            git clone --depth 1 --branch "${WHISPER_TAG}" \
+              https://github.com/ggml-org/whisper.cpp third_party/whisper.cpp
+          fi
+          cd third_party/whisper.cpp
+          # 静态 xcframework：不产生动态库，链接进 App，无需签名与嵌入
+          BUILD_STATIC_XCFRAMEWORK=ON ./build-xcframework.sh
+          echo "=== 构建完成，产物 ==="
+          ls -la build-apple || true
+
+      # 产物结构诊断：本机是 Windows、无法预先查看 xcframework 内部布局，
+      # 因此把关键路径以【注解】形式输出 —— 注解可匿名读取，而 Actions 原始
+      # 日志需要认证（403）。这样即使链接配置写错，也能立刻看到真实结构。
+      - name: Report whisper artifact layout
+        if: always()
+        run: |
+          if [ -d third_party/whisper.cpp/build-apple ]; then
+            echo "::notice::whisper 产物目录已生成"
+            find third_party/whisper.cpp/build-apple -maxdepth 2 -name "*.xcframework" | head -10 | while IFS= read -r p; do
+              echo "::warning::whisper-xcframework ${p}"
+            done
+            find third_party/whisper.cpp/build-apple -maxdepth 4 -name "whisper.h" | head -10 | while IFS= read -r p; do
+              echo "::warning::whisper-header ${p}"
+            done
+            find third_party/whisper.cpp/build-apple -maxdepth 4 -name "module.modulemap" | head -5 | while IFS= read -r p; do
+              echo "::warning::whisper-modulemap ${p}"
+            done
+          else
+            echo "::warning::third_party/whisper.cpp/build-apple 不存在，xcframework 未生成"
+          fi
 
       - name: Generate Xcode project
         run: xcodegen generate

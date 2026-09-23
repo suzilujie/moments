@@ -24,3 +24,8 @@ xcuserdata/
 # ---- 本地临时目录（模型转换等脚本的中间产物）----
 scripts/tmp/
 scripts/out/
+
+# ---- 第三方依赖源码与构建产物 ----
+# whisper.cpp 由 CI 在构建前克隆并编译成 xcframework（官方已移除 SwiftPM 支持）。
+# 不纳入版本控制：体积大、且必须与 CI 中固定的 tag 保持一致。
+third_party/

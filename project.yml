@@ -22,19 +22,30 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
     # 并发检查设为 minimal：本项目有实时音频线程 + 大量跨队列回调，
-    # 先用最小约束把 M0/M1 跑通，避免在还没验证功能时就被并发检查淹没。
+    # 先用最小约束把功能跑通，避免在还没验证功能时就被并发检查淹没。
     SWIFT_STRICT_CONCURRENCY: minimal
 
 targets:
 
   # ---- 主 App ----
   # 注：会议模式的 Broadcast Upload Extension 是 M8 的目标，
-  # 现在不建，避免 M0 就引入一个无法验证的空扩展（见设计文档 13 章）。
+  # 现在不建，避免过早引入一个无法验证的空扩展（见设计文档 13 章）。
   Moments:
     type: application
     platform: iOS
     sources:
       - path: Sources
+    dependencies:
+      # ═══ whisper.cpp（M2 转写引擎）═══
+      # 官方已移除 SwiftPM 支持，因此由 CI 用官方 build-xcframework.sh
+      # 构建成【静态】xcframework 后在此链接。third_party/ 不入版本控制。
+      # 静态而非动态的理由：免去签名与嵌入步骤，对未签名构建更省事。
+      - framework: third_party/whisper.cpp/build-apple/whisper.xcframework
+        embed: false
+      # ggml（whisper 的底层张量库）依赖这两者：BLAS 走 Accelerate，GPU 走 Metal
+      - sdk: Accelerate.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
     settings:
       base:
         PRODUCT_NAME: Moments
@@ -42,10 +53,15 @@ targets:
         # Bundle ID 必须是纯 ASCII，这是 Apple 的硬要求。
         PRODUCT_BUNDLE_IDENTIFIER: com.xfish.moments
         # 沿用既有项目的开发者账号（Team ID 属账号级信息）。
-        # M0 走未签名构建，此项目前不参与签名；接入 Ad Hoc 时才会用到。
+        # 当前走未签名构建，此项不参与签名；接入 Ad Hoc 时才会用到。
         DEVELOPMENT_TEAM: "S2GX2R7LD5"
         INFOPLIST_FILE: Resources/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
+        # 桥接头：把 whisper.cpp 的 C API 暴露给 Swift。
+        # 静态 xcframework 没有 Swift module map，无法直接 import。
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/WhisperBridge.h
+        # ggml 是 C++ 实现，链接时需要 C++ 标准库
+        OTHER_LDFLAGS: "-lc++"
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
         MARKETING_VERSION: "0.1"
