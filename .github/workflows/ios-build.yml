@@ -135,37 +135,56 @@ jobs:
       - name: Build sherpa-onnx static lib (device only)
         if: steps.sherpa-cache.outputs.cache-hit != 'true'
         run: |
-          set -e
           mkdir -p third_party
           if [ ! -d third_party/sherpa-onnx/.git ]; then
             git clone --depth 1 --branch "${SHERPA_TAG}" \
-              https://github.com/k2-fsa/sherpa-onnx third_party/sherpa-onnx
+              https://github.com/k2-fsa/sherpa-onnx third_party/sherpa-onnx \
+              || { echo "::error::克隆 sherpa-onnx 失败（tag ${SHERPA_TAG}）"; exit 1; }
           fi
 
           cd third_party/sherpa-onnx
           SRC_ROOT="$PWD"
           mkdir -p build-ios-os64
           cd build-ios-os64
+          LOGS="$PWD/logs"
+          mkdir -p "$LOGS"
 
-          echo "=== 1/4 下载 onnxruntime iOS 静态库 ==="
-          ORT_DIR="ios-onnxruntime/${ORT_VERSION}"
-          mkdir -p "$ORT_DIR"
-          cd "$ORT_DIR"
-          if [ ! -d onnxruntime.xcframework ]; then
-            # 官方脚本用的是 wget -c，但 macOS runner 不保证装有 wget，改用 curl
-            curl -fL --retry 3 -o ort.zip \
-              "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${ORT_VERSION}/onnxruntime-ios-static-xcframework-${ORT_VERSION}.xcframework.zip"
-            unzip -q ort.zip
-            rm -f ort.zip
+          # 分阶段落日志，失败时把尾部转成注解。
+          # 理由与 M2 相同：Actions 原始日志需认证（403），本机读不到，
+          # **注解是唯一观测通道**。没有它就只能靠猜，而一轮 CI 成本很高。
+          emit_fail() {
+            name="$1"
+            echo "::error::阶段「${name}」失败，日志尾部如下"
+            tail -25 "$LOGS/${name}.log" | while IFS= read -r line; do
+              echo "::error::$(printf '%s' "$line" | cut -c1-280)"
+            done
+            exit 1
+          }
+
+          echo "=== 1/5 下载 onnxruntime iOS 静态库 ==="
+          ORT_DIR="$PWD/ios-onnxruntime/${ORT_VERSION}"
+          if [ ! -d "$ORT_DIR/onnxruntime.xcframework" ]; then
+            mkdir -p "$ORT_DIR"
+            (
+              cd "$ORT_DIR"
+              # 官方脚本用的是 wget -c，但 macOS runner 不保证装有 wget，改用 curl
+              curl -fL --retry 3 -o ort.zip \
+                "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${ORT_VERSION}/onnxruntime-ios-static-xcframework-${ORT_VERSION}.xcframework.zip"
+              unzip -q ort.zip
+              rm -f ort.zip
+            ) > "$LOGS/01-download-ort.log" 2>&1 || emit_fail "01-download-ort"
           fi
-          cd ../..
 
-          ORT_ROOT="$PWD/ios-onnxruntime/${ORT_VERSION}/onnxruntime.xcframework/ios-arm64/onnxruntime.framework"
-          export SHERPA_ONNXRUNTIME_LIB_DIR="$ORT_ROOT"
-          export SHERPA_ONNXRUNTIME_INCLUDE_DIR="$ORT_ROOT/Headers"
-          ls -la "$ORT_ROOT" || true
+          # ⚠️ 官方脚本的两个环境变量口径**不一致**，极易写错：
+          #   · SHERPA_ONNXRUNTIME_LIB_DIR  = onnxruntime.framework 的**父目录**
+          #   · SHERPA_ONNXRUNTIME_INCLUDE_DIR = .../onnxruntime.framework/Headers
+          # 第一次实现就是因为把 LIB_DIR 也写到了 framework 内部而导致构建失败。
+          ORT_SLICE="$ORT_DIR/onnxruntime.xcframework/ios-arm64"
+          export SHERPA_ONNXRUNTIME_LIB_DIR="$ORT_SLICE"
+          export SHERPA_ONNXRUNTIME_INCLUDE_DIR="$ORT_SLICE/onnxruntime.framework/Headers"
+          ls -la "$ORT_SLICE" || true
 
-          echo "=== 2/4 配置并编译（仅真机 OS64）==="
+          echo "=== 2/5 配置（仅真机 OS64）==="
           cmake \
             -DSHERPA_ONNX_ENABLE_TTS=OFF \
             -DBUILD_PIPER_PHONMIZE_EXE=OFF \
@@ -190,15 +209,18 @@ jobs:
             -DSHERPA_ONNX_ENABLE_C_API=ON \
             -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF \
             -DDEPLOYMENT_TARGET=13.0 \
-            -B build/os64
+            -B build/os64 > "$LOGS/02-cmake-configure.log" 2>&1 || emit_fail "02-cmake-configure"
+          echo "配置完成"
 
-          cmake --build build/os64 -j 4
+          echo "=== 3/5 编译 ==="
+          cmake --build build/os64 -j 4 > "$LOGS/03-cmake-build.log" 2>&1 || emit_fail "03-cmake-build"
+          echo "编译完成"
 
-          echo "=== 3/4 安装头文件 ==="
-          cmake --build build/os64 --target install
+          echo "=== 4/5 安装头文件 ==="
+          cmake --build build/os64 --target install > "$LOGS/04-cmake-install.log" 2>&1 || emit_fail "04-cmake-install"
           ls -la install/include/sherpa-onnx/c-api/ || true
 
-          echo "=== 4/4 合并静态库（sherpa-onnx + onnxruntime）==="
+          echo "=== 5/5 合并静态库（sherpa-onnx + onnxruntime）==="
           libtool -static -o build/os64/libsherpa-onnx-all.a \
             build/os64/lib/libkaldi-native-fbank-core.a \
             build/os64/lib/libkissfft-float.a \
@@ -209,7 +231,8 @@ jobs:
             build/os64/lib/libsherpa-onnx-kaldifst-core.a \
             build/os64/lib/libkaldi-decoder-core.a \
             build/os64/lib/libssentencepiece_core.a \
-            "$ORT_ROOT/onnxruntime"
+            "$ORT_SLICE/onnxruntime.framework/onnxruntime" \
+            > "$LOGS/05-libtool-merge.log" 2>&1 || emit_fail "05-libtool-merge"
           ls -lh build/os64/libsherpa-onnx-all.a
 
       # 与 whisper 同样的理由（见下）：本机看不到 Actions 原始日志，
