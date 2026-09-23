@@ -36,7 +36,15 @@ struct SearchHit: Identifiable {
 /// iOS 的系统 SQLite 是否编译了 FTS5 **没有公开保证**。
 /// 探测失败时本类降级为 `LIKE` 扫描：功能仍可用、只是慢。
 /// 这比"假定它有"然后整块检索功能失效要好得多。
-final class SearchIndex: ObservableObject {
+/// `@unchecked Sendable` 是**刻意的、有依据的**声明，不是为了让编译安静：
+///   · 本类全部可变状态（database 与两张表）**只在 `queue` 这条串行队列上访问**；
+///   · `@Published` 属性的写入一律经 `publish`，它内部用 `Task { @MainActor in }` 回到主线程；
+///   · 因此跨线程共享这个对象是安全的 —— 安全性的来源是"串行队列 + 主线程发布"，
+///     而不是编译器能推断出来的那些性质。
+/// 若不声明它，在 `queue.async` 里捕获 self 会产生
+/// 「capture of 'self' with non-sendable type」告警（Swift 6 下是错误），
+/// 而我们又无法靠拆参数绕开（搜索路径本身就需要访问 database）。
+final class SearchIndex: ObservableObject, @unchecked Sendable {
 
     static let shared = SearchIndex()
 

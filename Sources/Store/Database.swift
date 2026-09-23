@@ -137,7 +137,9 @@ final class Database {
     }
 
     var sqliteVersion: String {
-        guard let handle else { return "未打开" }
+        // 用 isOpen 而不是绑定 handle：sqlite3_libversion 是全局函数，
+        // 不需要连接句柄，绑定它只会产生"变量未使用"的告警
+        guard isOpen else { return "未打开" }
         return String(cString: sqlite3_libversion())
     }
 }
