@@ -124,7 +124,9 @@ final class AppSettings: ObservableObject {
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
         realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
         learningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
-        defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh"
+        // 用 zh-Hans 而不是 zh：系统翻译框架的语言标识符采用 BCP-47 形式，
+        // 写 "zh" 时 LanguageAvailability 可能与目录里的条目对不上
+        defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh-Hans"
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
     }
 

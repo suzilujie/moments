@@ -243,16 +243,17 @@ struct SettingsView: View {
     private var languageSection: some View {
         Section("语言") {
             Picker("我正在学", selection: $settings.learningLanguage) {
-                Text("英语").tag("en")
-                Text("日语").tag("ja")
-                Text("韩语").tag("ko")
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Text(language.name).tag(language.code)
+                }
             }
             Picker("默认翻译成", selection: $settings.defaultTargetLanguage) {
-                Text("中文").tag("zh")
-                Text("英文").tag("en")
-                Text("日文").tag("ja")
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Text(language.name).tag(language.code)
+                }
             }
-            Text("这两项决定 M6 学习模式的生词判定与默认展示（尚未实现）。")
+            Text("「默认翻译成」决定打开会话时默认的目标语言。"
+                + "「我正在学」将决定 M6 学习模式的生词判定方向（学习模式尚未实现）。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

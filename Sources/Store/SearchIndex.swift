@@ -10,6 +10,17 @@ struct SearchHit: Identifiable {
     let startMs: Int
     let endMs: Int
     let text: String
+    /// 该行是哪种文本：空字符串 = 原文（转写），否则是译文的目标语言代码。
+    ///
+    /// 原文与译文放在同一张表里，是为了让检索**一份索引覆盖两种文本**（设计文档 7.4
+    /// 要求"支持在原文与译文中搜索"）。用一列区分，比建两套索引简单得多。
+    let lang: String
+
+    var isTranslation: Bool { !lang.isEmpty }
+
+    var languageText: String {
+        isTranslation ? "\(TranslationLanguageCatalog.name(for: lang))译文" : ""
+    }
 
     /// 命中句在会话内的相对时间（列表展示用）
     var timeText: String {
@@ -155,13 +166,24 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
               start_ms INTEGER NOT NULL,
               end_ms INTEGER NOT NULL,
               text TEXT NOT NULL,
-              is_provisional INTEGER NOT NULL DEFAULT 0
+              is_provisional INTEGER NOT NULL DEFAULT 0,
+              lang TEXT NOT NULL DEFAULT ''
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_segments_session ON segments(session_id);",
             "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms DESC);"
         ]
         _ = db.executeAll(baseStatements)
+
+        // 迁移：v1 → v2 增加 lang 列（M5 起译文与原文共用一张表）。
+        // 老库需要 ALTER；新库的建表语句已含该列，ALTER 会失败并被忽略 ——
+        // 两种情况都要能通过，所以这里**不看返回值**，只看版本号是否推进。
+        let schemaVersion = db.scalarInt("PRAGMA user_version;") ?? 0
+        if schemaVersion < 2 {
+            _ = db.execute("ALTER TABLE segments ADD COLUMN lang TEXT NOT NULL DEFAULT '';")
+            _ = db.execute("PRAGMA user_version = 2;")
+            Log.shared.info(.storage, "检索库已迁移至 schema v2（新增 lang 列）")
+        }
 
         var resolved: Capability = .likeFallback
         if hasFTS5 {
@@ -302,10 +324,12 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
         }
 
         let insertSQL = """
-        INSERT INTO segments (id, session_id, pass, seq, start_ms, end_ms, text, is_provisional)
-        VALUES (?,?,?,?,?,?,?,?);
+        INSERT INTO segments (id, session_id, pass, seq, start_ms, end_ms, text, is_provisional, lang)
+        VALUES (?,?,?,?,?,?,?,?,?);
         """
         guard let insert = database.prepare(insertSQL) else { return }
+
+        var segmentIndex: [String: TranscriptSegment] = [:]
 
         for pass in TranscriptPass.allCases {
             guard let document = TranscriptStore.shared.load(sessionId: manifest.id, pass: pass) else { continue }
@@ -319,9 +343,33 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
                 insert.bind(6, segment.endMs)
                 insert.bind(7, segment.text)
                 insert.bind(8, segment.isProvisional ? 1 : 0)
+                insert.bind(9, "")      // 原文：lang 留空
                 _ = insert.step()
+
+                // 供下面的译文行复用时间戳（片段 id 在不同稿之间可能重复，故带上稿别）
+                segmentIndex["\(pass.rawValue)|\(segment.id)"] = segment
             }
         }
+
+        // 译文也进**同一张表**（lang = 目标语言）。
+        // 这样"在原文与译文中搜索"只需要一份索引，不必建第二套 FTS 表。
+        // 时间戳沿用原文片段的，因此点译文命中也能直接跳到对应的音频位置。
+        let translations = TranslationStore.shared.load(sessionId: manifest.id)
+        for entry in translations.entries {
+            guard let source = segmentIndex["\(entry.pass.rawValue)|\(entry.segmentId)"] else { continue }
+            insert.reset()
+            insert.bind(1, "\(entry.segmentId)@\(entry.targetLang)")
+            insert.bind(2, manifest.id)
+            insert.bind(3, entry.pass.rawValue)
+            insert.bind(4, source.seq)
+            insert.bind(5, source.startMs)
+            insert.bind(6, source.endMs)
+            insert.bind(7, entry.text)
+            insert.bind(8, 0)
+            insert.bind(9, entry.targetLang)
+            _ = insert.step()
+        }
+
         insert.finalize()
     }
 
@@ -373,7 +421,7 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
             // 包成短语后按字面匹配，也正好符合"搜子串"的直觉。
             boundQuery = Self.ftsPhrase(query)
             sql = """
-            SELECT s.id, s.session_id, s.pass, s.start_ms, s.end_ms, s.text, se.title, se.started_at_ms
+            SELECT s.id, s.session_id, s.pass, s.start_ms, s.end_ms, s.text, se.title, se.started_at_ms, s.lang
             FROM segments_fts f
             JOIN segments s ON s.rowid = f.rowid
             JOIN sessions se ON se.id = s.session_id
@@ -384,7 +432,7 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
         } else {
             boundQuery = "%\(query)%"
             sql = """
-            SELECT s.id, s.session_id, s.pass, s.start_ms, s.end_ms, s.text, se.title, se.started_at_ms
+            SELECT s.id, s.session_id, s.pass, s.start_ms, s.end_ms, s.text, se.title, se.started_at_ms, s.lang
             FROM segments s
             JOIN sessions se ON se.id = s.session_id
             WHERE s.text LIKE ?
@@ -417,7 +465,8 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
                     pass: TranscriptPass(rawValue: passRaw) ?? .final,
                     startMs: statement.int(3),
                     endMs: statement.int(4),
-                    text: text
+                    text: text,
+                    lang: statement.string(8) ?? ""
                 )
             )
         }
@@ -470,7 +519,8 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
             CREATE TABLE segments (
               id TEXT PRIMARY KEY, session_id TEXT NOT NULL, pass TEXT NOT NULL,
               seq INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
-              text TEXT NOT NULL, is_provisional INTEGER NOT NULL DEFAULT 0
+              text TEXT NOT NULL, is_provisional INTEGER NOT NULL DEFAULT 0,
+              lang TEXT NOT NULL DEFAULT ''
             );
             """
         ]

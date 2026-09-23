@@ -20,6 +20,8 @@ enum LogCategory: String, CaseIterable {
     case asr
     /// M2 起：模型下载与校验
     case model
+    /// M5 起：翻译（语言可用性、批量翻译、缓存）
+    case translate
 }
 
 enum LogLevel: String {

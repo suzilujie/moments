@@ -100,11 +100,22 @@ struct SessionListView: View {
             Text(hit.text)
                 .font(.body)
                 .lineLimit(3)
-            Text("\(hit.sessionTitle)｜\(hit.timeText)｜\(hit.pass.title)")
+            Text(hitSubtitle(hit))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    /// 命中行的副标题。**必须标出"这条命中来自译文"** ——
+    /// 否则用户会以为自己的录音里真的说了那句译文。
+    private func hitSubtitle(_ hit: SearchHit) -> String {
+        var parts: [String] = [hit.sessionTitle, hit.timeText]
+        if hit.isTranslation {
+            parts.append(hit.languageText)
+        }
+        parts.append(hit.pass.title)
+        return parts.joined(separator: "｜")
     }
 
     private func runSearch() async {
@@ -205,6 +216,18 @@ struct SessionDetailView: View {
     @State private var namingSpeakerIndex: Int?
     @State private var draftSpeakerName = ""
 
+    // M5 翻译
+    @ObservedObject private var translation = TranslationService.shared
+    /// 空字符串表示"尚未初始化"：初值在 onAppear 里从设置读取。
+    /// 不在属性初始化式里直接读 AppSettings（那是 @MainActor 隔离的属性，
+    /// 在非隔离的初始化式里访问会构成隔离问题）。
+    @State private var targetLanguage = ""
+    @State private var displayMode: TranscriptDisplayMode = .bilingual
+    /// 当前语言已翻好的片段（segmentId → 译文）
+    @State private var translationMap: [String: String] = [:]
+    /// 各语言对的可用性（前置校验结果，界面必须显示出来）
+    @State private var languageStatus: [String: String] = [:]
+
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
     }
@@ -224,11 +247,26 @@ struct SessionDetailView: View {
         .onAppear {
             initializePass()
             reloadSpeakerTimeline()
+            if targetLanguage.isEmpty {
+                targetLanguage = AppSettings.shared.defaultTargetLanguage
+            }
+            reloadTranslationMap()
             playFocusedSentenceIfNeeded()
         }
-        .onChange(of: selectedPass) { reloadTranscript() }
+        .onChange(of: selectedPass) {
+            reloadTranscript()
+            reloadTranslationMap()
+        }
         .onChange(of: asr.stage) { reloadTranscript() }
         .onChange(of: diarization.stage) { reloadSpeakerTimeline() }
+        .onChange(of: targetLanguage) { reloadTranslationMap() }
+        .onChange(of: translation.stage) { reloadTranslationMap() }
+        // 系统翻译框架要求由**视图**拿到 TranslationSession，
+        // 因此把真正的执行挂在这里（见 TranslationService 里对两段式设计的说明）
+        .translationTask(translation.configuration) { session in
+            await translation.execute(with: session)
+        }
+        .task { await refreshLanguageStatus() }
         .alert("命名说话人", isPresented: namingBinding) {
             TextField("姓名", text: $draftSpeakerName)
             Button("取消", role: .cancel) { namingSpeakerIndex = nil }
@@ -506,6 +544,104 @@ struct SessionDetailView: View {
         return speakerTimeline.displayName(for: turn.speakerIndex)
     }
 
+    // MARK: - 翻译（M5）
+
+    private var transcriptSegments: [TranscriptSegment] {
+        transcript?.segments ?? []
+    }
+
+    /// 语言与显示方式控制。
+    ///
+    /// 三项都放在转写列表**上方**：语言切换是高频操作（设计文档 11.5 明确要求
+    /// 不藏在设置里），显示模式决定用户看到的每一行，必须一眼可见。
+    private var translationControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("翻译成", selection: $targetLanguage) {
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Text(languageOptionTitle(language)).tag(language.code)
+                }
+            }
+
+            Picker("显示", selection: $displayMode) {
+                ForEach(TranscriptDisplayMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if translation.runningSessionId == manifest.id {
+                ProgressView(value: translation.progress)
+                    .progressViewStyle(.linear)
+                Text("已翻 \(translation.completedSegments) / \(translation.totalSegments) 句")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("取消翻译", role: .destructive) {
+                    translation.cancel()
+                }
+                .font(.footnote)
+            } else {
+                Button(translateButtonTitle) {
+                    translation.requestTranslation(
+                        sessionId: manifest.id,
+                        target: targetLanguage,
+                        pass: selectedPass,
+                        segments: transcriptSegments,
+                        existing: translationMap
+                    )
+                }
+                .font(.footnote)
+                .disabled(transcriptSegments.isEmpty)
+            }
+
+            if let status = languageStatus[targetLanguage], status != "已就绪" {
+                Text("语言状态：\(status)")
+                    .font(.caption)
+                    .foregroundStyle(status.contains("不支持") ? .red : .orange)
+            }
+
+            Text("译文仅供参考：端侧翻译在口语、俚语、长难句、专业术语与人名上会明显失真 —— "
+                + "所以原文始终显示在译文上方，且译文可人工修正（修正后不会被自动翻译覆盖）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var translateButtonTitle: String {
+        let name = TranslationLanguageCatalog.name(for: targetLanguage)
+        if translationMap.isEmpty {
+            return "翻译成\(name)"
+        }
+        return "补齐译文（已有 \(translationMap.count) 句）"
+    }
+
+    /// 语言选项文案里带上可用性。
+    ///
+    /// **必须在选中之前就能看出来**，而不是选完才提示 ——
+    /// 否则用户已经以为它会工作、并且已经按下了翻译。
+    private func languageOptionTitle(_ language: TranslationLanguage) -> String {
+        guard let status = languageStatus[language.code], status != "已就绪" else {
+            return language.name
+        }
+        return "\(language.name)（\(status)）"
+    }
+
+    /// 前置校验各语言对。不能省：不查就翻，用户会得到"点了没反应"。
+    private func refreshLanguageStatus() async {
+        var result: [String: String] = [:]
+        for language in TranslationLanguageCatalog.all {
+            let status = await translation.availability(to: language.code)
+            result[language.code] = TranslationService.describe(status)
+        }
+        languageStatus = result
+    }
+
+    private func reloadTranslationMap() {
+        guard !targetLanguage.isEmpty else { return }
+        translationMap = TranslationStore.shared
+            .load(sessionId: manifest.id)
+            .texts(for: targetLanguage)
+    }
+
     // MARK: - 文字稿（M2）
 
     private var transcriptSection: some View {
@@ -516,6 +652,7 @@ struct SessionDetailView: View {
                 passPicker
                 transcriptActions
                 playbackControls
+                translationControls
                 if let error = player.lastError {
                     Text(error)
                         .font(.caption)
@@ -724,9 +861,24 @@ struct SessionDetailView: View {
                     ? "stop.circle.fill" : "play.circle")
                     .foregroundStyle(.tint)
             }
-            Text(row.text)
-                .font(.body)
-                .foregroundStyle(.primary)
+            if displayMode.showsOriginal {
+                Text(row.text)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+            }
+            if displayMode.showsTranslation {
+                if let translated = translationMap[row.id] {
+                    Text(translated)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if !displayMode.showsOriginal {
+                    // 只看译文但还没翻：明确说"尚无译文"，
+                    // 而不是给用户一片空白让他以为是 Bug
+                    Text("（尚无译文）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(.vertical, 2)
     }

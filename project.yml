@@ -51,6 +51,11 @@ targets:
       # 静态而非动态的理由：免去签名与嵌入步骤，对未签名构建更省事。
       - framework: third_party/whisper.cpp/build-apple/whisper.xcframework
         embed: false
+      # ═══ 系统翻译框架（M5）═══
+      # 端侧翻译、免费、零模型体积，语言包由系统管理。
+      # 显式声明而不依赖自动链接：本项目已经因为漏了 CoreML 而失败过一次
+      # （whisper 静态库里含 CoreML 目标文件），系统框架宁可写全。
+      - sdk: Translation.framework
       # ggml（whisper 的底层张量库）依赖这些系统框架：BLAS 走 Accelerate，GPU 走 Metal
       - sdk: Accelerate.framework
       - sdk: Metal.framework

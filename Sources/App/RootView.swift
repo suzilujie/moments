@@ -144,6 +144,7 @@ struct RootView: View {
             row("说话人覆盖率", model.diarizationCoverageText)
             row("声纹库", model.voiceprintText)
             row("检索索引", model.searchIndexText)
+            row("翻译（M5）", model.translationText)
 
             if let message = TranscriptionService.shared.lastMessage {
                 note(message, color: .secondary)
@@ -249,6 +250,8 @@ final class SelfCheckModel: ObservableObject {
     @Published var searchIndexText = "-"
     /// M4：检索自检的逐行结果
     @Published var searchSelfTestLines: [String] = []
+    /// M5：翻译引擎与译文缓存规模
+    @Published var translationText = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -283,6 +286,12 @@ final class SelfCheckModel: ObservableObject {
 
         let search = SearchIndex.shared
         searchIndexText = "\(search.capability.title)｜\(search.indexedSessions) 会话 / \(search.indexedSegments) 句"
+
+        let translationCoverage = TranslationStore.shared.coverage()
+        let entryCount = TranslationStore.shared.totalEntryCount()
+        translationText = "\(TranslationService.engineIdentifier)@\(TranslationService.engineVersion)"
+            + "｜已翻 \(translationCoverage.translated)/\(translationCoverage.total) 次会话"
+            + "｜\(entryCount) 条译文"
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty
