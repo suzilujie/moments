@@ -21,6 +21,7 @@ struct RootView: View {
                 sessionSection
                 systemSection
                 eventSection
+                asrSection
                 logSection
             }
             .navigationTitle("自检")
@@ -129,6 +130,30 @@ struct RootView: View {
         }
     }
 
+    // MARK: - 转写引擎（M2）
+
+    private var asrSection: some View {
+        Section("转写引擎（M2）") {
+            row("whisper 后端", model.whisperBackend)
+            row("已安装模型", model.installedModelsText)
+            row("模型占用", model.modelBytesText)
+            row("转写覆盖率", model.coverageText)
+            row("已转写字数", model.characterCountText)
+
+            if let message = TranscriptionService.shared.lastMessage {
+                note(message, color: .secondary)
+            }
+
+            note(
+                "「whisper 后端」非空即证明 whisper.cpp 的 xcframework 已真正链接（而不是编译通过的空壳）。"
+                    + "转写覆盖率 = 已有文字稿的会话数 / 总会话数。",
+                color: .secondary
+            )
+
+            Button("刷新转写信息") { model.refreshASR() }
+        }
+    }
+
     // MARK: - 日志
 
     private var logSection: some View {
@@ -187,15 +212,46 @@ final class SelfCheckModel: ObservableObject {
     @Published var logFileError: String?
     @Published var mode: AudioSessionMode = .coexistent
 
+    // M2 转写
+    @Published var whisperBackend = "-"
+    @Published var installedModelsText = "-"
+    @Published var modelBytesText = "-"
+    @Published var coverageText = "-"
+    @Published var characterCountText = "-"
+
     private let audio = AudioSessionManager.shared
 
     func refresh() async {
         permissionText = audio.permissionDescription()
         sessionText = audio.lastResult
         refreshDiagnostics()
+        refreshASR()
         if permissionText == "已授权" {
             inputFormatText = audio.nativeInputFormat()
         }
+    }
+
+    /// 刷新转写相关信息。
+    ///
+    /// 其中 `WhisperEngine.systemInfo` 是 M2a 的**验收依据**：
+    /// 它调用的是 whisper.cpp 的 C 接口，能返回后端信息就说明
+    /// CI 构建的静态 xcframework 确实被链接进来了 ——
+    /// 这比"编译通过"强得多（编译通过也可能只是没引用而已）。
+    func refreshASR() {
+        whisperBackend = WhisperEngine.systemInfo
+
+        let installed = ModelManager.shared.installedModels
+        installedModelsText = installed.isEmpty
+            ? "（无）"
+            : installed.map { $0.displayName }.joined(separator: "、")
+        modelBytesText = ByteCountFormatter.string(
+            fromByteCount: ModelManager.shared.installedBytes,
+            countStyle: .file
+        )
+
+        let coverage = TranscriptStore.shared.coverage()
+        coverageText = "\(coverage.transcribed) / \(coverage.total)"
+        characterCountText = "\(TranscriptStore.shared.totalCharacterCount())"
     }
 
     func requestPermission() async {

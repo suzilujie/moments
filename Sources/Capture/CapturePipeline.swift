@@ -34,6 +34,14 @@ final class CapturePipeline {
     /// 分片收尾回调。**在 queue 上调用**，取用方需自行切回主线程。
     var onSegments: (([SegmentWriter.FinishedSegment]) -> Void)?
 
+    /// 已转成 16 kHz 的样本回调（实时字幕用）。**在 queue 上调用**。
+    ///
+    /// 纪律：这里只允许做「入队」级别的廉价操作（见 `LiveTranscriptionEngine.feed`），
+    /// **绝不允许在此做识别**。本队列同时负责落盘，一旦被阻塞，
+    /// 环形缓冲就会溢出丢帧 —— 那是不可逆的音频损失，而字幕晚几秒毫无影响。
+    /// 为 nil 时（未开实时字幕）整条路径零开销。
+    var onSamples: (([Float]) -> Void)?
+
     /// 最近一次消费耗时（供界面判断落盘是否吃紧）。
     private(set) var lastTickCostMs = 0
     /// 累计转出的 16 kHz 帧数。
@@ -238,6 +246,11 @@ final class CapturePipeline {
             lastTickCostMs = Int(Date().timeIntervalSince(started) * 1000)
             return
         }
+
+        // 实时字幕：把已转到 16 kHz 的样本顺手分发出去（仅入队，不做识别）。
+        // 放在落盘之前是有意的 —— 即使这一次 writer.append 失败，
+        // 字幕侧也已经拿到这段音频，不会因为落盘异常而整段没有字幕。
+        onSamples?(samples)
 
         do {
             let segments = try writer.append(samples)

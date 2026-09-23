@@ -11,12 +11,18 @@ struct RecordView: View {
 
     @ObservedObject private var session = RecordingSession.shared
     @ObservedObject private var settings = AppSettings.shared
+    /// 实时字幕（非终稿）。两稿分离是设计文档 5.4 的核心：
+    /// 这一份会被不断改写，只求当场可读；准确版本由终稿负责。
+    @ObservedObject private var live = LiveTranscriber.shared
     @State private var showingSettings = false
+    /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
+    @State private var liveHint: String?
 
     var body: some View {
         NavigationStack {
             List {
                 statusSection
+                if session.snapshot.state.isActive { subtitleSection }
                 metricsSection
                 if session.snapshot.totalGapMs > 0 { gapSection }
                 if let error = session.snapshot.lastError { errorSection(error) }
@@ -151,7 +157,12 @@ struct RecordView: View {
                 .disabled(session.snapshot.state == .stopping || session.snapshot.state == .finalizing)
             } else {
                 Button {
-                    Task { await session.start() }
+                    Task {
+                        await session.start()
+                        // 录音真正起来之后再启动字幕：会话若在检查阶段就失败，
+                        // 提前启动只会留下一个空转的引擎
+                        startLiveTranscriptionIfPossible()
+                    }
                 } label: {
                     HStack {
                         Spacer()
@@ -163,6 +174,77 @@ struct RecordView: View {
         } footer: {
             Text("当前模式：\(settings.captureSource.title)｜音频会话：\(settings.sessionMode.title)")
         }
+    }
+
+    // MARK: - 实时字幕
+
+    private var subtitleSection: some View {
+        Section {
+            if !settings.realtimeTranscriptionEnabled {
+                Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if let liveHint {
+                Text(liveHint)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            } else if live.segments.isEmpty {
+                Text(live.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(live.segments.suffix(12)) { segment in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(segment.timeText)
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            if segment.isProvisional {
+                                Text("识别中")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.orange.opacity(0.18), in: Capsule())
+                                    .foregroundStyle(.orange)
+                            }
+                            Spacer()
+                        }
+                        Text(segment.text)
+                            .font(.body)
+                            .foregroundStyle(segment.isProvisional ? .secondary : .primary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        } header: {
+            Text("实时字幕")
+        } footer: {
+            Text("实时字幕是「先出、再改对」的：标着「识别中」的句子后续可能被修正，"
+                + "这是离线识别的固有特性而非故障。录音与音频不受影响，准确文本以终稿为准。")
+                .font(.footnote)
+        }
+    }
+
+    /// 启动实时字幕（用户已开启且模型已下载时）。
+    ///
+    /// **不在这里自动下载模型**：模型上百 MB，替用户决定消耗流量是不合适的。
+    /// 未下载时给出明确指引，而不是让按钮点下去什么都没发生 ——
+    /// 后者是同类 App 最常见的体验缺陷。
+    private func startLiveTranscriptionIfPossible() {
+        guard session.snapshot.state.isActive else { return }
+        guard settings.realtimeTranscriptionEnabled else {
+            liveHint = nil
+            return
+        }
+        guard let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId) else {
+            let name = WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
+                ?? settings.realtimeModelId
+            liveHint = "实时字幕未启动：模型「\(name)」尚未下载。可在设置中下载，下次录音自动启用。"
+            return
+        }
+        liveHint = nil
+        live.start(modelURL: modelURL, language: settings.transcriptionLanguage)
     }
 
     private func row(_ title: String, _ value: String) -> some View {

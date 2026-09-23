@@ -26,6 +26,14 @@ final class WhisperEngine {
     private let modelPath: String
     private(set) var lastError: String?
 
+    /// 静音模式：只给实时字幕用。
+    ///
+    /// 实时字幕每 5 秒重解一次窗口，若每次都在 info 级别留日志，一小时就是 700 多条。
+    /// 8 小时会话会把日志的环形缓冲与日志文件全部淹掉 ——
+    /// 而那时恰恰是最需要看清「中断恢复 / 降档」记录的场合。
+    /// 因此实时路径静音，终稿路径保持正常记录。
+    var isQuiet = false
+
     var isLoaded: Bool { context != nil }
 
     init(modelPath: String) {
@@ -148,12 +156,14 @@ final class WhisperEngine {
         let costMs = Int(Date().timeIntervalSince(started) * 1000)
         let audioMs = Int(Double(samples.count) / 16.0)
         let ratio = audioMs > 0 ? Double(costMs) / Double(audioMs) : 0
-        Log.shared.info(
-            .asr,
-            "转写完成｜音频 \(audioMs)ms｜耗时 \(costMs)ms"
-                + "｜实时倍率 \(String(format: "%.2f", ratio))（<1.0 表示快于实时）"
-                + "｜分段 \(result.count)"
-        )
+        if !isQuiet {
+            Log.shared.info(
+                .asr,
+                "转写完成｜音频 \(audioMs)ms｜耗时 \(costMs)ms"
+                    + "｜实时倍率 \(String(format: "%.2f", ratio))（<1.0 表示快于实时）"
+                    + "｜分段 \(result.count)"
+            )
+        }
         return result
     }
 

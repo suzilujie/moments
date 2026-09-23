@@ -56,6 +56,29 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(realtimeTranscriptionEnabled, forKey: Keys.realtime) }
     }
 
+    /// 实时字幕使用的模型（默认 base —— 速度与准确率的平衡点，见 WhisperModelCatalog）
+    @Published var realtimeModelId: String {
+        didSet { defaults.set(realtimeModelId, forKey: Keys.realtimeModel) }
+    }
+
+    /// 终稿使用的模型（默认 small —— 准确优先，跑在闲置时段，速度不是约束）
+    @Published var finalModelId: String {
+        didSet { defaults.set(finalModelId, forKey: Keys.finalModel) }
+    }
+
+    /// 转写语言。"auto" 表示由模型自动判定 ——
+    /// 中英夹杂的对话下强制指定单一语言会让另一种语言被识别成错字（见 WhisperModelCatalog）。
+    @Published var transcriptionLanguage: String {
+        didSet { defaults.set(transcriptionLanguage, forKey: Keys.transcriptionLang) }
+    }
+
+    /// 模型下载是否优先走镜像。
+    /// 保留这个开关是因为交付环境实测存在 huggingface.co 不可达的情况，
+    /// 而模型下不下来会直接让转写功能失效（见 ModelManager）。
+    @Published var preferModelMirror: Bool {
+        didSet { defaults.set(preferModelMirror, forKey: Keys.modelMirror) }
+    }
+
     /// 正在学习的语言（用户已确认为英语）
     @Published var learningLanguage: String {
         didSet { defaults.set(learningLanguage, forKey: Keys.learningLang) }
@@ -85,6 +108,10 @@ final class AppSettings: ObservableObject {
         minFreeDiskGB = defaults.object(forKey: Keys.minFreeDiskGB) as? Double ?? 1.0
 
         realtimeTranscriptionEnabled = defaults.object(forKey: Keys.realtime) as? Bool ?? true
+        realtimeModelId = defaults.string(forKey: Keys.realtimeModel) ?? WhisperModelCatalog.realtimeDefaultId
+        finalModelId = defaults.string(forKey: Keys.finalModel) ?? WhisperModelCatalog.finalDefaultId
+        transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
+        preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
         learningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh"
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
@@ -110,6 +137,10 @@ final class AppSettings: ObservableObject {
         static let retentionDays = "moments.storage.retentionDays"
         static let minFreeDiskGB = "moments.storage.minFreeDiskGB"
         static let realtime = "moments.asr.realtimeEnabled"
+        static let realtimeModel = "moments.asr.realtimeModel"
+        static let finalModel = "moments.asr.finalModel"
+        static let transcriptionLang = "moments.asr.language"
+        static let modelMirror = "moments.model.preferMirror"
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"
         static let export = "moments.export.enabled"

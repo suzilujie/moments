@@ -134,6 +134,16 @@ final class RecordingSession: ObservableObject {
                 self?.handleSegments(segments, reason: "分片写满自动收尾")
             }
         }
+
+        // 实时字幕：把管线已转成 16 kHz 的样本喂给实时转写引擎。
+        //
+        // 这里接的是**非隔离**的 LiveTranscriptionEngine，而不是 LiveTranscriber（@MainActor）——
+        // 本闭包运行在管线队列上，无权调用主 actor 隔离的方法（那会导致编译期隔离错误）。
+        // 接上之后并不意味着字幕真的在跑：是否启动由录音页按用户设置决定，
+        // 未启动时引擎内部不持有窗口、也不加载模型，开销为零。
+        pipeline.onSamples = { samples in
+            LiveTranscriptionEngine.shared.feed(samples)
+        }
         try pipeline.start(
             sourceFormat: nativeFormat,
             sessionId: sessionId,
@@ -202,6 +212,12 @@ final class RecordingSession: ObservableObject {
 
         pipeline = nil
         audioSession.deactivate()
+
+        // 顺带收掉实时字幕：会话结束后引擎再持有滑窗与模型上下文纯属浪费。
+        // 放在这里而不是只交给界面，是因为会话也可能因失败/磁盘告警而自行结束，
+        // 那种路径下界面不一定有机会做清理。
+        LiveTranscriber.shared.stop()
+
         setState(.idle, reason: "会话已结束")
 
         // 顺带按保留期清理过期音频（文本永久、音频有限）

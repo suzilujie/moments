@@ -8,6 +8,7 @@ import SwiftUI
 struct SettingsView: View {
 
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var models = ModelManager.shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -15,6 +16,8 @@ struct SettingsView: View {
             Form {
                 captureSection
                 storageSection
+                transcriptionSection
+                modelSection
                 languageSection
                 aboutSection
             }
@@ -85,6 +88,121 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 转写
+
+    private var transcriptionSection: some View {
+        Section {
+            Toggle("实时字幕", isOn: $settings.realtimeTranscriptionEnabled)
+            Text("录音时当场显示文字。关掉它只是省电 —— 录音与终稿转写都不受影响。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Picker("识别语言", selection: $settings.transcriptionLanguage) {
+                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
+                    Text(item.name).tag(item.code)
+                }
+            }
+            Text("默认「自动判定」：中英夹杂的对话里强制指定某一种语言，"
+                + "会把另一种语言识别成错字。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Picker("实时字幕模型", selection: $settings.realtimeModelId) {
+                ForEach(WhisperModelCatalog.realtimeCandidates) { model in
+                    Text("\(model.displayName)（\(model.sizeText)）").tag(model.id)
+                }
+            }
+            Picker("终稿模型", selection: $settings.finalModelId) {
+                ForEach(WhisperModelCatalog.finalCandidates) { model in
+                    Text("\(model.displayName)（\(model.sizeText)）").tag(model.id)
+                }
+            }
+        } header: {
+            Text("转写")
+        } footer: {
+            Text("实时字幕求快、终稿求准，因此分开选模型。终稿在充电或息屏时执行，"
+                + "不占用你使用手机的时段。")
+        }
+    }
+
+    // MARK: - 模型
+
+    private var modelSection: some View {
+        Section {
+            Toggle("模型下载优先走镜像", isOn: $settings.preferModelMirror)
+            Text("当 huggingface.co 不可达时打开此项。它只改变下载来源，不影响识别结果。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            ForEach(WhisperModelCatalog.all) { model in
+                modelRow(model)
+            }
+
+            HStack {
+                Text("模型占用")
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: models.installedBytes, countStyle: .file))
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("模型")
+        } footer: {
+            if let message = models.lastMessage {
+                Text(message)
+            } else {
+                Text("模型不打进安装包（蜂窝下载上限 200 MB），首次使用时在这里下载。")
+            }
+        }
+    }
+
+    private func modelRow(_ model: WhisperModelDescriptor) -> some View {
+        let state = models.states[model.id] ?? .notInstalled
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.displayName).bold()
+                    Text(model.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                modelAction(for: model, state: state)
+            }
+            if case .downloading(let progress) = state {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            }
+            if case .failed(let message) = state {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modelAction(for model: WhisperModelDescriptor, state: ModelDownloadState) -> some View {
+        switch state {
+        case .installed:
+            Button("删除", role: .destructive) {
+                try? models.delete(model.id)
+            }
+            .font(.footnote)
+
+        case .downloading:
+            Button("取消") {
+                models.cancelDownload(model.id)
+            }
+            .font(.footnote)
+
+        case .notInstalled, .failed:
+            Button("下载 \(model.sizeText)") {
+                models.download(model.id, preferMirror: settings.preferModelMirror)
+            }
+            .font(.footnote)
+        }
+    }
+
     private var languageSection: some View {
         Section("语言") {
             Picker("我正在学", selection: $settings.learningLanguage) {
@@ -115,8 +233,8 @@ struct SettingsView: View {
                 Spacer()
                 Text(BuildInfo.commit).foregroundStyle(.secondary)
             }
-            Text("当前为 M1（录音内核）阶段：已能录音、分片落盘与断口标注；"
-                + "转写、翻译、说话人分离、语言学习尚未实现。")
+            Text("当前为 M2（转写）阶段：录音内核（M1）已完成，正在接入离线转写"
+                + "（实时字幕 + 终稿）；说话人分离、翻译、语言学习尚未实现。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
