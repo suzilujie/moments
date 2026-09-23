@@ -53,9 +53,9 @@ final class AudioEventObserver {
             // 只从通知里取出可跨并发域传递的原始值，避免捕获非 Sendable 的通知对象。
             //
             // 这里**不再读 AVAudioSessionInterruptionWasSuspendedKey**：
-            // 该键自 iOS 14.5 起已废弃、系统也不再提供（继续读只会拿到 nil，
-            // 同时换来一条编译告警）。官方口径是用 InterruptionReason 判断，
-            // 因此"此前是否被系统挂起"改由 reason 推导（见 handleInterruption）。
+            // 该键自 iOS 14.5 起已废弃，而它承载的这个信息自 **iOS 16 起
+            // 已被系统彻底移除**（弃用说明："wasSuspended reason no longer present"）。
+            // 详见 handleInterruption 的说明 —— 整项已移除，不要加回来。
             let rawType = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
             let rawReason = (note.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
             Task { @MainActor in
@@ -130,22 +130,21 @@ final class AudioEventObserver {
         let typeText = Self.interruptionTypeText(rawType)
         let reasonText = Self.interruptionReasonText(rawReason)
 
-        // "此前被系统挂起"改由 reason 推导（原 WasSuspendedKey 自 iOS 14.5 起废弃）。
-        // 之所以非要保留这一项：它对排查【锁屏后被静默停录】很关键 ——
-        // appWasSuspended 说明是系统主动挂起我们，而不是被来电/其他 App 抢占，
-        // 两者的处置完全不同（前者要靠后台保活，后者等对方让出即可）。
-        let wasSuspended: Bool? = rawReason.map {
-            $0 == AVAudioSession.InterruptionReason.appWasSuspended.rawValue
-        }
-        let suspendedText = wasSuspended.map { $0 ? "是" : "否" } ?? "未提供"
-
+        // 原本这里还有一项「此前是否被系统挂起」。**已整项移除**，不是简化：
+        //   · 原用的 AVAudioSessionInterruptionWasSuspendedKey 自 iOS 14.5 起废弃；
+        //   · 改用的 InterruptionReason.appWasSuspended 又自 **iOS 16 起废弃**，
+        //     弃用说明原文是 "wasSuspended reason no longer present" ——
+        //     即**系统已不再提供这个信息**。
+        // 继续保留只会显示一个误导性的「否」，把"系统没提供"说成"没被挂起"，
+        // 比不显示更糟：排查【锁屏后被静默停录】时会把方向带偏。
+        // 这段记录留在这里，是为了避免以后有人"顺手把它加回来"。
         let isBegan = rawType == AVAudioSession.InterruptionType.began.rawValue
         // 系统会在 .ended 通知里通过 shouldResume 告知是否允许我们恢复。
         // 这里按"允许"处理并交给状态机尝试 —— 真正能否恢复，由重新激活会话的结果决定，
         // 不能只信这个布尔值（真机上存在 shouldResume 为真却无法恢复的情况）。
         let shouldResume = !isBegan
 
-        let detail = "原因=\(reasonText)｜此前被系统挂起=\(suspendedText)"
+        let detail = "原因=\(reasonText)"
         record(
             category: .interrupt,
             level: .warn,
@@ -205,14 +204,16 @@ final class AudioEventObserver {
         // 无法查看 SDK 头文件确认它指的是哪一个 case。
         //
         // 取舍：本函数只负责把原因翻译成一句人话，任何未知值打出原始数字即可，
-        // 因此按原始值判断最稳 —— 既覆盖已知三种，也不会因将来 SDK 新增 case
+        // 因此按原始值判断最稳 —— 既覆盖已知情形，也不会因将来 SDK 变更
         // 而编译失败。代价是失去"枚举新增 case 时编译器会提醒"这一保护，
         // 而这里的失效后果仅仅是多显示一个数字，可以接受。
+        //
+        // 注意：**不要把 .appWasSuspended 加回来** —— 它自 iOS 16 起已废弃
+        //（"wasSuspended reason no longer present"），系统不再提供该值；
+        // 引用它还会额外换来一条编译告警。
         switch raw {
         case AVAudioSession.InterruptionReason.default.rawValue:
-            return "default"
-        case AVAudioSession.InterruptionReason.appWasSuspended.rawValue:
-            return "appWasSuspended(App 被系统挂起)"
+            return "default(系统未给出具体原因)"
         case AVAudioSession.InterruptionReason.builtInMicMuted.rawValue:
             return "builtInMicMuted(内置麦克风被静音)"
         default:
