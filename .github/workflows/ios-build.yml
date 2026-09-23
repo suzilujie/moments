@@ -60,6 +60,7 @@ jobs:
 
       - name: Build for device (unsigned)
         run: |
+          set -o pipefail
           xcodebuild build \
             -project Moments.xcodeproj \
             -scheme Moments \
@@ -69,7 +70,62 @@ jobs:
             CONFIGURATION_BUILD_DIR="$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" 2>&1 | tee build.log
+          echo "build.log lines: $(wc -l < build.log)"
+
+      # 把编译诊断转成 GitHub【注解】（annotations）。
+      #
+      # 为什么需要这一步：Actions 的原始日志需要认证才能下载，匿名访问会返回 403，
+      # 因此"看不到日志 = 无法定位编译错误"。而 check-runs 接口对公开仓库可匿名读取，
+      # 注解正是挂在 check-run 上的 —— 把错误转成注解，就能在没有登录凭据的情况下
+      # 读到具体是哪个文件、哪一行、什么错误。
+      #
+      # 同时把完整日志作为 artifact 上传，供人工排查（CI 报错时最容易做的事是搜索）。
+      - name: Report diagnostics as annotations
+        if: always()
+        run: |
+          if [ ! -f build.log ]; then
+            echo "::warning::未捕获到 build.log（构建步骤可能未执行）"
+            exit 0
+          fi
+
+          echo "=== 错误行预览 ==="
+          grep -E 'error:' build.log | head -40 || true
+
+          grep -E ':[0-9]+:[0-9]+: error:' build.log | head -40 > errors.txt || true
+          grep -E ':[0-9]+:[0-9]+: warning:' build.log | head -15 > warnings.txt || true
+
+          emit() {
+            level="$1"
+            file="$2"
+            while IFS= read -r line; do
+              pathpart=$(printf '%s' "$line" | cut -d: -f1)
+              lineno=$(printf '%s' "$line" | cut -d: -f2)
+              colno=$(printf '%s' "$line" | cut -d: -f3)
+              msg=$(printf '%s' "$line" | sed -E "s/^[^:]*:[0-9]+:[0-9]+: ${level}: //")
+              rel=$(printf '%s' "$pathpart" | sed -E 's#^.*/moments/##')
+              echo "::${level} file=${rel},line=${lineno},col=${colno}::${msg}"
+            done < "$file"
+          }
+
+          if [ -s errors.txt ]; then
+            echo "=== 共 $(wc -l < errors.txt) 条编译错误，已转为注解 ==="
+            emit "error" errors.txt
+          elif [ -s warnings.txt ]; then
+            echo "=== 无错误，$(wc -l < warnings.txt) 条警告已转为注解 ==="
+            emit "warning" warnings.txt
+          else
+            echo "无编译诊断"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moments-build-log
+          path: build.log
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Package unsigned ipa
         run: |

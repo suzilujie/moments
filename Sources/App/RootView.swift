@@ -23,7 +23,7 @@ struct RootView: View {
                 eventSection
                 logSection
             }
-            .navigationTitle("M0 自检")
+            .navigationTitle("自检")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("日志") { showingLogs = true }

@@ -65,6 +65,17 @@ final class AudioRingBuffer {
         return writeCount - readCount
     }
 
+    /// 累计写入帧数（单调递增，永不回退）。
+    ///
+    /// 这是"音频是否还在来"的最佳探针：它由实时线程推进、可被任意线程安全读取，
+    /// 且不依赖消费者是否来得及处理。看门狗据此判定停滞（设计文档 4.13）——
+    /// 用探针而不是让实时线程回调主线程喂狗，避免了每秒十次的跨线程开销。
+    var totalWritten: Int {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return writeCount
+    }
+
     // MARK: - 生产者（实时音频线程调用）
 
     /// 写入样本。**调用方不得在此前后做任何分配或 I/O。**

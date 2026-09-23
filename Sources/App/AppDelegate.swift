@@ -65,6 +65,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         AudioEventObserver.shared.start()
         SystemStateMonitor.shared.start()
         SystemStateMonitor.shared.checkDisk(reason: "启动")
+
+        // 首次访问 RecordingSession 即完成音频事件回调绑定 —— 必须早于任何录音动作，
+        // 否则中断事件来了却没人处理（那正是"静默停录"的典型成因）。
+        let closed = RecordingSession.shared.closeUnfinishedSessions()
+        if !closed.isEmpty {
+            Log.shared.warn(
+                .session,
+                "启动时有 \(closed.count) 个异常终止的会话已自动收尾，可在「记录」页查看"
+            )
+        }
+
+        // 顺带按保留期清理过期音频（文本永久、音频有限，设计文档 4.5）
+        RecordingLibrary.shared.purgeExpiredAudio(retentionDays: AppSettings.shared.retentionDays)
     }
 
     // MARK: - 前后台切换

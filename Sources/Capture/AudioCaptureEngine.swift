@@ -18,7 +18,10 @@ final class AudioCaptureEngine {
     /// 复用它是"改了却没生效"这类疑难问题的常见来源。
     private var engine = AVAudioEngine()
 
-    let ringBuffer = AudioRingBuffer()
+    /// 环形缓冲由**会话层**创建并持有，引擎只是写入方。
+    /// 这样后台消费队列可以直接读它，不必为了取数据而跳回主线程 ——
+    /// 否则"后台消费"就名存实亡（每次取数据都要切到主线程）。
+    private var ringBuffer: AudioRingBuffer?
 
     private(set) var nativeFormat: AVAudioFormat?
     private(set) var isRunning = false
@@ -26,8 +29,9 @@ final class AudioCaptureEngine {
 
     // MARK: - 启动 / 停止
 
-    func start() throws {
+    func start(ringBuffer: AudioRingBuffer) throws {
         guard !isRunning else { return }
+        self.ringBuffer = ringBuffer
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -46,13 +50,13 @@ final class AudioCaptureEngine {
         // 该值属设计文档 4.9 的待实测项，先取保守中间值。
         tapBufferFrames = 4096
 
-        let buffer = ringBuffer
+        let target = ringBuffer
         input.installTap(onBus: 0, bufferSize: tapBufferFrames, format: format) { pcmBuffer, _ in
             // ══════ 实时音频线程 ══════
             // 此处只允许：读指针、memcpy。
             // 禁止：内存分配、文件/网络 I/O、任何可能阻塞的调用、日志写入。
             guard let channel = pcmBuffer.floatChannelData?[0] else { return }
-            buffer.write(channel, count: Int(pcmBuffer.frameLength))
+            target.write(channel, count: Int(pcmBuffer.frameLength))
         }
 
         engine.prepare()
@@ -76,31 +80,31 @@ final class AudioCaptureEngine {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         isRunning = false
+
+        let pending = ringBuffer?.availableToRead ?? 0
+        let dropped = ringBuffer?.droppedSamples ?? 0
         Log.shared.info(
             .capture,
-            "采集引擎已停止｜环形缓冲剩余未读 \(ringBuffer.availableToRead) 帧"
-                + "｜累计丢弃 \(ringBuffer.droppedSamples) 帧"
+            "采集引擎已停止｜环形缓冲剩余未读 \(pending) 帧｜累计丢弃 \(dropped) 帧"
         )
+        if dropped > 0 {
+            // 丢弃大于 0 说明消费者跟不上生产者，属严重信号，必须高亮
+            Log.shared.error(
+                .capture,
+                "环形缓冲发生溢出，已丢弃 \(dropped) 帧音频（消费者跟不上采集，需检查落盘耗时）"
+            )
+        }
     }
 
     /// 完全重建（用于 AVAudioEngineConfigurationChange / 媒体服务重置）。
     /// 环形缓冲保留不清空 —— 已经采到的音频不能因为重建而丢掉。
     func rebuild() throws {
+        guard let ringBuffer else {
+            throw CaptureError.engineStartFailed("重建时缺少环形缓冲引用")
+        }
         Log.shared.warn(.capture, "开始重建采集引擎（完全新建实例）")
         stop()
         engine = AVAudioEngine()
-        try start()
-    }
-
-    // MARK: - 消费
-
-    /// 从环形缓冲取走样本（仅限后台消费队列调用）。
-    func drain(maxFrames: Int) -> [Float] {
-        ringBuffer.read(maxCount: maxFrames)
-    }
-
-    /// 丢弃未读数据（会话结束或判定数据陈旧时使用）。
-    func discardPending() {
-        ringBuffer.drainDiscard()
+        try start(ringBuffer: ringBuffer)
     }
 }

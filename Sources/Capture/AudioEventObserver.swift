@@ -24,6 +24,21 @@ final class AudioEventObserver {
     /// 累计收到的事件数，供自检页确认监听确实在工作。
     private(set) var eventCount = 0
 
+    // MARK: - 对外回调（供 RecordingSession 驱动中断恢复）
+    //
+    // 监听器同时承担两件事：**留痕**（写日志）与**通知**（驱动恢复）。
+    // 把两件事放在一处，是为了避免"日志里记录了中断、恢复逻辑却收不到通知"
+    // 这种最容易被漏掉的不一致。
+
+    /// 会话中断：began=是否开始中断，shouldResume=系统是否允许自动恢复
+    var onInterruption: (@MainActor (_ began: Bool, _ shouldResume: Bool, _ detail: String) -> Void)?
+    /// 路由变更（输入/输出设备切换）
+    var onRouteChange: (@MainActor (_ detail: String) -> Void)?
+    /// 音频图配置变更 —— 引擎已被系统停掉，必须重建（静默停录最常见原因）
+    var onEngineConfigurationChange: (@MainActor () -> Void)?
+    /// 媒体服务重置 —— 会话与引擎对象全部失效，必须完整重建
+    var onMediaServicesReset: (@MainActor () -> Void)?
+
     private init() {}
 
     func start() {
@@ -68,6 +83,7 @@ final class AudioEventObserver {
                     name: "媒体服务重置 mediaServicesWereReset",
                     detail: "音频栈已被系统重建，会话与引擎对象全部失效，必须完整重建（设计文档 4.12）"
                 )
+                AudioEventObserver.shared.onMediaServicesReset?()
             }
         })
         observers.append(center.addObserver(
@@ -77,8 +93,9 @@ final class AudioEventObserver {
                 AudioEventObserver.shared.record(
                     category: .session, level: .error,
                     name: "媒体服务丢失 mediaServicesWereLost",
-                    detail: "音频服务已不可用"
+                    detail: "音频服务已不可用，按彻底重建处理"
                 )
+                AudioEventObserver.shared.onMediaServicesReset?()
             }
         })
 
@@ -90,8 +107,9 @@ final class AudioEventObserver {
                 AudioEventObserver.shared.record(
                     category: .capture, level: .warn,
                     name: "音频图配置变更 AVAudioEngineConfigurationChange",
-                    detail: "引擎已被系统停止/重建，这是【静默停录】最常见的原因，M1 必须在此重建引擎（设计文档 4.12）"
+                    detail: "引擎已被系统停止/重建，这是【静默停录】最常见的原因，必须在此重建引擎（设计文档 4.12）"
                 )
+                AudioEventObserver.shared.onEngineConfigurationChange?()
             }
         })
 
@@ -111,26 +129,32 @@ final class AudioEventObserver {
         let reasonText = Self.interruptionReasonText(rawReason)
         let suspendedText = wasSuspended.map { $0 ? "是" : "否" } ?? "未提供"
 
-        // shouldResume 决定 M1 是否会自动恢复；这里先记录下来，真机上直接可见
-        let shouldResume = rawType == AVAudioSession.InterruptionType.ended.rawValue
+        let isBegan = rawType == AVAudioSession.InterruptionType.began.rawValue
+        // 系统会在 .ended 通知里通过 shouldResume 告知是否允许我们恢复。
+        // 这里按"允许"处理并交给状态机尝试 —— 真正能否恢复，由重新激活会话的结果决定，
+        // 不能只信这个布尔值（真机上存在 shouldResume 为真却无法恢复的情况）。
+        let shouldResume = !isBegan
 
+        let detail = "原因=\(reasonText)｜此前被系统挂起=\(suspendedText)"
         record(
             category: .interrupt,
-            level: shouldResume ? .warn : .warn,
+            level: .warn,
             name: "会话中断 interruption｜\(typeText)",
-            detail: "原因=\(reasonText)｜此前被系统挂起=\(suspendedText)"
-                + "｜M1 将在 ended 时尝试自动恢复（设计文档 4.12）"
+            detail: detail + "｜shouldResume=\(shouldResume ? "是" : "否")"
         )
+        onInterruption?(isBegan, shouldResume, detail)
     }
 
     private func handleRouteChange(rawReason: UInt?, previousText: String) {
         let reasonText = Self.routeChangeReasonText(rawReason)
+        let detail = "变更前路由=\(previousText)"
         record(
             category: .route,
             level: reasonText.contains("oldDeviceUnavailable") ? .warn : .info,
             name: "路由变更 routeChange｜\(reasonText)",
-            detail: "变更前路由=\(previousText)｜M1 需在此重建输入节点与格式转换器（设计文档 4.12）"
+            detail: detail + "｜需重建输入节点与格式转换器（设计文档 4.12）"
         )
+        onRouteChange?(detail)
     }
 
     /// 统一出口：先记事件本身，再补一条当前音频上下文的快照。
