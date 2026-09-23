@@ -42,10 +42,20 @@ targets:
       # 静态而非动态的理由：免去签名与嵌入步骤，对未签名构建更省事。
       - framework: third_party/whisper.cpp/build-apple/whisper.xcframework
         embed: false
-      # ggml（whisper 的底层张量库）依赖这两者：BLAS 走 Accelerate，GPU 走 Metal
+      # ggml（whisper 的底层张量库）依赖这些系统框架：BLAS 走 Accelerate，GPU 走 Metal
       - sdk: Accelerate.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
+      # ═══ CoreML（由 CI 实测补入，不是猜的）═══
+      # whisper.cpp 的静态库里包含 CoreML 编码器路径的目标文件
+      # （whisper-encoder.o / whisper-encoder-impl.o，源自 whisper-encoder.mm），
+      # 它们引用了 Objective-C 类 MLMultiArray 与 MLPredictionOptions。
+      # 即便我们不使用 CoreML 编码器，这些目标文件也已经在库里，
+      # 链接时必须能解析到符号，否则报：
+      #   Undefined symbols for architecture arm64:
+      #     "_OBJC_CLASS_$_MLMultiArray", referenced from whisper-encoder.o
+      #   ld: symbol(s) not found for architecture arm64
+      - sdk: CoreML.framework
     settings:
       base:
         PRODUCT_NAME: Moments

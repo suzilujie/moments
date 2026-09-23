@@ -896,3 +896,129 @@
   3) 链接通过后继续 M2 后半：模型下载管理 + 终稿转写 + 实时字幕 + 转写存储与界面
 ================================================================================
 
+--------------------------------------------------------------------------------
+[2026-09-23] 阶段十二：M2 后半段实现（模型管理 / 转写服务 / 实时字幕 / 界面）
+--------------------------------------------------------------------------------
+
+■ 网络阻断的处置与结论（承接阶段十一）
+  1) 期间做了完整诊断，结论有三条，值得记住：
+     · git 配置里存在 http.https://github.com.proxy = http://127.0.0.1:7897
+       —— 即 git 被单独配置为「github.com 走本地代理」。代理一旦停用，
+         git 必然失败，而浏览器/PowerShell 直连却正常，极易误判为"网络不通"。
+     · 实测 api.github.com 直连可达、github.com:443 不可达
+       —— 典型的"git 端点被阻断、API 端点仍通"。
+     · 本地代理端口虽在监听，但经它访问 google.com 同样失败
+       —— 代理上游本身不通，不是 git 的问题。
+  2) 处置：**始终未修改任何 git 配置**（遵守既有约束）。网络恢复后直接推送成功。
+     教训：本项目的构建触发依赖 GitHub 推送，网络受限会直接卡住交付，
+     属外部依赖风险，已有登记。
+
+■ 推送结果
+  · 174916a..33621f0：M2a 代码 + 工作日志推送成功
+  · 33621f0..3a4befb：M2b 代码推送成功
+  · 3a4befb..c154b6b：CI 诊断补强推送成功
+
+■ 新增文件（M2 后半段，6 个）
+  Sources/ASR/WhisperModel.swift      模型目录（4 个量化模型 + 语言选项）
+    · 实时稿默认 base-q5_0、终稿默认 small-q5_0
+    · **每个模型同时提供主站与国内镜像两个地址** —— 交付环境实测存在
+      huggingface.co 不可达的情况，而模型下不下来会直接让转写失效
+    · 语言默认「自动判定」而非强制指定：中英夹杂时强制指定会把另一种
+      语言识别成错字（设计文档 7.5 逐段语言检测的前提）
+  Sources/ASR/ModelManager.swift      模型下载与安装管理
+    · 先落 .download 临时文件、体积校验通过后才原子改名 ——
+      否则"看起来存在、实际只下一半"的文件会骗过所有存在性检查
+    · 主站失败自动回退镜像；进度回调走 Task { @MainActor in }
+    · 不做哈希校验（几百 MB 读两遍代价明显），正确性交给加载时验证
+  Sources/ASR/TranscriptionService.swift  终稿转写服务（编排层）
+  Sources/ASR/LiveTranscriber.swift       实时字幕（引擎 + 界面封装两层）
+  Sources/Store/Transcript.swift          转写数据模型（双稿）
+  Sources/Store/TranscriptStore.swift     转写稿持久化
+
+■ 修改文件（7 个）
+  Sources/ASR/WhisperEngine.swift     新增 isQuiet（实时字幕静音日志）
+  Sources/Capture/CapturePipeline.swift  新增 onSamples（16kHz 样本分发）
+  Sources/Capture/RecordingSession.swift 接入样本分发；会话结束时收掉实时字幕
+  Sources/Store/AppSettings.swift     新增实时/终稿模型、识别语言、镜像开关
+  Sources/Features/Record/RecordView.swift        实时字幕区 + 启动逻辑
+  Sources/Features/Sessions/SessionListView.swift 文字稿区 + 点句定位
+  Sources/Features/Settings/SettingsView.swift    转写设置 + 模型下载管理
+  Sources/App/RootView.swift          自检页新增「转写引擎」区
+
+■ 关键设计决定
+  1) **双稿分离持久化**（transcript-live.json / transcript-final.json）
+     而非一稿两用：终稿是事后批量补跑，若与实时稿共用一个文件，
+     写终稿就要读取+重写整份实时稿，中途失败会连实时稿一起损坏。
+  2) **时间轴映射单独抽成纯函数**（TranscriptMath.mapToSessionTimeline）
+     把「相对分片」的毫秒映射为「相对会话」的毫秒。算错的后果是
+     点句回听"偏一点点"，真机上极难发现，因此必须独立可验证。
+  3) **终稿转写可中断可续跑**：每处理完一片就落盘一次，
+     重启后从已覆盖时间点继续 —— 一次 8 小时会话有几百片，
+     "跑一半被杀就要从头再来"是不可接受的。
+  4) **极简能量门限防幻觉**（TranscriptMath.hasSpeech）：
+     whisper 面对纯噪声会编造出很像真的文本（字幕幻觉），
+     用均方根幅度做下限判断即可挡掉大部分。取向是宁多勿漏 ——
+     漏掉是"录音没录上"，多一句错字只是可忽略的噪声。
+  5) **实时字幕的"窗口内重写、窗口外冻结"**：
+     已在窗口之前的句子冻结为定稿，窗口内的一律标 isProvisional。
+     这让"文字跳动"变成可理解的行为而不是故障（R15 的落地）。
+  6) **实时字幕与终稿互斥**：终稿开跑时置 LiveTranscriptionEngine.setPaused(true)，
+     两者同时跑会互相抢 CPU 并拖累录音（设计文档 5.4）。
+  7) **采集管线新增 onSamples 但只做入队**：
+     该队列同时负责落盘，在它上面做识别会导致环形缓冲溢出丢帧 ——
+     丢帧是不可逆的音频损失，而字幕晚几秒毫无影响。
+
+■ 实现中发现并修正的问题（重要）
+  1) 【线程范式】初版把 TranscriptionService 写成 @MainActor 后，
+     直接在后台队列调用它的方法 —— 那是 actor 隔离违规。
+     已按本项目既有范式重构为两层：
+       · TranscriptionService（@MainActor）：只做编排与状态发布
+       · TranscriptionWorker（普通类 + 自带串行队列）：承担全部重活
+     同理，实时字幕拆成 LiveTranscriptionEngine（非隔离，供采集管线
+     在后台队列直接 feed）与 LiveTranscriber（@MainActor，只发布状态）。
+     这与 M1 把重活放进 CapturePipeline 是同一个理由，
+     回调统一用 `Task { @MainActor in }`（既有代码 RecordingSession /
+     AudioEventObserver 的统一做法）。
+
+■ CI 结果与阻塞
+  · M2a（33621f0）构建**失败**，exit code 65。
+  · 但注解里**一条错误都没有**，只有若干 Swift 警告。
+    原因：原诊断步骤的正则只抓 `文件:行:列: error:` 这一种格式，
+    而链接错误（ld: Undefined symbols / framework not found /
+    Build input file cannot be found）**不带行列号**，因此全部漏掉。
+  · 已补强诊断（c154b6b）：新增「非定位型错误」通道（最多 25 条）
+    与「日志尾部 15 行」。本机看不到 Actions 原始日志（需认证 403），
+    注解是唯一观测通道，这一步是必要的。
+  · 已确认 whisper.xcframework **构建成功**
+    （注解：「whisper 产物目录已生成」+
+     路径 third_party/whisper.cpp/build-apple/whisper.xcframework），
+    因此问题在 App 的编译/链接环节，而非 xcframework 本身。
+
+■ 真实错误已定位（诊断补强立即见效）
+  补强后的注解直接给出结论：
+    Undefined symbols for architecture arm64:
+      "_OBJC_CLASS_$_MLMultiArray",        referenced from whisper-encoder.o
+      "_OBJC_CLASS_$_MLPredictionOptions", referenced from whisper-encoder-impl.o
+    ld: symbol(s) not found for architecture arm64
+    clang: error: linker command failed with exit code 1
+  原因：whisper.cpp 的静态库里包含 **CoreML 编码器**路径的目标文件
+  （whisper-encoder.o / whisper-encoder-impl.o，源自 whisper-encoder.mm），
+  引用了 Objective-C 类 MLMultiArray 与 MLPredictionOptions。
+  即便不使用 CoreML 编码器，这些目标文件也已在库中，链接时必须能解析符号。
+  修正：project.yml 依赖中加入 `CoreML.framework`。
+  说明：这是一个**纯靠 CI 实测才能发现**的问题 —— 本机是 Windows、
+  既无法查看 xcframework 内部、也无法试链接，只能靠"注解通道"把错误带回来。
+  诊断补强这一步（c154b6b）是本次能定位问题的直接原因。
+
+■ 顺带发现的次要链接告警（暂不处理，观察）
+  · `Could not find or use auto-linked framework 'CoreAudioTypes'`
+  · `Could not parse or use implicit file '.../SwiftUICore.framework/SwiftUICore.tbd'`
+  两者均为 warning，未导致失败；若后续出现相关异常再针对性补框架。
+
+■ 下一步
+  1) 推送 CoreML.framework 修正，确认 M2 编译通过
+  2) 编译通过后：用户下载 ipa 侧载，先下载 base 模型，验证实时字幕；
+     再用终稿转写验证两稿对照与点句定位
+  3) M2 验收通过后进入 M3（sherpa-onnx：VAD / 降噪 / 说话人分离）
+================================================================================
+
