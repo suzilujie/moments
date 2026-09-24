@@ -359,7 +359,12 @@ final class LiveTranscriptionEngine {
             language: requested,
             translateToEnglish: false
         )
-        pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+        // **只在真的出了字之后才锁定**：whisper 对一段"VAD 认为有人声、
+        // 但一个词都没听出来"的音频给出的语言判定，可信度是最低的，
+        // 而锁定是一次性的 —— 判错就错一整场（见 pinLanguageIfNeeded 的说明）。
+        if !local.isEmpty {
+            pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+        }
         let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
 
         windowCount += 1

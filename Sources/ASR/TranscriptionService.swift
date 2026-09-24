@@ -366,7 +366,11 @@ final class TranscriptionWorker {
                             language: inputs.language == "auto" ? pinnedLanguage : inputs.language,
                             translateToEnglish: false
                         )
-                        pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+                        // 与实时路径同一条规则：只有**真的转出了内容**才锁定语言。
+                        // 空结果分片的语言判定最不可信，而锁定是一次性的。
+                        if !local.isEmpty {
+                            pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+                        }
                         // 相对分片 → 相对会话。做错的后果是点句回听定位偏移（见 TranscriptMath）
                         segments.append(contentsOf: TranscriptMath.mapToSessionTimeline(
                             local: local,
