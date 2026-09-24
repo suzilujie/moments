@@ -1,4 +1,8 @@
 import SwiftUI
+// 语言包可用性查询（LanguageAvailability）在这个模块里；
+// `.translationTask` 也定义在这里（SessionListView 曾因漏 import 而报
+// "some View has no member 'translationTask'"）。
+import Translation
 
 /// 录音页（M1 主界面）。
 ///
@@ -22,6 +26,10 @@ struct RecordView: View {
     @State private var showingSettings = false
     /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
     @State private var liveHint: String?
+    /// 实时翻译语言包的可用性。
+    /// **主动查**：用户要求"缺语言包 / 正在下载"这类状态出现在字幕下方，
+    /// 而等到开始准备才知道缺，中间那段时间他只能干等。
+    @State private var livePackStatus: LanguageAvailability.Status?
 
     var body: some View {
         NavigationStack {
@@ -59,14 +67,22 @@ struct RecordView: View {
             // 一定是后缀；而一场 8 小时的会话有数千句，每次全扫是白费。
             // 真正的去重由 TranslationService 按 id 完成，这里不承担正确性。
             .onChange(of: live.segments) { translation.enqueueLive(Array(live.segments.suffix(30))) }
-            // 「自动判定」模式下要等语言锁定才知道源语言 —— 这一刻才是能启动的时候
-            .onChange(of: live.pinnedLanguage) { syncLiveTranslation() }
+            // 「自动判定」模式下要等语言锁定才知道源语言 —— 这一刻才是能启动的时候。
+            // 语言锁定后才查得到语言包状态（源语言之前未知），所以这里也要刷一次。
+            .onChange(of: live.pinnedLanguage) {
+                syncLiveTranslation()
+                Task { await refreshLivePackStatus() }
+            }
+            .task { await refreshLivePackStatus() }
             // 录完就停：否则翻译会话会一直挂着一个 session（切窗引擎已经停了）
             .onChange(of: session.snapshot.state.isActive) {
                 if !session.snapshot.state.isActive { translation.stopLive() }
             }
-            // 设置里改了目标语言（含"关闭"）要立刻生效，而不是等下次录音
-            .onChange(of: settings.liveTranslationTargetLanguage) { syncLiveTranslation() }
+            // 设置里（或本页菜单里）改了目标语言要立刻生效，而不是等下次录音
+            .onChange(of: settings.liveTranslationTargetLanguage) {
+                syncLiveTranslation()
+                Task { await refreshLivePackStatus() }
+            }
         }
     }
 
@@ -213,8 +229,8 @@ struct RecordView: View {
     private var subtitleSection: some View {
         Section {
             liveLanguageRow
-            // 实时翻译的状态行：只在开启时出现（关闭时不占界面）
-            if !settings.liveTranslationTargetLanguage.isEmpty { liveTranslationRow }
+            // 实时翻译：**始终显示**，未开启时也要出现（理由见 liveTranslationRow 的说明）
+            liveTranslationRow
 
             if !settings.realtimeTranscriptionEnabled {
                 Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
@@ -266,6 +282,17 @@ struct RecordView: View {
                     }
                     .padding(.vertical, 2)
                 }
+
+                // 实时翻译的状态**贴在源语下方**（用户明确要求的位置）。
+                // 理由：用户正在看的就是字幕，状态必须出现在同一个视野里 ——
+                // 藏在设置里等于没有（这一条本项目已经栽过一次）。
+                // 一切正常时返回 nil，不显示任何东西。
+                if let hint = liveTranslationInlineHint {
+                    Text(hint)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .padding(.top, 2)
+                }
             }
         } header: {
             Text("实时字幕")
@@ -275,7 +302,8 @@ struct RecordView: View {
             // 文案不跟着改的话，它本身就在误导用户。
             Text("字幕**成句即定稿**：切点由 VAD 决定，一句话说完才送去识别，"
                 + "所以文字一旦出现就不会再变。录音与音频不受影响，"
-                + "最准确的文本仍以终稿为准。")
+                + "最准确的文本仍以终稿为准。"
+                + "「实时翻译」开启后，每句的译文会显示在原文下方（双行）。")
                 .font(.footnote)
         }
     }
@@ -373,34 +401,130 @@ struct RecordView: View {
         syncLiveTranslation()
     }
 
-    /// 实时翻译的状态行。
+    /// 实时翻译：状态 + 语言选择入口。**始终显示**。
     ///
-    /// **必须显示**：翻译没出结果时，用户要能分辨是"还没配好"（语言包缺失）
-    /// 还是"还没轮到翻"（在等识别语言锁定），而不是盯着没有译文的界面猜。
+    /// ## 为什么它必须始终显示（真机教训，我自己的设计缺陷）
+    /// 这一项默认关闭 —— 理由是语言包必须先装好，否则用户会在**录音刚开始那一刻**
+    /// 撞上系统下载界面。这个理由本身没错。
+    /// 但我最初只在**开启之后**才显示这一行，于是用户根本不知道有这个功能：
+    /// 真机反馈原话是「没看到双语，只看到源语」。
+    /// **一个默认关闭的功能，必须在它被需要的地方留下可见的入口**——
+    /// "不打断用户"和"用户不知道它存在"是两回事，我当时只处理了前者。
+    ///
+    /// 入口放在这里还有一层好处：录音时想换语言不必再进设置（与「识别语言」同理）。
     private var liveTranslationRow: some View {
         HStack(spacing: 8) {
             Text("实时翻译")
                 .foregroundStyle(.secondary)
+
             Spacer()
-            if let message = translation.liveMessage {
-                Text(message)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.trailing)
-            } else if translation.liveConfiguration != nil {
-                Text("\(targetLanguageName)｜已翻 \(translation.liveTranslatedCount) 句")
-                    .foregroundStyle(.green)
-            } else if session.snapshot.state.isActive {
-                // 自动判定尚未锁定：这时**确实还不能翻**（系统翻译不支持源语言自动判定）
-                Text("\(targetLanguageName)｜等识别语言锁定…")
-            } else {
-                Text("\(targetLanguageName)（录音时生效）")
+
+            Text(liveTranslationStatusText)
+                .foregroundStyle(liveTranslationStatusColor)
+                .multilineTextAlignment(.trailing)
+
+            Menu {
+                Button("关闭") { settings.liveTranslationTargetLanguage = "" }
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Button(language.name) { settings.liveTranslationTargetLanguage = language.code }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
         }
         .font(.footnote)
     }
 
+    /// 实时翻译那行的状态。**它同时就是排查入口**：卡在哪一关，这一行直接说出来，
+    /// 而不是让用户盯着没有译文的界面猜。
+    private var liveTranslationStatusText: String {
+        guard !settings.liveTranslationTargetLanguage.isEmpty else {
+            return "未开启（点右侧选语言）"
+        }
+        if let message = translation.liveMessage { return message }
+        if translation.liveConfiguration != nil {
+            return "\(targetLanguageName)｜已翻 \(translation.liveTranslatedCount) 句"
+        }
+        if session.snapshot.state.isActive {
+            // 自动判定尚未锁定：这时**确实还不能翻**（系统翻译不支持源语言自动判定）
+            return "\(targetLanguageName)｜等识别语言锁定…"
+        }
+        return "\(targetLanguageName)｜录音时生效"
+    }
+
+    private var liveTranslationStatusColor: Color {
+        if settings.liveTranslationTargetLanguage.isEmpty { return .secondary }
+        if translation.liveMessage != nil { return .orange }
+        if translation.liveConfiguration != nil { return .green }
+        return .secondary
+    }
+
     private var targetLanguageName: String {
         TranslationLanguageCatalog.name(for: settings.liveTranslationTargetLanguage)
+    }
+
+    /// 实时翻译的状态提示，**显示在字幕（源语）下方**。
+    ///
+    /// 用户明确要求把「缺少语言包 / 正在下载」这类状态放在这里 ——
+    /// 而不是藏在设置里：他正在看的就是字幕，状态必须出现在同一个视野里。
+    /// **一切正常时返回 nil**（不显示任何东西）：正常状态下多一行字只是噪音。
+    private var liveTranslationInlineHint: String? {
+        guard !settings.liveTranslationTargetLanguage.isEmpty else { return nil }
+
+        // 失败原因最需要被看到，优先
+        if let message = translation.liveMessage { return message }
+
+        switch translation.liveStage {
+        case .preparing:
+            return "正在准备「\(targetLanguageName)」语言包（首次使用需要联网下载一次）…"
+        case .translating:
+            return nil        // 正常工作中，什么都不说
+        default:
+            break
+        }
+
+        guard session.snapshot.state.isActive else { return nil }
+
+        // 还没启动：多半是缺语言包，或在等识别语言锁定
+        switch livePackStatus {
+        case .supported:
+            return "缺少「\(targetLanguageName)」语言包 —— 首次使用需要联网下载一次，"
+                + "翻译开始时系统会提示下载。想省掉这次等待，"
+                + "可在设置 →「语言」里提前准备好。"
+        case .unsupported:
+            return "系统不支持「当前语言 → \(targetLanguageName)」这对语言，实时翻译无法进行。"
+        default:
+            break
+        }
+
+        if translation.liveConfiguration == nil {
+            return "实时翻译将在识别语言锁定后开始…"
+        }
+        return nil
+    }
+
+    /// 查一次实时翻译语言包的状态。
+    ///
+    /// 源语言取"当前**实际**会用的那个"（已锁定优先，否则设置里指定的），
+    /// 与 `syncLiveTranslation` 用**同一判据** —— 两处不一致会出现
+    /// "说缺语言包、其实是源语言不对"这类自相矛盾。
+    private func refreshLivePackStatus() async {
+        let target = settings.liveTranslationTargetLanguage
+        guard !target.isEmpty else {
+            livePackStatus = nil
+            return
+        }
+        let sourceCode = live.pinnedLanguage.isEmpty
+            ? settings.transcriptionLanguage
+            : live.pinnedLanguage
+        guard sourceCode != "auto",
+              let source = TranslationLanguageCatalog.identifier(forWhisperCode: sourceCode),
+              source != target
+        else {
+            livePackStatus = nil
+            return
+        }
+        livePackStatus = await translation.availability(from: source, to: target)
     }
 
     /// 启动 / 停止实时翻译。

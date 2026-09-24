@@ -148,16 +148,24 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(defaultSourceLanguage, forKey: Keys.sourceLang) }
     }
 
-    /// 实时翻译的目标语言。**空字符串 = 关闭**（默认）。
+    /// 实时翻译的目标语言。**空字符串 = 关闭**。
     ///
-    /// ## 为什么默认关闭，而不是默认跟随"我正在学"
-    /// 实时翻译要在录音过程中额外调用系统翻译，而且**语言包必须预先装好**
-    ///（系统只在 prepareTranslation 时弹下载界面，那要求页面在屏上）。
-    /// 默认打开的话，没准备语言包的用户会在**录音刚开始时**撞上系统下载弹窗 ——
-    /// 那是在最不该打断他的时刻打断他。
+    /// ## 默认值：跟随「我正在学」，即**默认开启**（2026-09-24 用户拍板）
     ///
-    /// 要用的人在设置 →「语言」里选一次即可：那里同时显示语言包状态、
-    /// 并提供一个当场装好的入口（`TranslationService.prepareLanguagePack`）。
+    /// 初版是默认关闭，理由是"语言包必须先装好，否则用户会在录音刚开始那一刻
+    /// 撞上系统下载界面"。**用户否掉了这个取舍**，理由更硬：
+    /// 他要的是这个功能**默认就在**；缺语言包、正在下载这类状态，
+    /// **在字幕下方直接告诉他**就行。
+    ///
+    /// 这个判断纠正了我两处错误：
+    ///   1. 把"可能打断一次"当成关闭功能的理由 —— 而真正该做的是**把状态说清楚**
+    ///   2. 又一次栽在同一类问题上：**默认关闭 ≈ 用户不知道它存在**
+    ///      （真机反馈原话就是「没看到双语，只看到源语」）
+    ///
+    /// 初值取「我正在学」对应的翻译标识符（en → en，zh → zh-Hans）；
+    /// 学习语言不在可翻译目录里时回落为空串（= 关闭）。
+    /// 用户显式选过「关闭」时存的也是空串 —— 不会又被默认值顶回来
+    /// （`?? 默认值` 只在从未存过值时生效）。
     @Published var liveTranslationTargetLanguage: String {
         didSet { defaults.set(liveTranslationTargetLanguage, forKey: Keys.liveTranslateTarget) }
     }
@@ -210,8 +218,12 @@ final class AppSettings: ObservableObject {
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh-Hans"
         // 与 SessionListView 此前的默认值保持一致（zh-Hans），不改变既有行为
         defaultSourceLanguage = defaults.string(forKey: Keys.sourceLang) ?? "zh-Hans"
-        // 实时翻译默认**关闭**（空串）：理由见 liveTranslationTargetLanguage 的说明
-        liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget) ?? ""
+        // 实时翻译默认**开启**、目标取「我正在学」（2026-09-24 用户拍板）：
+        // 理由见 liveTranslationTargetLanguage 的说明。
+        // **必须放在 learningLanguage 赋值之后** —— 默认值就是从它推出来的。
+        liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget)
+            ?? TranslationLanguageCatalog.identifier(forWhisperCode: learningLanguage)
+            ?? ""
         let rawLevel = defaults.string(forKey: Keys.vocabLevel) ?? ""
         vocabularyLevel = VocabularyLevel(rawValue: rawLevel) ?? .fallback
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
