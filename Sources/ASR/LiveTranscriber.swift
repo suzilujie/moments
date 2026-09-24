@@ -69,6 +69,24 @@ final class LiveTranscriptionEngine {
     /// 而"降噪失败"这件事看一次就够了。
     private var hasReportedDenoiseFailure = false
 
+    // MARK: - 实时统计（供日志汇总）
+    //
+    // 为什么要在这一侧自己统计：传给 whisper 的 `isQuiet = true` 会把它内部那句
+    // 「转写完成｜耗时/实时倍率」一并压掉（那是为了避免日志被 5 秒一次的窗口重解淹掉）。
+    // 结果是**实时路径上最关键的指标反而消失了** —— 引擎静音是对的，但不该连数据都没有。
+    // 这里按窗口累计、每 N 个窗口汇总一行：既不刷屏，又能回答
+    // 「实时字幕到底跟不跟得上采集」。
+    private var windowCount = 0
+    private var silentWindowCount = 0
+    private var producedSegments = 0
+    private var totalCostMs = 0
+    private var maxCostMs = 0
+    /// "窗口还太短"的提示只记一次，避免刚开录音那几秒每秒刷一行
+    private var hasReportedShortWindow = false
+
+    /// 每多少个窗口汇总一行统计
+    private static let statsEveryWindows = 10
+
     /// 结果回调。**在本引擎队列上触发**，调用方需自行切回主线程。
     var onSegments: (([TranscriptSegment]) -> Void)?
     /// 状态回调（模型加载中 / 运行中 / 已暂停 / 失败）。同样在引擎队列上触发。
@@ -283,7 +301,21 @@ final class LiveTranscriptionEngine {
         // 步长未到，不必重算
         let newSamples = fed - lastRunSampleIndex
         guard newSamples >= hopSeconds * sampleRate else { return }
-        guard window.count >= minimumSeconds * sampleRate else { return }
+
+        let neededFrames = Int(minimumSeconds * sampleRate)
+        guard window.count >= neededFrames else {
+            // 窗口还太短 —— 这是"刚开录音后几秒没有字幕"的正常原因，
+            // 但**必须说一次**：否则界面没字、日志没记、也不报错，
+            // 看起来就像实时字幕整个坏了。
+            if !hasReportedShortWindow {
+                hasReportedShortWindow = true
+                Log.shared.info(
+                    .asr,
+                    "实时字幕在等首个完整窗口｜当前 \(window.count) 帧 / 需要 \(neededFrames) 帧"
+                )
+            }
+            return
+        }
 
         lastRunSampleIndex = fed
 
@@ -292,16 +324,32 @@ final class LiveTranscriptionEngine {
         //
         // M3 起这里优先用真 VAD（Silero）判定 —— 能量门限分不清"人声"与
         // "稳定的噪声"，空调声/风扇声都能越过它，幻觉文本照样出现。
-        guard windowContainsSpeech(window) else { return }
+        guard windowContainsSpeech(window) else {
+            // 跳过静音也要计数：它是"连续几分钟没出字幕"最可能的解释，
+            // 汇总行里必须能看到，否则只能往"识别坏了"的方向去怀疑。
+            silentWindowCount += 1
+            reportLiveStatsIfNeeded(windowFrames: window.count)
+            return
+        }
 
         let windowStartMs = Int(Double(fed - window.count) / Double(sampleRate) * 1000.0)
         // 降噪在这里临时施加（原始音频始终没有被动过）
         let audio = maybeDenoise(window)
+
+        // 计时用**单调时钟**而不是墙钟：窗口耗时是性能指标，
+        // 系统对时会让墙钟跳变，而单调时钟不会（与看门狗同一取舍）
+        let started = ProcessInfo.processInfo.systemUptime
         let local = engine.transcribe(
             samples: audio,
             language: language == "auto" ? nil : language,
             translateToEnglish: false
         )
+        let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+
+        windowCount += 1
+        producedSegments += local.count
+        totalCostMs += costMs
+        maxCostMs = max(maxCostMs, costMs)
 
         let mapped = TranscriptMath.mapToSessionTimeline(
             local: local,
@@ -310,6 +358,31 @@ final class LiveTranscriptionEngine {
             isProvisional: true
         )
         assemble(windowSegments: mapped, windowStartMs: windowStartMs)
+        reportLiveStatsIfNeeded(windowFrames: window.count)
+    }
+
+    /// 每 N 个窗口汇总一行实时统计（含**实时倍率**）。
+    ///
+    /// 实时倍率 = 平均耗时 ÷ 窗口音频时长。**≥ 1.0 就意味着识别慢于采集**，
+    /// 表现为字幕越落越远 —— 这正是概念文档 P23 缺的那项数据，
+    /// 也是判断"实时字幕这台设备上到底可不可行"的唯一依据。
+    private func reportLiveStatsIfNeeded(windowFrames: Int) {
+        let total = windowCount + silentWindowCount
+        guard total > 0, total % Self.statsEveryWindows == 0 else { return }
+
+        let windowMs = windowFrames * 1000 / max(1, Int(sampleRate))
+        let avgCost = windowCount > 0 ? totalCostMs / windowCount : 0
+        let ratio = windowMs > 0 ? Double(avgCost) / Double(windowMs) : 0
+
+        let summary = "实时字幕统计｜窗口 \(windowCount) 个（跳过静音 \(silentWindowCount) 个）"
+            + "｜平均耗时 \(avgCost)ms｜最慢 \(maxCostMs)ms｜窗口音频 \(windowMs)ms"
+            + "｜实时倍率 \(String(format: "%.2f", ratio))｜累计出句 \(producedSegments)"
+
+        if windowCount > 0, ratio >= 1.0 {
+            Log.shared.warn(.asr, summary + "｜【倍率 ≥ 1.0：识别慢于采集，字幕会越落越远】")
+        } else {
+            Log.shared.info(.asr, summary)
+        }
     }
 
     /// 把待处理样本并入滑窗，并把窗口裁剪到设定长度。

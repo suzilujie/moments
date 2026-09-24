@@ -267,11 +267,30 @@ final class RecordingSession: ObservableObject {
         snapshot.droppedSamples = ringBuffer.droppedSamples
 
         if !segments.isEmpty {
+            // 每片一行（约 60 秒一条，频率可接受）。
+            // **把样本数 / 字节 / 落盘耗时一起记**：这三项是"落盘是否跟得上采集"的
+            // 直接证据 —— 只看"分片数在涨"看不出问题；而落盘耗时一旦逼近分片时长，
+            // 下一步就是环形缓冲溢出丢帧，那才是不可逆的音频损失。
+            let detail = segments.map {
+                "#\($0.seq) \($0.sampleCount)帧/\($0.bytes / 1024)KB/\($0.writeCostMs)ms"
+            }.joined(separator: "、")
+
             Log.shared.info(
                 .session,
                 "分片已登记（\(reason)）｜共 \(current.segments.count) 片"
                     + "｜逻辑时间轴 \(timelineMs)ms｜已录 \(current.durationText())"
+                    + "｜本批 \(detail)"
             )
+
+            // 落盘耗时跨档告警。阈值 5 秒的来历：单片时长 60 秒，
+            // 也就是"写盘占了采集时长的 8%"已经很不健康；跨档才记，避免每片都刷。
+            if let worst = segments.map({ $0.writeCostMs }).max(), worst >= 5_000 {
+                Log.shared.warn(
+                    .disk,
+                    "落盘耗时偏高｜最慢一片 \(worst)ms（分片时长 \(settings.segmentSeconds)s）"
+                        + "｜若持续上升会导致环形缓冲溢出、音频出现空洞"
+                )
+            }
         }
         enforceLimits()
     }

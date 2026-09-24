@@ -34,6 +34,13 @@ final class Database {
         guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK else {
             let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "未知错误"
             lastErrorMessage = "打开数据库失败：\(message)"
+            // 数据库打不开时上层会降级（检索不可用但转写与音频不受影响）。
+            // 必须记下来：否则用户只会觉得"搜索坏了"，而日志里没有原因。
+            Log.shared.error(
+                .storage,
+                "数据库打开失败｜\(AppPaths.shortPath(URL(fileURLWithPath: path)))｜\(message)"
+                    + "｜检索功能将不可用（转写与音频不受影响）"
+            )
             if let db { sqlite3_close(db) }
             return
         }
@@ -47,6 +54,18 @@ final class Database {
         // synchronous=NORMAL 是在 WAL 下的常见折中（比 FULL 快很多，仍保持崩溃安全）。
         _ = execute("PRAGMA journal_mode=WAL;")
         _ = execute("PRAGMA synchronous=NORMAL;")
+
+        // 打开成功也记一条，且**必须把 FTS5 的探测结果写出来**：
+        // iOS 的系统 SQLite 是否编译进 FTS5 没有公开保证，不可用时上层会
+        // 降级为 LIKE 扫描 —— 功能还在、只是慢。不记录的话这件事永远不会被发现，
+        // 只会表现为"搜索有点慢"，而那是没法排查的。
+        Log.shared.info(
+            .storage,
+            "数据库已打开｜\(AppPaths.shortPath(URL(fileURLWithPath: path)))"
+                + "｜SQLite \(sqliteVersion)"
+                + "｜FTS5 \(supportsFTS5 ? "可用" : "不可用（检索将降级为 LIKE 扫描）")"
+                + "｜WAL 已开启"
+        )
     }
 
     deinit {

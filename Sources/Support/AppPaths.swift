@@ -17,30 +17,22 @@ enum AppPaths {
             appropriateFor: nil,
             create: true
         )
-        let root = base.appendingPathComponent("Moments", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return root
+        return try ensureDirectory(base.appendingPathComponent("Moments", isDirectory: true))
     }
 
     /// 日志目录（设计文档 4.14：日志必须能在 App 被杀后仍有留存）。
     static func logsDirectory() throws -> URL {
-        let dir = try appRoot().appendingPathComponent("Logs", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        try ensureDirectory(try appRoot().appendingPathComponent("Logs", isDirectory: true))
     }
 
     /// 音频分片目录（M1 使用，设计文档 9.4）。
     static func audioDirectory() throws -> URL {
-        let dir = try appRoot().appendingPathComponent("Audio", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        try ensureDirectory(try appRoot().appendingPathComponent("Audio", isDirectory: true))
     }
 
     /// 模型目录（M2 起使用，设计文档 5.5：模型不打进 ipa，运行时下载到这里）。
     static func modelsDirectory() throws -> URL {
-        let dir = try appRoot().appendingPathComponent("Models", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        try ensureDirectory(try appRoot().appendingPathComponent("Models", isDirectory: true))
     }
 
     /// 声纹库目录（M3c 起使用）。
@@ -49,9 +41,7 @@ enum AppPaths {
     /// 而音频会按保留期被清理。若混在一起，清理音频时就可能连带
     /// 把声纹库一起删掉 —— 那是用户最不可接受的损失（录音可重录，声纹积累不可重建）。
     static func speakersDirectory() throws -> URL {
-        let dir = try appRoot().appendingPathComponent("Speakers", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        try ensureDirectory(try appRoot().appendingPathComponent("Speakers", isDirectory: true))
     }
 
     /// 生词本目录（M6 起使用）。
@@ -60,13 +50,38 @@ enum AppPaths {
     /// 而音频会按保留期被清理。混在一起就会出现"清理音频时把生词本一起删掉" ——
     /// 这正是用户最不可接受的损失。
     static func vocabularyDirectory() throws -> URL {
-        let dir = try appRoot().appendingPathComponent("Vocabulary", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        try ensureDirectory(try appRoot().appendingPathComponent("Vocabulary", isDirectory: true))
     }
 
     /// 目录的简短显示形式（完整路径太长，且沙盒路径对用户无意义）。
     static func shortPath(_ url: URL) -> String {
         url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    // MARK: - 统一创建
+
+    /// 统一的目录创建入口，**失败时必定留下一条错误日志**。
+    ///
+    /// 为什么值得收口：调用方大量使用 `try?`（"拿不到目录就算了"），
+    /// 于是目录创建失败会退化成**静默不落盘** ——
+    /// 用户看到的现象是"数据丢了 / 设置没保存 / 声纹没记住"，
+    /// 而日志里一条线索都没有，真正的原因（沙盒异常、磁盘满、权限）
+    /// 就永远查不出来了。
+    ///
+    /// 这里刻意**先记日志再抛出**：调用方仍然可以按自己的语义决定要不要继续，
+    /// 但"发生过这件事"必须留在日志里。
+    @discardableResult
+    private static func ensureDirectory(_ url: URL) throws -> URL {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        } catch {
+            Log.shared.error(
+                .storage,
+                "目录创建失败｜\(shortPath(url))｜\(error.localizedDescription)"
+                    + "｜该目录下的数据将无法落盘（调用方多为 try? 会静默跳过）"
+            )
+            throw error
+        }
     }
 }
