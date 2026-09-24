@@ -107,6 +107,12 @@ targets:
         SUPPORTS_MACCATALYST: "NO"
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
+        # ── 图标（P29，2026-09-24 接入）──
+        # 资源目录里只放一张 1024（单一尺寸，其余尺寸由 Xcode 生成）。
+        # CI 的 verify 会断言 Assets.car 与 CFBundleIconName 真的进了包 ——
+        # 那一步不是可选项：资源目录里缺图标时构建**不会失败**，
+        # 只会静默地没有图标，装到手机上表现为"还是默认白图标"。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 # 必须显式声明 scheme，否则 CI 中的 xcodebuild -scheme 找不到共享 scheme
 schemes:

@@ -21,6 +21,11 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- 图标名：走资源目录（Assets.xcassets）时，系统靠这个名字去 Assets.car 里找图标。
+	     本工程的 Info.plist 是手写的（GENERATE_INFOPLIST_FILE = NO），因此这里显式写死，
+	     不依赖 Xcode 的自动注入 —— 这一项漏了的后果是图标完全不出现，而构建不报任何错。 -->
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<!-- 缺失会被 App Store 上传校验拒绝，这里先放空字典占位 -->

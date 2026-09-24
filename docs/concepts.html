@@ -1025,6 +1025,42 @@ li{margin:6px 0}
 <td>M3/M6 实现；<span class="ok">已落地</span>。与正文 12.2 设想的"App 内下载"不同：<b>"下不下来"会直接让功能失效</b>，而词频表尤其必须固定不变。"构建成功"不等于资源可用——XcodeGen 路径写错不会报错，只会静默少打包，而缺失的表现是<b>功能无声失效</b></td>
 <td>CI 流水线、词频表、语音处理模型</td>
 </tr>
+<tr>
+<td><b>程序化绘制图标</b><br>Programmatic Icon Rendering</td>
+<td>App 图标不用图像模型生成，而由脚本按参数绘制（<code>docs/icons/make_icon.py</code>，零第三方依赖、手写 PNG）</td>
+<td>2026-09-24 图标定稿时确立；<span class="ok">已落地，后于 2026-09-24 被「手稿轮廓提取」取代</span>（脚本与产物保留备用）。起因是模型生成的图带「AI生成 WORKBUDDY」水印，<b>烘焙在像素里、裁不掉</b>，做正式图标不合格；且模型输出的几何不可控、不可复现，而图标需要"改一个数字就精确重出"</td>
+<td>App 图标、图标蒙版与安全区</td>
+</tr>
+<tr>
+<td><b>手绘感的程序化实现</b><br>Procedural Hand-drawn Look</td>
+<td>用算法而非手绘制造"手作感"：低频噪声位移（wobble）+ 圆头笔端 + 腿长微差 + 整体微倾</td>
+<td>2026-09-24 图标定稿时实现；<span class="warn">已被取代</span>（属矢量路线的手法；最终定稿改用手稿轮廓提取，见该条）。用值噪声（value noise）加 smoothstep 取平滑随机场，两个倍频（波长 260 管边缘缓慢起伏 / 96 管笔触细碎不规则）叠加；位移场先算到 4 px 网格再双线性插值，否则纯 Python 要算约 460 万次随机场。定稿力度为抖动 14 px + 微倾 2°。<b>已知边界</b>：60 px 首页尺寸下系统重采样会把边缘不规则平均掉，手绘感主要活在大尺寸场景</td>
+<td>程序化绘制图标</td>
+</tr>
+<tr>
+<td><b>手稿轮廓提取</b><br>Sketch Contour Extraction</td>
+<td>直接从用户手绘稿的照片里抠出标记的<b>真实轮廓</b>，再用纯色重填；不再用代码"重画"形状</td>
+<td>2026-09-24 第三轮改版确立并<span class="ok">成为图标主线</span>。起因是"用噪声模拟手抖"始终与原稿隔着距离。四个关键做法：① 按<b>绿度</b>（G − (R+B)/2）分割而非按亮度 —— 纸与马克笔的黑在亮度上都会干扰、在色彩上都属中性；② 摆正用<b>蒙版自己的上边缘</b>，不用手绘方块的边（手绘边是弯的，线性拟合被曲率折算成额外斜率，实测两边给的角度差 8 倍）；③ 摆正<b>不靠符号约定</b>，直接试 ±θ 取残余斜率最小者；④ 内部半透明像素补满 —— 否则内部斑块会被误认成有意为之的纹理</td>
+<td>程序化绘制图标、素材分辨率上限</td>
+</tr>
+<tr>
+<td><b>素材分辨率上限</b><br>Source Resolution Ceiling</td>
+<td>图标边缘的锐度上限由手稿照片的像素数决定，与算法精细程度无关</td>
+<td>2026-09-24 抠图时实测；<span class="warn">已登记为待办（P30）</span>。原图 810 × 1080、标记本体仅约 261 × 206 像素，放大到图标尺寸是 2.2 倍 —— 形状忠实但边缘偏软，代码侧已无余量。<b>要让边缘更锐利，唯一有效的办法是换更高分辨率的手稿照片</b>，继续在算法上加工只会更糊</td>
+<td>手稿轮廓提取</td>
+</tr>
+<tr>
+<td><b>图标蒙版与安全区</b><br>Icon Mask &amp; Safe Area</td>
+<td>iOS 图标源图必须是满幅直角方图，圆角与超椭圆形状<b>由系统蒙版裁切</b>；中央标记须留在蒙版不会切到的区域内</td>
+<td>2026-09-24 图标设计时确立；<span class="ok">已定</span>。<b>自己在图里画圆角会被二次裁切</b>；定稿（手稿抠图正立版，按高度适配到 62%）标记约 467 × 635，四边留白横向约 278 px、纵向约 194 px（占画布 19%~27%），远大于蒙版裁切范围</td>
+<td>程序化绘制图标</td>
+</tr>
+<tr>
+<td><b>资源目录（图标）</b><br>Asset Catalog</td>
+<td>图标放进 <code>Assets.xcassets/AppIcon.appiconset</code>，只提供一张 1024，其余尺寸由 Xcode 生成</td>
+<td>2026-09-24 选定并<span class="ok">已接入</span>（资源目录 + <code>project.yml</code> 的 <code>ASSETCATALOG_COMPILER_APPICON_NAME</code> + <code>Info.plist</code> 的 <code>CFBundleIconName</code>）。Apple 官方路径，只放一张 1024、其余尺寸由 Xcode 生成；<b>配套的三条打包后断言已落地</b>（<code>Assets.car</code> 存在 / <code>CFBundleIconName</code> 正确 / car 内确有 <code>AppIcon</code> 条目）—— 因为 <code>Assets.car</code> 里缺图标时构建不报错，只会静默地没有图标</td>
+<td>资源随包内置 + 打包后断言</td>
+</tr>
 </tbody>
 </table>
 
@@ -1068,6 +1104,8 @@ li{margin:6px 0}
 <tr><td><b>用 LLM（或端侧语言模型）判生词</b></td><td><b>不可复现</b>：同一句话两次跑可能给出不同判断，而"今天标出的生词明天变了"会直接毁掉复习计划；另有两项次要代价——慢（一句一次推理，几百句的会话不可接受）、要联网（与纯离线冲突）。改用固定词频表：离线、微秒级、结果永远一致</td></tr>
 <tr><td><b>做音素级发音评分（GOP 打分）</b></td><td>需要专门的发音评测模型，本项目不引入。用 whisper 只能做到"读对了没有"这一层；<b>与其做一个会把"读得不准"报成满分的发音评分，不如明确叫「跟读比对」并说清边界</b></td></tr>
 <tr><td><b>把模型/资源做成"App 内首次使用时下载"</b></td><td>正文 12.2 原设想的方式。改为 CI 内置随包：合计约 35 MB，而"下不下来"会直接让功能失效；词频表更必须固定不变（联网取会随上游更新而变，判据就不稳定了）</td></tr>
+<tr><td><b>用图像模型生成 App 图标</b></td><td>生成图带水印（「AI生成 WORKBUDDY」）且<b>烘焙在像素里、裁不掉</b>，做正式图标直接不合格；另有两个次要问题 —— 几何（笔画 / 缺口 / 圆角）不可控、每次输出不可复现，而图标需要"改一个数字就精确重出"。改为脚本绘制</td></tr>
+<tr><td><b>不用资源目录、手工铺各尺寸 PNG 到包根</b></td><td>需手工准备 20/29/40/60/76/83.5/1024 各倍数尺寸，漏一个就静默不显示；包根资源是平铺的，文件名必须与 <code>Info.plist</code> 的 <code>CFBundleIcons</code> 严格对应；Apple 早已不推荐，将来过审仍要改回资源目录</td></tr>
 </tbody>
 </table>
 
@@ -1104,6 +1142,8 @@ li{margin:6px 0}
 <tr><td>P26</td><td>跟读比对的误判率 —— 尤其带口音时的"读成别的词"比例</td><td class="warn">待实测（决定是否需要在界面上给出"仅供参考"提示）</td><td>M6</td></tr>
 <tr><td>P27</td><td>生词判定的实际噪声水平（人名/专有名词被误标的比例）</td><td class="warn">待实测（决定专有名词启发式是否够用）</td><td>M6</td></tr>
 <tr><td>P28</td><td><b>M2–M6 全部功能的真机验收</b>（逐项判据见 <code>真机验收清单.html</code>）</td><td class="no">待验收（CI 只证明"能编译、能链接、资源已打包"，不证明"功能可用"）</td><td>M2–M6</td></tr>
+<tr><td>P29</td><td><b>App 图标是否接入工程</b>：<b>已接入</b> —— 手稿抠图正立版（纯色填充）已拷入 <code>Resources/Assets.xcassets/AppIcon.appiconset/</code>，另含 <code>project.yml</code> 的 <code>ASSETCATALOG_COMPILER_APPICON_NAME</code>、<code>Info.plist</code> 的 <code>CFBundleIconName</code>、CI 三条图标断言，共四处改动</td><td class="ok">已完成（2026-09-24）</td><td>——</td></tr>
+<tr><td>P30</td><td><b>换一张更高分辨率的手稿照片</b>：当前素材 810 × 1080、标记本体约 261 × 206 像素，放到图标尺寸需放大 2.2 倍，边缘锐度已到素材上限</td><td class="warn">待提供（提高边缘锐度的唯一有效途径）</td><td>下次迭代图标时</td></tr>
 </tbody>
 </table>
 

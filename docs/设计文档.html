@@ -206,7 +206,7 @@ li{margin:6px 0}
 <article>
 
 <h1>时刻（Moments）· iOS 全时录音转写 App 设计文档</h1>
-<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.4（新增附录 B：M2–M6 实现偏差与补充记录） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
+<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.5（新增 B.10 App 图标设计；附录 B 记录 M2–M6 实现偏差） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
 
 <div class="card">
 <b>一句话定义</b>：在 iPhone 上实现一个「点一下就一直在录」的随身语音记录器 —— 锁屏、切 App 都不中断，全程<b>纯离线</b>（无任何网络请求、无服务器、无 API 费用）把周围说话人的声音转成文字、区分「谁在说」、<b>翻成任意目标语言</b>，并把真实录音变成可跟读、可收藏生词的<b>语言学习材料</b>。
@@ -2179,6 +2179,75 @@ protocol TaskScheduling {
 <b>一条关于"判断"本身的经验</b>：「需要引入 X 才能做 Y」这种结论，在记进项目之前必须核实 X 是否真的必需 —— 尤其当 X 是重量级依赖时。本次那个判断的代价是<b>整项能力被砍掉</b>，而真相是系统 API 早就免费提供了。<b>错误归因比错误代码更贵</b>，因为它会长期影响后续决策。
 </div>
 
+<h3 id="impl-icon">B.10 App 图标设计（2026-09-24 定稿并接入工程）</h3>
+
+<div class="card">
+<b>状态</b>：设计已定稿，且<b>已于 2026-09-24 接入工程</b>（概念文档 P29 完成）。图标现在会随 ipa 一起打包，侧载后即出现在手机上。<br>
+<b>接入改动共四处</b>：新增 <code>Resources/Assets.xcassets/AppIcon.appiconset/</code>（一张 1024 + <code>Contents.json</code>）、<code>project.yml</code> 补 <code>ASSETCATALOG_COMPILER_APPICON_NAME</code>、<code>Info.plist</code> 补 <code>CFBundleIconName</code>、CI 的 verify 增加三条图标断言。<br>
+图标源文件与全部草案仍在 <code>docs/icons/</code>：<b>定稿图 <code>AppIcon-from-sketch-upright.png</code></b>（即资源目录里 <code>AppIcon-1024.png</code> 的来源）、手稿原姿态 <code>AppIcon-from-sketch.png</code>、首页尺寸预览 <code>preview-from-sketch.png</code>、抠图流水线 <code>convert_source.ps1</code> + <code>from_sketch.py</code>、素材副本 <code>source-sketch.jpg</code>。<br>
+另有<b>已被取代但保留</b>的矢量路线：<code>AppIcon-upright-drawn.png</code>（用噪声模拟手绘）、<code>AppIcon-upright-clean.png</code>（纯几何对照）与生成器 <code>make_icon.py</code>。
+</div>
+
+<table>
+<thead><tr><th>项</th><th>定稿值与理由</th></tr></thead>
+<tbody>
+<tr><td>图形来源</td>
+    <td>用户手绘稿照片：近黑方块 + 青柠绿、笔画很粗的字母 <b>E</b>。<br>
+    <b>定稿是"从照片里抠出来的真实轮廓"</b>，不是我重画的 —— 手抖、笔画粗细不匀、边界的弯折与缺口圆头，全部原样保留。<br>
+    <b>版本沿革（三轮，方向由用户三次纠正确定）</b>：① 首轮把中央图形读作小写 <code>m</code>（当作 Moments 首字母）→ 用户纠正「中间的字母是 E」；② 改用解析式几何重画 + 噪声模拟手抖 → 用户反馈「没有手绘的粗糙感，与原版相差有点大」；③ 用户提议「你干脆在我给你的图上改不就完了吗」→ 改为抠图，<b>手绘感从此不再需要模拟</b>。<br>
+    姿态：手稿本身是<b>横放</b>（脊线在上、三笔朝下），<b>定稿取转 90° 的正立</b>（竖脊在左、三笔朝右、缺口开口朝右）。</td></tr>
+<tr><td>含义</td>
+    <td><b>不承载含义</b>，纯几何标记，故刻意不加任何声波 / 字幕 / 回声音暗示。</td></tr>
+<tr><td>配色</td>
+    <td>背景 <code>#0B0C0E</code>、标记 <code>#C6E86B</code>（取自手稿照片）。<b>刻意不用纯黑</b>：<code>#000</code> 在 OLED 屏上像一个"洞"。<br>
+    标记为<b>纯色填充</b>，刻意丢掉马克笔在笔画内部的浓淡纹理 —— 理由见下方"为什么只保留轮廓"。</td></tr>
+<tr><td>尺寸与留白</td>
+    <td>不固定几何参数：轮廓形状完全来自手稿，只控制<b>适配比例</b> —— 正立版按高度适配到画布 62%，横放版按宽度适配到 56%。<br>
+    <b>两种适配方式必须分开</b>：手稿横放时宽高比 1.36，转置成正立后变成 0.735；若都按宽度适配，正立版的高度会占到画布 76%，在首页上会显得"这一个图标特别大"。</td></tr>
+<tr><td>生成方式</td>
+    <td><b>抠图流水线</b>：<code>docs/icons/convert_source.ps1</code>（JPEG → BMP，用系统自带 .NET，因为本机 Python 没有 Pillow 无法解码 JPEG）→ <code>docs/icons/from_sketch.py</code>（分割 → 去噪 → 摆正 → 重填 → 输出）。两者均零第三方依赖。</td></tr>
+<tr><td>抠图关键参数</td>
+    <td>分割用<b>绿度</b>（greenness = G − (R+B)/2）而非亮度，阈值 10~55；蒙版平滑一次 3×3；摆正角由<b>蒙版上边缘</b>实测并对 ±θ 自校正（残余斜率 0.28°）；内部补满 27507 个半透明像素。逐条理由见下方「抠图流水线上的四个判断」。</td></tr>
+<tr><td>画布规范</td>
+    <td>满幅方图、不透明、<b>画成直角</b>。圆角必须交给 iOS 蒙版裁切 —— 自己在图里画圆角会被二次裁切。</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>为什么不用图像模型生成（不是偏好问题）</b>：第一版用模型生成的图右下角带「AI生成 WORKBUDDY」水印，而水印<b>烘焙在像素里、裁不掉</b>，作为正式 App 图标直接不合格；且模型每次输出的几何（笔画粗细、缺口比例、圆角）不可控、不可复现，而图标恰恰需要"改一个数字就精确重出"。改用脚本后顺带产出首页尺寸预览图，用于检查缩到 60 px 后是否仍可辨认 —— <b>图标最终只有拇指大小，1024 原图好看不等于小尺寸能认出来</b>。
+</div>
+
+<div class="card">
+<b>一处几何建模教训</b>（矢量路线时期的；抠图路线已不涉及形状建模，但结论对今后任何"用代码画形状"的需求仍然适用）：形状曾建成「顶部横带 ∪ 三条腿」而<b>漏掉缺口顶端的填角（fillet）</b>，结果缺口顶端成了直角，与手稿的圆头不符。正确模型是<b>纯并集</b> —— 材质 = 横带 ∪ 三条腿 ∪ 四处填角；缺口本身就是"三者之外的空白"，不需要去"挖"。当时写的圆弧判定是"减法逻辑"（只会减料、不会加料），思路本身就错了。这类"少了一块"的错误不报错、不崩溃，<b>只能靠看图发现</b>。
+</div>
+
+<div class="card">
+<b>抠图流水线上的四个判断</b>（每一个都对应一处会静默出错的地方）：
+<ol>
+<li><b>用色彩分割，不用亮度</b> —— 绿度 greenness = G − (R+B)/2。纸是灰的、马克笔的黑有浓淡并透出纸白斑，这些在亮度上都会干扰分割；但它们在色彩上都属中性（绿度≈0），一票排除。实测绿度峰值 65、&gt;40 的像素 26425 个、&gt;60 的仅 5 个 —— 边界干净得没有悬念。</li>
+<li><b>摆正不用手绘方块的边</b> —— 那条边本身是弯的，线性拟合会把曲率折算成额外斜率：实测上边缘 −8.76°、左边缘 −1.12°，相差 8 倍，根本不可用。改用<b>蒙版自己的上边缘</b>。（该测量仍保留在脚本里，唯一用途就是在日志中说明"为什么不采用它"。）</li>
+<li><b>摆正不靠符号约定</b> —— 图像坐标 y 向下，"该往哪边转"的符号极易写反（第一版就写反了，把 −9° 变成 +9°，整块歪着）。做法是直接试 +θ 与 −θ，取残余斜率最小者：实测 +7.78° 会把斜率放大到 15.26°，−7.78° 后只剩 0.28°。<b>用结果定方向，而不是用推导定方向。</b></li>
+<li><b>内部必须补满</b> —— 27507 个像素原本是半透明（马克笔浓淡 + JPEG 噪点），不补的话内部呈现深浅不匀的斑块，看起来像刻意加的纹理，其实只是素材噪声。洪泛必须从包围盒边界开始：两个缺口朝下开口、与外界连通，因此不会被误补成实心区域。</li>
+</ol>
+另一处工程陷阱值得单列：<b>原图路径长 262 字符，超过 Windows 的 MAX_PATH（259）</b>，于是 .NET 的老文件 API 与 <code>Test-Path</code> 一律报"文件不存在"，而 IDE 自己用支持长路径的 API 能正常打开 —— 表现为"工具能列出它、PowerShell 说没有"。加 <code>\\?\</code> 前缀解决；GDI+ 对 <code>\\?\</code> 支持不可靠，所以先把字节拷到短路径再解码。<b>结论：排查"文件不存在"之前，先看一眼路径长度。</b>
+</div>
+
+<div class="card">
+<b>一条必须如实写下的边界：素材分辨率就是当前的质量上限</b>。原图只有 <b>810 × 1080</b>，标记本体约 <b>261 × 206</b> 像素，放大到图标尺寸是 <b>2.2 倍</b> —— 形状是忠实的（这正是它相对矢量版的价值），但<b>边缘必然偏软</b>，且代码侧已无余量。要让边缘更锐利，唯一有效的办法是<b>换一张更高分辨率的手稿照片</b>（或把纸放正、光打匀后重拍）。已登记为待办（概念文档 P30）。
+</div>
+
+<div class="card">
+<b>为什么只保留轮廓、丢掉马克笔纹理</b>：保留纹理意味着把纸纹、光照渐变、JPEG 噪点一并带进图标 —— 深色背景上会出现不均匀灰斑，而 iOS 图标要求的干净度与照片的物理缺陷是对立的。用户 2026-09-24 选择"保持纯色"。<b>代价要记清楚：现在的手绘感全部来自轮廓形状，不来自笔触质感。</b>
+</div>
+
+<div class="card">
+<b>接入方式（2026-09-24 已执行）</b>：走资源目录 <code>Resources/Assets.xcassets/AppIcon.appiconset/</code>，只放一张 1024（单一尺寸，其余尺寸由 Xcode 生成）；<code>project.yml</code> 补 <code>ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon</code>；<code>Info.plist</code> 显式写 <code>CFBundleIconName = AppIcon</code>。<br>
+<b>为什么 Info.plist 要手写这一项</b>：本工程 <code>GENERATE_INFOPLIST_FILE = NO</code>、plist 是手写的，依赖 Xcode 自动注入不可靠；而这一项漏了的后果是图标完全不出现，构建却不报任何错。<br>
+<b>CI 的三条断言（不可省）</b>：① <code>Assets.car</code> 必须存在；② <code>CFBundleIconName</code> 必须等于 <code>AppIcon</code>；③ 用 <code>assetutil</code> 查 <code>Assets.car</code> 内确有 <code>AppIcon</code> 条目（取不到 assetutil 时退化为在二进制里查名字）。<b>理由与"资源随包内置必须配断言"完全同源</b>：图标缺失时构建不会失败，只会静默地没有图标 —— 装到手机上表现为"还是默认白图标"，而那时已经很难判断是在哪一步丢的。<br>
+<b>尚未处理（可选）</b>：iOS 18 支持深色 / 着色（dark / tinted）图标变体，本工程只提供默认变体，交由系统自动派生。若真机上发现深色模式观感不佳，再补对应变体。<br>
+<b>被否的替代路线</b>：不用资源目录、手工生成各倍数尺寸 PNG 塞进包根 + 在 <code>Info.plist</code> 手写 <code>CFBundleIcons</code>。缺点是尺寸多、漏一个就静默不显示，而包根资源是平铺的、文件名与 plist 必须严格对应，且 Apple 早已不推荐、将来过审仍要改回资源目录。
+</div>
+
 </article>
 </main>
 
@@ -2273,6 +2342,7 @@ protocol TaskScheduling {
 <a class="sub" href="#impl-arch">B.7 架构与线程纪律</a>
 <a class="sub" href="#impl-pending">B.8 记在账上的事</a>
 <a class="sub" href="#impl-m6wrap">B.9 M6 收尾</a>
+<a class="sub" href="#impl-icon">B.10 App 图标设计</a>
 </aside>
 
 <script>

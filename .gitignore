@@ -25,6 +25,13 @@ xcuserdata/
 scripts/tmp/
 scripts/out/
 
+# ---- Python 字节码缓存（docs/icons/ 下的图标生成脚本）----
+# 解释器每次运行都会重写它，与"产物"无关 —— 不入库。
+# 加这条的直接原因：提交图标接入工程时，__pycache__/ 被 git 列进了未跟踪文件，
+# 差一点跟着一起提交。
+__pycache__/
+*.pyc
+
 # ---- 第三方依赖源码与构建产物 ----
 # whisper.cpp 与 sherpa-onnx 都由 CI 在构建前克隆并编译。
 # 不纳入版本控制：体积大、且必须与 CI 中固定的 tag 保持一致。

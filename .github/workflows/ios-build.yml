@@ -583,6 +583,44 @@ jobs:
             echo "词表已打包 $LIST ($(stat -f%z "$APP_DIR/$LIST") bytes)"
           done
 
+          # ── 图标（P29）──
+          # 这三条断言的存在理由与上面"内置模型"完全同源：
+          # 资源目录里的图标缺失时构建**不会失败**，只会静默地没有图标 ——
+          # 装到手机上表现为"还是默认白图标"，而那时已经很难判断是在哪一步丢的。
+          if [ ! -f "$APP_DIR/Assets.car" ]; then
+            echo "::error::ipa 中缺少 Assets.car —— 资源目录未参与编译，图标不会显示"
+            exit 1
+          fi
+          echo "Assets.car 已打包 ($(stat -f%z "$APP_DIR/Assets.car") bytes)"
+
+          ICON_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$PLIST" 2>/dev/null || true)
+          echo "CFBundleIconName = $ICON_NAME"
+          if [ "$ICON_NAME" != "AppIcon" ]; then
+            echo "::error::CFBundleIconName 应为 AppIcon，实际为 '$ICON_NAME'（设备将找不到图标）"
+            exit 1
+          fi
+
+          # 反向校验：car 里是否真有 AppIcon 条目。
+          # 名字对不上时系统同样找不到图标，而构建照样成功 —— 所以要查 car 内容，
+          # 不能只查"文件在不在"。
+          if xcrun --find assetutil >/dev/null 2>&1; then
+            xcrun assetutil --info "$APP_DIR/Assets.car" > assets.json 2>/dev/null || true
+            if grep -q 'AppIcon' assets.json; then
+              echo "::notice::Assets.car 中确认存在 AppIcon 条目"
+            else
+              echo "::error::Assets.car 中找不到 AppIcon 条目"
+              exit 1
+            fi
+          else
+            echo "::warning::未找到 assetutil，退化为在二进制中查找图标名"
+            if strings "$APP_DIR/Assets.car" | grep -q 'AppIcon'; then
+              echo "::notice::Assets.car 中确认存在 AppIcon 字样"
+            else
+              echo "::error::Assets.car 中找不到 AppIcon"
+              exit 1
+            fi
+          fi
+
           echo "verify passed"
 
       - name: Upload ipa artifact
