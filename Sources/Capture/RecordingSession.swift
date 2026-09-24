@@ -30,6 +30,14 @@ final class RecordingSession: ObservableObject {
     private var manifest: SessionManifest?
     private var watchdog: CaptureWatchdog?
 
+    /// 本次会话开始时环形缓冲的累计写入帧数。
+    ///
+    /// **必须有这个基准**：`ringBuffer` 是 `let` 属性、跨会话复用且计数只增不减
+    ///（`AudioRingBuffer` 没有 reset，writeCount 一路单调上升）。
+    /// 若直接拿 `totalWritten` 当"本次已录帧数"，第二次录音一开机就会
+    /// 显示上一次录了多久 —— 而且这个错误会随使用次数越来越大。
+    private var frameBaseAtSessionStart = 0
+
     /// 逻辑时间轴位置（毫秒）。它 = 最后一次收尾分片的 endMs + 已记录的断口时长。
     /// 用它而不是 `manifest.recordedMs` 来定位断口起点，是因为断口本身要占据时间轴位置。
     private var timelineMs = 0
@@ -49,6 +57,40 @@ final class RecordingSession: ObservableObject {
         guard old != new else { return }
         snapshot.state = new
         Log.shared.transition(.session, from: old.rawValue, to: new.rawValue, reason: reason)
+    }
+
+    // MARK: - 实时指标刷新
+
+    /// 每秒刷新一次界面上的实时数字（由看门狗的心跳驱动）。
+    ///
+    /// **为什么必须单独做这件事**：`snapshot.recordedMs` 原本只在分片收尾时被赋值，
+    /// 而值来自 `manifest.recordedMs`（= 最后一个**已收尾**分片的 `endMs`）。
+    /// 分片是 60 秒一块 —— 于是录音的前 60 秒界面恒定显示 `00:00`，
+    /// 第一片收尾时才跳到 `01:00`。真机上这被直接读成「时间不动，像没在录」。
+    ///
+    /// 判据因此改为**采样计数**：本次会话写入的帧数 ÷ 原生采样率。
+    /// 它由实时线程推进，不受消费者是否跟得上、分片是否收尾的影响 ——
+    /// 这正是 `CaptureSnapshot.recordedMs` 注释里写的设计意图
+    ///（"按样本计数推导，不用墙钟"），此前只是没有落地。
+    ///
+    /// 顺带把「丢弃帧数」也改成实时刷新：它本是**判断录音是否健康的唯一依据**，
+    /// 而等到 60 秒后才更新，等于在最需要它的头一分钟里看不到它。
+    private func refreshLiveMetrics() {
+        guard snapshot.state.isActive else { return }
+
+        // 采样率取自本次会话的原生格式。拿不到就不更新 ——
+        // 宁可显示上一次的值，也不要按错误的采样率算出一个假数字。
+        guard let nativeRate = manifest?.nativeSampleRate, nativeRate > 0 else { return }
+
+        let frames = ringBuffer.totalWritten - frameBaseAtSessionStart
+        snapshot.recordedMs = Int(Double(max(0, frames)) / nativeRate * 1000)
+
+        // 丢弃帧数同样要相对会话基准（它也是单调累加的）
+        snapshot.droppedSamples = ringBuffer.droppedSamples
+
+        // 说明：中断期间没有音频写入 → 上面的数字会**停住不动**，这是刻意的：
+        // 已录时长就该等于"真正录到的音频长度"，断口由断口区单独如实显示，
+        // 而不是把它摊进时长里假装连续（设计文档 11.2 第 2 条）。
     }
 
     // MARK: - 开始
@@ -121,6 +163,11 @@ final class RecordingSession: ObservableObject {
         // 这正是后续能识别出"异常终止"的前提（设计文档 4.12）。
         try library.save(fresh)
 
+        // 记录本次会话的帧数基准。必须在 engine.start 之前取 ——
+        // 环形缓冲跨会话复用且计数只增不减，不减去基准就会把上一次的时长算进来
+        //（见 frameBaseAtSessionStart 的说明）。
+        frameBaseAtSessionStart = ringBuffer.totalWritten
+
         try engine.start(ringBuffer: ringBuffer)
         guard let nativeFormat = engine.nativeFormat else {
             throw CaptureError.noInputAvailable
@@ -157,6 +204,12 @@ final class RecordingSession: ObservableObject {
         watchdog.progressProvider = { [ringBuffer] in ringBuffer.totalWritten }
         watchdog.onStall = { [weak self] seconds in
             self?.handleStall(stalledSeconds: seconds)
+        }
+        // 复用看门狗的 1 秒心跳刷新界面指标。
+        // 不另起定时器的理由：这里的探针本来就在读同一个 totalWritten，
+        // 两个定时器各刷一份，迟早会出现界面数字与看门狗判定不一致。
+        watchdog.onTick = { [weak self] in
+            self?.refreshLiveMetrics()
         }
         watchdog.start()
         self.watchdog = watchdog
@@ -260,7 +313,11 @@ final class RecordingSession: ObservableObject {
         library.saveAsync(current)
 
         snapshot.segmentCount = current.segments.count
-        snapshot.recordedMs = current.recordedMs
+        // **不要把已录时长往回拉**：它现在由采样计数每秒推进（见 refreshLiveMetrics），
+        // 而分片只到整数块（每 60 秒一块）—— 直接赋值会让界面每 60 秒
+        // 往回跳一秒，看起来像"进度倒退"。取较大者：录制中由心跳领先；
+        // 收尾时 manifest 的合计（含最后不足一片的尾巴）更大，自然接管。
+        snapshot.recordedMs = max(snapshot.recordedMs, current.recordedMs)
         snapshot.gapCount = current.gaps.count
         snapshot.totalGapMs = current.totalGapMs
         snapshot.lastWriteCostMs = segments.last?.writeCostMs ?? snapshot.lastWriteCostMs

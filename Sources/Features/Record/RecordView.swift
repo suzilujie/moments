@@ -101,7 +101,7 @@ struct RecordView: View {
     // MARK: - 指标
 
     private var metricsSection: some View {
-        Section("运行指标") {
+        Section {
             row("已录时长", session.snapshot.recordedTimeText)
             row("分片数", "\(session.snapshot.segmentCount)")
             row("落盘耗时", "\(session.snapshot.lastWriteCostMs) ms")
@@ -111,11 +111,17 @@ struct RecordView: View {
                 Text("出现丢弃帧，说明落盘跟不上采集，录音中可能存在空洞——请把这份日志反馈。")
                     .font(.footnote)
                     .foregroundStyle(.red)
-            } else {
-                Text("丢弃帧数为 0 表示没有丢音频。这是判断录音是否健康的唯一依据。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
+        } header: {
+            Text("运行指标")
+        } footer: {
+            // 这三个数字都会被误读，所以把"怎么看"写在这里：
+            Text("「已录时长」按采样计数实时推进（中断期间会停住 —— 那段时间确实没录到，"
+                + "漏了多少由上方「断口」如实显示）。"
+                + "「分片数」每 \(settings.segmentSeconds) 秒收尾一块，"
+                + "因此刚开始录音时它会是 0，这是正常的。"
+                + "「丢弃帧数」为 0 表示没有丢音频 —— 这是判断录音是否健康的唯一依据。")
+                .font(.footnote)
         }
     }
 
@@ -185,9 +191,22 @@ struct RecordView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if let liveHint {
-                Text(liveHint)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(liveHint)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    // 提示里说"可在设置中下载"，而设置入口只是右上角一个齿轮图标 ——
+                    // 用户找不到就会停在这里（真机验收时确实卡在这一步）。
+                    // 提示因此必须**可操作**：直接给一个能跳过去的按钮，
+                    // 而不是让他去猜"设置在哪"。
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("去下载模型", systemImage: "arrow.down.circle")
+                            .font(.footnote)
+                    }
+                    .buttonStyle(.borderless)
+                }
             } else if live.segments.isEmpty {
                 Text(live.statusText)
                     .font(.footnote)
@@ -240,7 +259,11 @@ struct RecordView: View {
         guard let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId) else {
             let name = WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
                 ?? settings.realtimeModelId
-            liveHint = "实时字幕未启动：模型「\(name)」尚未下载。可在设置中下载，下次录音自动启用。"
+            // 文案必须指明**入口在哪**："可在设置中下载"没有说设置在哪，
+            // 而它只是一个右上角的齿轮图标 —— 找不到入口的提示等于没有提示。
+            liveHint = "实时字幕未启动：模型「\(name)」尚未下载。"
+                + "点下方「去下载模型」，或右上角齿轮（设置）→「模型」区下载。"
+                + "下载后下次录音自动启用；录音本身与终稿转写不受影响。"
             return
         }
         liveHint = nil
