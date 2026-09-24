@@ -171,7 +171,9 @@ final class WordFrequencyTable {
 
     /// 各语言状态汇总（自检页展示用）
     var summary: String {
-        catalog.map { entry in
+        // 注意是 Self.catalog：catalog 是静态成员，
+        // 在实例方法里直接写 `catalog` 会编译不过
+        Self.catalog.map { entry in
             let state = availability(language: entry.code)
             switch state {
             case .ready(let words): return "\(entry.code) \(words) 词"

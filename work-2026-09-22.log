@@ -1599,8 +1599,13 @@
   1) AudioRingBuffer 两处 `var index` → `let index`
      （write 与 read 路径各一处；确实只读，编译器的建议是对的）
   2) AudioEventObserver：对 AVAudioSession.InterruptionReason 的 switch
-     在 iOS 26 SDK 下报「switch must be exhaustive」——**即使带 @unknown default 也报**，
-     说明编译器认为存在已知三种之外的情形。
+     报「switch must be exhaustive」——**即使带 @unknown default 也报**，
+     说明编译器认为存在已知情形之外的情况。
+     【2026-09-24 更正】此处原记为"在 iOS 26 SDK 下"。查 CI 原始日志后确认：
+     构建实际使用的是 **Xcode 16.4（iOS 18 SDK）**，从头到尾都不是 iOS 26。
+     归因写错版本会让后人按错误方向去查，因此改正。
+     （另：M0 阶段曾预判"M5/M6 需要 iOS 26 SDK 时必须显式固定 Xcode 版本"，
+      实际并未需要 —— CI 一直在 Xcode 16.4 上构建通过。）
      处置：改为**按原始值（UInt）判断**。取舍已写进代码注释 ——
      该函数只负责把枚举翻译成一句人话，任何未知值打出原始数字即可，
      因此按原始值判断最稳（既覆盖已知三种，也不会因 SDK 新增 case 而编译失败）；

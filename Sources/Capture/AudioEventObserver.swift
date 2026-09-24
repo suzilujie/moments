@@ -198,10 +198,12 @@ final class AudioEventObserver {
 
         // 按**原始值**判断，而不是 switch 枚举本身。
         //
-        // 原因：iOS 26 SDK 下对 AVAudioSession.InterruptionReason 做 switch
-        //（即使带 @unknown default）仍会报「switch must be exhaustive」，
-        // 即编译器认为存在这三种之外的情形。本机是 Windows，
-        // 无法查看 SDK 头文件确认它指的是哪一个 case。
+        // 原因：CI 所用的 **Xcode 16.4（iOS 18 SDK）** 下，对
+        // AVAudioSession.InterruptionReason 做 switch（**即使带 @unknown default**）
+        // 仍会报「switch must be exhaustive」—— 说明 SDK 里存在下面这两种之外的情形。
+        // 本机是 Windows，看不到 SDK 头文件，因此无法确认它指的是哪一个 case。
+        //（这里写清版本是有必要的：先前记成"iOS 26 SDK"是错的，
+        //  而错误的归因会让后人按错误的方向去查。）
         //
         // 取舍：本函数只负责把原因翻译成一句人话，任何未知值打出原始数字即可，
         // 因此按原始值判断最稳 —— 既覆盖已知情形，也不会因将来 SDK 变更
