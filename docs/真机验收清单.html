@@ -78,6 +78,39 @@ li{margin:3px 0}
 </div>
 
 <h2 id="prep">0. 准备（一次性）</h2>
+
+<h3 id="install">0.1 怎么拿到并安装 ipa</h3>
+<div class="card">
+<b>分发方式：未签名 ipa + USB 侧载</b>（设计文档 12.1 选定的路径 C）。不接 App Store、不接 Ad Hoc，因此没有扫码安装链接 —— <b>每次改动都要插线装一次</b>。
+</div>
+
+<ol>
+<li><b>下载 ipa</b>：打开 <code>https://github.com/suzilujie/moments/actions</code>，点最新一次 <b>ios-build</b>（绿色 ✓）的运行，页面底部 <b>Artifacts</b> → 下载 <b><code>Moments-unsigned-ipa</code></b>。
+  <ul>
+  <li>下载下来的是个 <b>zip</b>，解压后里面才是 <code>Moments-unsigned.ipa</code>（要解两层）。</li>
+  <li>Artifact 保留 <b>30 天</b>；过期了就到 Actions 页面点 <b>Run workflow</b> 手动重跑一次（工作流支持手动触发，不需要改代码）。</li>
+  <li>产物来自 <code>macos-15</code> runner，<b>首次</b>构建要十几分钟（whisper 与 sherpa 两个 C/C++ 大依赖），命中缓存后几分钟。等它变绿再下载。</li>
+  </ul>
+</li>
+<li><b>装 Sideloadly</b>（<code>sideloadly.io</code>，Windows 版），数据线连接 iPhone；手机上首次连接会弹「信任此电脑」，点信任。</li>
+<li><b>签名并安装</b>：把 <code>Moments-unsigned.ipa</code> 拖进 Sideloadly 窗口 → 设备选你的 iPhone → Apple ID 填 <b>付费开发者账号那个</b> → 点 Start。
+  <ul>
+  <li>用<b>付费账号</b>：描述文件有效期 <b>1 年</b>。<br>用<b>免费账号</b>：只有 <b>7 天</b>，到期后图标点不开，要重新用 Sideloadly 签一次。</li>
+  <li>若账号开了双重验证，Sideloadly 要的是 <b>App 专用密码</b>（在 appleid.apple.com 生成），不是登录密码。</li>
+  </ul>
+</li>
+<li><b>首次打开前必须先信任证书</b>：手机「设置 → 通用 → <b>VPN 与设备管理</b>」→ 开发者 App → 选你的 Apple ID → <b>信任</b>。跳过这一步图标会点不开。</li>
+<li><b>打开「时刻」并授权麦克风</b>，然后走下面的 P1（确认装的是不是本次这一版）。</li>
+</ol>
+
+<div class="card warn">
+<b>两个提前知道的坑</b>
+<ul>
+<li><b>7 天到期</b>：免费 Apple ID 的描述文件 7 天失效。如果你打算分几天验完（尤其 M1 的两条 8 小时），建议直接用付费账号签，省得中途重签。</li>
+<li><b>装的是未签名包</b>：不能用 AirDrop 或文件 App 直接装，必须经 Sideloadly 这类工具签名。Sideloadly 之外 AltStore / SideStore 也可以，但本项目选的是 Sideloadly。</li>
+</ul>
+</div>
+
 <table>
 <thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
 <tbody>
