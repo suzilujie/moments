@@ -66,20 +66,23 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(finalModelId, forKey: Keys.finalModel) }
     }
 
-    /// 转写语言。取值见 `WhisperModelCatalog.languageOptions`，**默认 "zh"**。
+    /// 转写语言。取值见 `WhisperModelCatalog.languageOptions`，**默认 "auto"（自动判定）**。
     ///
-    /// ## 为什么默认是具体语言，而不是"自动判定"（2026-09-24 真机教训后的决定）
-    /// "自动判定"等于**让模型去猜**一件用户本来就知道的事，而它手里的证据只有
-    /// 开头那一段音频 —— 猜错的代价是整场文字都按错的语言重新拼一遍
-    ///（真机反馈：「实时识别有的扯淡，出现各种语言」）。
+    /// ## 两个选项各自的定位（2026-09-24 与用户确认）
     ///
-    /// **指认语言是知识，检测语言是猜测：能问就不要猜。**
+    /// · **自动判定（默认）**：不需要用户操心，由模型在开头判一次并**锁定**整场。
+    ///   它的固有代价是"在有限证据上猜一次"——猜错的代价是整场都按错的语言重拼。
+    ///   （真机反馈「实时识别有的扯淡，出现各种语言」正是它在没锁定时的表现。）
+    ///   为把代价压到最低，实现上做了三件事：判一次即锁定、只在该窗口**真正出字**
+    ///   之后才锁、把锁定结果显示出来并允许一键更改。
     ///
-    /// 而"指定中文"并不会妨碍识别夹在里面的英文词 —— whisper 的 language 参数
-    /// 只钉住解码起始的语言 token，并不限制词表，所以日常中文语境下这样最稳。
-    /// 整段外语（例如全英材料）会明显退化，那种场景一键切换即可。
+    /// · **指定语言**：更确定、可复现 —— 指认是知识，检测是猜测。
+    ///   日常中文语境下指定「中文」最稳，而指定中文**不妨碍**识别夹在其中的英文词
+    ///  （language 参数只钉住解码起手语言，不限制词表）；只有**整段**外语才会退化。
     ///
-    /// "自动判定"仍保留为可选项，但不再是默认；它的代价写在设置页里。
+    /// 两者并存、随时可切（设置页与录音页都有入口）。
+    /// **选了 auto 就不必再问「为什么偶尔判错」——那是这条路的固有代价；
+    /// 要确定性就指定语言。** 这句话也是留给后人的。
     @Published var transcriptionLanguage: String {
         didSet { defaults.set(transcriptionLanguage, forKey: Keys.transcriptionLang) }
     }
@@ -179,8 +182,8 @@ final class AppSettings: ObservableObject {
             stored: defaults.string(forKey: Keys.finalModel),
             fallback: WhisperModelCatalog.finalDefaultId
         )
-        // 默认 "zh" 而不是 "auto"：理由见 transcriptionLanguage 的说明
-        transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "zh"
+        // 默认 "auto"（用户 2026-09-24 确认）：理由见 transcriptionLanguage 的说明
+        transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
         autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false
