@@ -257,6 +257,13 @@ struct SessionDetailView: View {
     /// 文字稿导出文件的 URL（受「允许导出」开关控制，文字稿载入时生成一次）
     @State private var transcriptExportURL: URL?
 
+    /// 模型下载状态。**必须观察**：本页的「尚未下载」提示直接读
+    /// `ModelManager.installedURL(...)`，不观察的话，用户在设置里下载完成后
+    /// 回来会发现提示还说"未下载" —— 又一处"设置没生效"。
+    @ObservedObject private var models = ModelManager.shared
+    /// 本页自带的设置入口（理由见 toolbar 处的说明）
+    @State private var showingSettings = false
+
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
     }
@@ -273,6 +280,22 @@ struct SessionDetailView: View {
         }
         .navigationTitle(manifest.title)
         .navigationBarTitleDisplayMode(.inline)
+        // 本页**必须有**设置入口：模型未下载时的引导语指向"设置 → 模型"，
+        // 而设置入口只是录音页右上角一枚齿轮 —— 在会话详情页读到它时，
+        // 用户得自己想到"切回录音页、找右上角、点齿轮"这三步。
+        // 提示指向一个本页没有的东西，等于没有入口。
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+        }
         .onAppear {
             initializePass()
             reloadSpeakerTimeline()
@@ -989,25 +1012,53 @@ struct SessionDetailView: View {
 
     private var emptyTranscriptView: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // 失败原因必须显示出来。此前它**哪里都不显示**：
+            // 失败时 runningSessionId 被清空，而 transcribingView 只在
+            // runningSessionId == manifest.id 时渲染 —— 于是"点转写为文字"
+            // 表现为完全没反应（本项目明确禁止的行为，见导出按钮处的注释）。
+            // 限定 failedSessionId == 本会话：stage 是全局的，不加限定会把
+            // "转写 A 失败"的原因显示在 B 的页面上。
+            if case .failed(let message) = asr.stage, asr.failedSessionId == manifest.id {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
             Text(emptyTranscriptHint)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+
             Button("转写为文字") {
                 asr.transcribe(sessionId: manifest.id, pass: .final)
             }
             .disabled(!hasAnyAudio)
+
+            // 模型没下载时，光有一句"请先到设置中下载"是不够的 ——
+            // 入口只是一枚齿轮图标。入口统一走 OpenModelSettingsButton。
+            if hasAnyAudio && !isFinalModelInstalled {
+                OpenModelSettingsButton()
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 终稿模型是否已就绪。提示文案与入口按钮共用同一个判据 ——
+    /// 两处各判一次，迟早会出现"说没下载却给了下载按钮"这类自相矛盾。
+    private var isFinalModelInstalled: Bool {
+        ModelManager.shared.installedURL(for: settings.finalModelId) != nil
     }
 
     private var emptyTranscriptHint: String {
         guard hasAnyAudio else {
             return "音频已按保留期清理，无法再生成文字稿。文字稿只能对尚存的音频生成。"
         }
-        let modelId = AppSettings.shared.finalModelId
-        if ModelManager.shared.installedURL(for: modelId) == nil {
-            let name = WhisperModelCatalog.model(id: modelId)?.displayName ?? modelId
-            return "终稿模型「\(name)」尚未下载，请先到「设置 → 模型」下载。"
+        if !isFinalModelInstalled {
+            let name = WhisperModelCatalog.model(id: settings.finalModelId)?.displayName
+                ?? settings.finalModelId
+            // 名称必须写到**图标**为止：入口只是右上角一枚齿轮，
+            // 只说"设置"用户找不到。
+            return "终稿模型「\(name)」尚未下载。点下方「去设置下载模型」，"
+                + "或右上角齿轮（设置）→「模型」区下载。"
         }
         return "尚未转写。全程在本机离线完成，音频不会离开设备。"
     }

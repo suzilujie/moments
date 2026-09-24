@@ -14,6 +14,10 @@ struct PracticeView: View {
     let referenceText: String
 
     @ObservedObject private var practice = PronunciationPractice.shared
+    /// 观察模型下载状态：用户在设置里下完模型回来，本页要立刻从
+    /// "去设置下载"切成"重试"。不观察的话会一直停在旧判断上 ——
+    /// 又一处"设置没生效"。
+    @ObservedObject private var models = ModelManager.shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -128,8 +132,15 @@ struct PracticeView: View {
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote)
                 .foregroundStyle(.orange)
-            Button("重试") { practice.reset() }
-                .font(.footnote)
+
+            // 模型没下载时**不给"重试"**：再录一次仍会失败，那是个点了没用的按钮。
+            // 真正的下一步是下载，而本页是个弹层、够不到设置 —— 所以给入口。
+            if practice.isModelInstalled {
+                Button("重试") { practice.reset() }
+                    .font(.footnote)
+            } else {
+                OpenModelSettingsButton()
+            }
         }
     }
 

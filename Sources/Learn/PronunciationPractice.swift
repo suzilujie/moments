@@ -248,6 +248,13 @@ final class PronunciationPractice: ObservableObject {
         return WhisperModelCatalog.model(id: modelId)?.displayName ?? modelId
     }
 
+    /// 模型是否已下载。
+    ///
+    /// 供界面判断"这次失败是不是因为模型没下"。**由引擎直接给出判据，
+    /// 而不是让界面去失败信息里找关键字** —— 那既脆弱，又会随文案改动而失效
+    ///（改一句话就把入口改没了，而且没有任何编译期提示）。
+    var isModelInstalled: Bool { installedRealtimeModelURL() != nil }
+
     // MARK: - 流程
 
     func prepare(reference: String) {

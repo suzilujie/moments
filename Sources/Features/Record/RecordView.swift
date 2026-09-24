@@ -195,17 +195,11 @@ struct RecordView: View {
                     Text(liveHint)
                         .font(.footnote)
                         .foregroundStyle(.orange)
-                    // 提示里说"可在设置中下载"，而设置入口只是右上角一个齿轮图标 ——
+                    // 提示里说"可在设置中下载"，而设置入口只是右上角一枚齿轮 ——
                     // 用户找不到就会停在这里（真机验收时确实卡在这一步）。
-                    // 提示因此必须**可操作**：直接给一个能跳过去的按钮，
-                    // 而不是让他去猜"设置在哪"。
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Label("去下载模型", systemImage: "arrow.down.circle")
-                            .font(.footnote)
-                    }
-                    .buttonStyle(.borderless)
+                    // 入口统一走 OpenModelSettingsButton：它自带设置页弹层，
+                    // 不依赖本页恰好有齿轮（会话详情页此前就没有）。
+                    OpenModelSettingsButton(title: "去下载模型")
                 }
             } else if live.segments.isEmpty {
                 Text(live.statusText)

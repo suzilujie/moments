@@ -57,6 +57,11 @@ final class TranscriptionService: ObservableObject {
     @Published private(set) var processedSegments = 0
     @Published private(set) var totalSegments = 0
     @Published private(set) var lastMessage: String?
+    /// 最近一次**失败**所归属的会话 id（成功/取消/新任务开始时清空）。
+    ///
+    /// 存在的理由：会话详情页要把失败原因显示在自己页面上，而 `stage` 是全局的 ——
+    /// 不限定会话的话，"转写 A 失败"的提示会出现在 B 的页面上，属于误导。
+    @Published private(set) var failedSessionId: String?
 
     /// 最近一次转写的实时倍率（耗时 / 音频时长）。< 1.0 表示快于实时。
     /// 这是判断"这台设备能不能做实时字幕"的唯一硬指标，必须留下实测值。
@@ -102,9 +107,14 @@ final class TranscriptionService: ObservableObject {
             return
         }
 
+        // 新一轮开始，清掉上一次的失败归属
+        failedSessionId = nil
+
         // 明确区分"模型没下载"与"转写失败"：界面据此给出不同引导（去下载，而不是重试）
         guard let modelURL = ModelManager.shared.installedURL(for: resolvedId) else {
             stage = .failed(TranscriptionError.modelNotInstalled(descriptor.displayName).localizedDescription)
+            // 归属到本会话：这条提示只会出现在这个会话的详情页上
+            failedSessionId = sessionId
             Log.shared.warn(.asr, "转写被拒：模型未下载｜\(descriptor.displayName)")
             return
         }
@@ -178,9 +188,13 @@ final class TranscriptionService: ObservableObject {
     // MARK: - 结果处理
 
     private func handle(_ outcome: TranscriptionWorker.Outcome) {
+        // 先留存会话 id：下一行就把它清空了，而失败原因要归属到具体会话
+        let finishedSessionId = runningSessionId
         worker = nil
         runningSessionId = nil
         LiveTranscriber.shared.setPaused(false)
+        // 成功与取消都要清掉上一次的失败归属
+        failedSessionId = nil
 
         switch outcome {
         case .finished(let document, let elapsedMs):
@@ -204,6 +218,7 @@ final class TranscriptionService: ObservableObject {
         case .failed(let message):
             stage = .failed(message)
             lastMessage = message
+            failedSessionId = finishedSessionId
             Log.shared.error(.asr, "转写失败｜\(message)")
         }
     }
