@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>时刻（Moments）· 真机验收清单</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f172a; --bg-2:#1e293b; --line:#334155; --border:#475569;
+  --fg:#e2e8f0; --fg-dim:#94a3b8; --fg-weak:#64748b; --fg-strong:#e6edf3;
+  --blue:#60a5fa; --green:#4ade80; --orange:#fb923c; --red:#f87171;
+  --purple:#c4b5fd; --code-bg:#0b1220;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg); font-size:16px; line-height:1.7;
+  font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+main{max-width:1180px;margin:0 auto;padding:44px 40px 120px}
+h1{font-size:28px;color:var(--fg-strong);border-bottom:2px solid var(--border);padding-bottom:14px;margin:0 0 8px}
+p.meta{color:var(--fg-dim);font-size:13.5px;margin:0 0 26px}
+h2{font-size:21px;color:var(--fg-strong);border-left:4px solid var(--blue);border-bottom:1px solid var(--line);padding:0 0 8px 12px;margin:52px 0 16px}
+h3{font-size:16.5px;color:var(--fg-strong);margin:26px 0 10px}
+code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:13.5px;color:var(--purple)}
+.card{background:var(--bg-2);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:14px 16px;margin:18px 0;font-size:14.5px}
+.card.warn{border-left-color:var(--orange)}
+.card.stop{border-left-color:var(--red)}
+.card.ok{border-left-color:var(--green)}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}
+th{background:var(--bg-2);color:var(--fg-strong);font-weight:600}
+td.no{width:52px;text-align:center}
+td.id{width:56px;white-space:nowrap;color:var(--fg-dim);font-variant-numeric:tabular-nums}
+input[type=checkbox]{width:18px;height:18px;accent-color:#4ade80;cursor:pointer}
+tr.done{background:rgba(74,222,128,.06)}
+.tag{display:inline-block;font-size:11.5px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--fg-dim);margin-left:6px;vertical-align:1px}
+.tag.gate{color:var(--red);border-color:var(--red)}
+.tag.new{color:var(--green);border-color:var(--green)}
+.bar{position:sticky;top:0;z-index:5;background:rgba(15,23,42,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:10px 40px;margin:0 -40px 8px;display:flex;gap:14px;align-items:center;font-size:14px}
+.bar b{font-variant-numeric:tabular-nums}
+button{background:var(--bg-3,#334155);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:13.5px;cursor:pointer}
+button:hover{border-color:var(--blue)}
+ul{margin:8px 0 8px 0;padding-left:22px}
+li{margin:3px 0}
+.hint{color:var(--fg-dim);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+
+<h1>时刻（Moments）· 真机验收清单</h1>
+<p class="meta">用途：把 M0–M6 的验收判据整理成可逐项打勾的清单，避免真机验收时回头翻设计文档 ｜ 生成日期 2026-09-24 ｜ 配套：<code>设计文档.html</code>（附录 B）、<code>concepts.html</code>（P28）</p>
+
+<div class="bar">
+  <span>进度：<b id="done">0</b> / <b id="total">0</b></span>
+  <span class="hint" id="gateText"></span>
+  <span style="flex:1"></span>
+  <button onclick="resetAll()">清空全部</button>
+</div>
+
+<div class="card warn">
+<b>怎么用这份清单</b>
+<ul>
+<li><b>打勾会保存在本机浏览器</b>（localStorage），可以分几次验完再接着勾。换浏览器或清缓存会丢。</li>
+<li>标记 <span class="tag gate">硬闸门</span> 的项<b>必须全部通过</b> —— 它们不成立时，后面的功能都没有意义（设计文档 13 章的推进策略）。</li>
+<li>标记 <span class="tag new">本次新增</span> 的项是 M6 收尾（2026-09-24）刚做的，之前没验过。</li>
+<li><b>没有调试器</b>：所有判断靠「界面上看到什么」+「日志里留下什么」。日志入口：自检页 →「查看日志 / 导出」。</li>
+</ul>
+</div>
+
+<div class="card">
+<b>观测通道：日志分类</b>
+<p>日志共 12 个分类，导出后按分类名搜索即可定位：<br>
+<code>app</code> <code>capture</code> <code>session</code> <code>route</code> <code>interrupt</code> <code>thermal</code> <code>disk</code> <code>storage</code> <code>system</code> <code>asr</code> <code>model</code> <code>translate</code></p>
+<p class="hint">排错时最常用的四个：<code>capture</code>（采集与分片）、<code>asr</code>（转写耗时与实时倍率）、<code>storage</code>（清理与写入）、<code>translate</code>（语言可用性与批量翻译）。</p>
+</div>
+
+<h2 id="prep">0. 准备（一次性）</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="p1"></td><td class="id">P1</td>
+  <td>侧载安装本次 ipa，打开 → <b>自检</b> →「构建」</td>
+  <td>「提交」与「构建时间」与本次交付一致</td>
+  <td>装的是旧包。后续所有结论都不作数 —— <b>先确认这一条</b></td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="p2"></td><td class="id">P2</td>
+  <td>设置 → 模型：下载 <b>base</b>（约 57 MB）；网络不畅时打开「优先走镜像」</td>
+  <td>进度走完，条目变为「删除」（即已安装）</td>
+  <td>下载失败看日志 <code>model</code> 分类；镜像开关只改下载来源，不影响识别结果</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="p3"></td><td class="id">P3</td>
+  <td>设置 → 模型：下载 <b>small</b>（约 181 MB，终稿用）</td>
+  <td>同上</td>
+  <td>不装 small 则终稿无法转写（界面会明确提示缺哪个模型，而不是静默失败）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="p4"></td><td class="id">P4</td>
+  <td>自检页「离线引擎（M2 / M3）」逐行看</td>
+  <td>「内置模型（M3）」列出 4 个随包模型；「朗读语音（M6）」显示可用语音数</td>
+  <td>内置模型为空 → ipa 未正确打包（CI 的 verify 步骤本应拦住，若发生请把该行截图给我）</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m1">1. M1 录音内核 <span class="tag gate">硬闸门</span></h2>
+<div class="card stop">
+<b>为什么单独强调</b>：「全时 + 锁屏 + 不断档」是本项目唯一的高风险项，且一旦不成立，后面所有功能都没有意义（设计文档 13 章）。这一节必须真机实测，不能只看日志。
+</div>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1a"></td><td class="id">M1-1</td>
+  <td><b>前台连续录 8 小时</b>（插电，可放着不看）</td>
+  <td>录音持续；会话详情时长约 8 小时；分片按 60 秒一个连续排布</td>
+  <td>进程被杀 / 录音自行停止 → 最高优先级问题，记下停止时刻与日志 <code>capture</code> + <code>thermal</code> 段</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1b"></td><td class="id">M1-2</td>
+  <td><b>锁屏 8 小时</b>（同上，中途锁屏不打开）</td>
+  <td>锁屏期间仍在录；解锁后时长继续增长</td>
+  <td>锁屏即停 → 保活失败。这是本项目最致命的一类失败，请把 <code>session</code>/<code>interrupt</code> 日志发我</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1c"></td><td class="id">M1-3</td>
+  <td>录制中来一通电话 / 打开音乐播放器 / 拔插耳机各试一次</td>
+  <td>日志出现 <code>interrupt</code> 或 <code>route</code> 记录；中断结束后<b>自动恢复</b>录音</td>
+  <td>不恢复 → 中断恢复逻辑失效；恢复后无音频 → 引擎未真正重建</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1d"></td><td class="id">M1-4</td>
+  <td>查看上述被中断的那次会话详情</td>
+  <td><b>断口被如实标出</b>（有多少秒没录上）</td>
+  <td>看不到断口 → 时间轴在假装连续。这比"有断口"更糟，因为它让用户以为录全了</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1e"></td><td class="id">M1-5</td>
+  <td>自检页「音频事件监听」：查看「已收到事件数」</td>
+  <td>做过 M1-3 之后该数字应 &gt; 0</td>
+  <td>始终为 0 → 四类沉默事件的监听根本没接上（它们不报错，只能靠这个数字确认）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m1f"></td><td class="id">M1-6</td>
+  <td>录制中把音量调到很低/对着麦克风静音 5 分钟，再恢复说话</td>
+  <td>恢复后音频与转写正常；未出现整段丢帧</td>
+  <td>出现爆音或丢帧 → 实时音频线程里做了重活（设计文档 R30，属数据静默损坏）</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m2">2. M2 转写</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2a"></td><td class="id">M2-1</td>
+  <td>自检页「离线引擎」→ 看 <b>whisper 后端</b> 一行 <span class="tag gate">硬闸门</span></td>
+  <td>显示一段非空的后端信息（如 CPU/NEON 等）</td>
+  <td>「不可用」→ whisper.cpp 的空壳或未链接。这是 M2a 的硬证据，<b>比"编译通过"强得多</b></td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2b"></td><td class="id">M2-2</td>
+  <td>开始录音，对着手机连续说话 1 分钟</td>
+  <td>录音页出现<b>实时字幕</b>；句子会先出现、后被打字修正，最新一句带「识别中」标记</td>
+  <td>完全不出字 → 实时字幕未启动（看界面是否提示模型未下载）；文字跳动是<b>设计行为</b>不是故障</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2c"></td><td class="id">M2-3</td>
+  <td>停止录音 → 记录 → 打开会话 → 点「转写为文字」</td>
+  <td>显示进度（已处理 N/M 分片），完成后出现文字稿</td>
+  <td>失败时界面会给出原因（模型未下载 / 无音频）；已转部分会保留，可继续</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2d"></td><td class="id">M2-4</td>
+  <td>在会话详情里切换<b>实时稿 / 终稿</b></td>
+  <td>终稿质量明显优于实时稿（错字更少、标点更合理）</td>
+  <td>两者一样 → 终稿可能实际用的是同一个模型（检查设置里的「终稿模型」是否为 small）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2e"></td><td class="id">M2-5</td>
+  <td>导出日志，搜 <code>asr</code> 分类里的「实时倍率」</td>
+  <td>终稿倍率（耗时 ÷ 音频时长）有明确数值</td>
+  <td><b>这一项是整个项目最需要数据的地方</b>：倍率 &gt; 1 表示慢于实时，直接决定实时字幕是否可行、以及 base/small 的选型是否要改</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m2f"></td><td class="id">M2-6</td>
+  <td>录音时静音 2 分钟（不说话）</td>
+  <td>实时字幕<b>不出字</b>或明显收敛</td>
+  <td>冒出一堆通顺但与实际无关的句子 → 静音幻觉（能量门限未拦住）</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m3">3. M3 语音处理（VAD / 降噪 / 说话人分离）</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m3a"></td><td class="id">M3-1</td>
+  <td>自检页看 <b>sherpa-onnx</b> 一行</td>
+  <td>显示非空版本号</td>
+  <td>«不可用» → sherpa 静态库未真正链接</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m3b"></td><td class="id">M3-2</td>
+  <td>两人交替说话的会话，转写后看会话详情</td>
+  <td>句子带<b>说话人编号与颜色</b>；同一人前后基本一致</td>
+  <td>编号乱跳 → 声纹阈值需标定（P4 / 风险 R5）。<b>宁可不合并也不要误合并</b>是刻意取向</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m3c"></td><td class="id">M3-3</td>
+  <td>给某个说话人<b>命名</b> → 另录一段他说话 → 看新会话</td>
+  <td>新会话自动认出该名字（声纹库命中）</td>
+  <td>认不出 → 声纹库未写入或阈值过严；自检页「声纹库」应显示已录入人数</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m3d"></td><td class="id">M3-4</td>
+  <td>对同一段音频，分别看<b>终稿</b>与<b>降噪稿</b>（同一模型，唯一差别是过了降噪）</td>
+  <td>能人工判断出降噪是帮忙还是帮倒忙</td>
+  <td><b>这是设计文档要求的"可验证选项"</b>：若降噪反噬识别率，就把默认值改成关闭（风险 R7）</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m4">4. M4 存储与检索</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m4a"></td><td class="id">M4-1</td>
+  <td>记录页搜索框输入一个<b>几周前说过</b>的词</td>
+  <td>搜到该句，并显示来自哪次会话 / 哪一稿</td>
+  <td>搜不到 → 索引未建或未随转写更新；自检页「检索索引」会显示能力状态</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m4b"></td><td class="id">M4-2</td>
+  <td>点搜索结果 / 点任意一句 → 听</td>
+  <td>从该句起点播放、到该句终点停止（不是播完整个分片）</td>
+  <td>播放位置偏 → 时间轴映射有偏差（这类问题在真机上只会表现为"播放器不好用"）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m4c"></td><td class="id">M4-3</td>
+  <td>播放时点倍率（0.5 / 0.75 / 1.0），开单句循环</td>
+  <td>慢放<b>不变调</b>（音高保持）；循环在单句内重复</td>
+  <td>变调说明用了简单降速而不是时间伸缩 —— 那反而更听不懂</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m4d"></td><td class="id">M4-4</td>
+  <td>把保留期改短（如 3 天），等待清理（或找一条超期会话）</td>
+  <td>音频被清理，但<b>文字稿仍在</b></td>
+  <td>文字也一起没了 → 违背"文本永久、音频有限"的设计（9.4）</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m5">5. M5 翻译</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m5a"></td><td class="id">M5-1</td>
+  <td>会话详情选源语言与目标语言；观察语言列表</td>
+  <td>列表按<b>可用性分组</b>（已就绪 / 需下载 / 不支持），不可用的明确标出</td>
+  <td>选完才发现不能用 → 违背"必须前置校验"（R17 / 7.4）。<b>不可用必须提示，不得静默失败</b></td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m5b"></td><td class="id">M5-2</td>
+  <td>点翻译 → 出译文；切到别的语言再切回来</td>
+  <td>首次批量翻译有进度；已翻的语言<b>秒出</b>（走缓存）</td>
+  <td>不秒出 → 缓存未命中（看日志 <code>translate</code> 分类）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m5c"></td><td class="id">M5-3</td>
+  <td><b>手动改一句译文</b> → 再点一次翻译（重跑）</td>
+  <td>手改的那句<b>保持不动</b>，不被自动译文覆盖</td>
+  <td>被覆盖 → 会抹掉用户的手改成果，属最恼人的一类 bug（已在 M5 专门处理）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m5d"></td><td class="id">M5-4</td>
+  <td>用译文里的词去搜索</td>
+  <td>能搜到，且命中行<b>标注"某语言译文"</b></td>
+  <td>不标注 → 用户会以为自己录音里真的说了那句译文</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m5e"></td><td class="id">M5-5</td>
+  <td>拿一段真实口语（含俚语/长难句/专有名词）看译文</td>
+  <td>记录下明显失真的类型与例子</td>
+  <td>端侧翻译必然有失真（R16）。<b>需要的是样本与类型，而不是"好不好"的判断</b> —— 这决定要不要评估引入本地小 LLM</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="m6">6. M6 语言学习</h2>
+<table>
+<thead><tr><th class="no">✓</th><th class="id">编号</th><th>操作</th><th>期望</th><th>不通过时说明什么</th></tr></thead>
+<tbody>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6a"></td><td class="id">M6-1</td>
+  <td>打开一段有文字稿的会话，看每句下方</td>
+  <td>出现<b>蓝色生词 chips</b>（每句最多 4 个 + 「+N」）</td>
+  <td>一个都没有 → 可能是词表未打包或学习语言无词表；界面会给出说明，不会静默</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6b"></td><td class="id">M6-2</td>
+  <td>设置 → 学习 → 把<b>水平档</b>从 A1 改成 C2，再回会话看 <span class="tag new">本次新增</span></td>
+  <td>生词数量应<b>明显减少</b>（A1 标得多、C2 几乎只标词表外的词）</td>
+  <td>两者没差别 → 水平档没接进判定（那就等于开关是假的）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6c"></td><td class="id">M6-3</td>
+  <td>点一个蓝色 chip</td>
+  <td>变成绿色；切到「生词本」标签能看到它，并带<b>来源原句</b></td>
+  <td>看不到 → 生词本写入失败（看日志 <code>storage</code>）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6d"></td><td class="id">M6-4</td>
+  <td>在句子行上<b>左滑 → 跟读</b> → 录一遍 → 停止并评测</td>
+  <td>给出得分与<b>逐词对照</b>（绿=读对 / 红=没听到 / 橙=读成别的词），并显示"模型听到的是"</td>
+  <td>录音无声 → 界面会当场提示"几乎没有声音"（不是等你录完才说）；<b>它测的是"读对了没有"，不是发音评分</b></td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6e"></td><td class="id">M6-5</td>
+  <td>会话详情 →「<b>学习模式</b>」 <span class="tag new">本次新增</span></td>
+  <td>整屏进入逐句卡片；<b>复读原声是最醒目的大按钮</b>；可切上一句/下一句</td>
+  <td>进不去 → 需要先有文字稿（界面会说明"请先转写为文字"）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6f"></td><td class="id">M6-6</td>
+  <td>学习模式里点「朗读」→ 读原文 / 读译文 / 连播全部译文 <span class="tag new">本次新增</span></td>
+  <td>三档都能出声；语速偏慢（刻意）；右上角可隐藏原文/译文做盲听</td>
+  <td>完全不出声且提示缺语音包 → 到 设置 → 辅助功能 → 朗读内容 → 声音 下载该语言语音。<b>系统找不到语音时会用默认语音照读</b>，所以这里刻意改成显式报错</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6g"></td><td class="id">M6-7</td>
+  <td>学习模式 → 右上角书本图标 → 本会话生词列表 → 点一个词</td>
+  <td><b>跳到该词所在的句子</b></td>
+  <td>点了没跳 → 若当时开着「只看有生词」筛选，代码会自动关掉筛选后再跳；仍不跳请记下</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6h"></td><td class="id">M6-8</td>
+  <td>生词本页 → 右上角分享按钮 <span class="tag new">本次新增</span></td>
+  <td>可选择「表格（Anki 导入用）」与「Markdown」两个文件</td>
+  <td>按钮不存在 → 设置 → 学习 →「允许导出」被关了（这是开关的正确行为）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6i"></td><td class="id">M6-9</td>
+  <td>把导出的<b>表格</b>导入 Anki（导入文件 → 选该 .csv）</td>
+  <td>能正常导入；列顺序为 词形 / 难度 / 备注 / 来源句 / 来源</td>
+  <td>出现一张内容为表头的脏卡片 → 说明首行被当成数据了（本实现刻意不带表头，若发生请告诉我）</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6j"></td><td class="id">M6-10</td>
+  <td>会话详情 →「导出文字稿」（在「学习模式」同一行） <span class="tag new">本次新增</span></td>
+  <td>导出 Markdown；若该次录音有断口，<b>文件开头写明断口处数与秒数</b></td>
+  <td>没写断口 → 拿到留档的人会以为录全了</td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6k"></td><td class="id">M6-11</td>
+  <td>设置 → 学习 → 学习语言切到<b>中文</b>，看一段中文会话的生词</td>
+  <td>中文能分词并标出生词（不再是"不支持"）</td>
+  <td>报"词表未就绪" → 中文词表未打包；<b>报"不支持"→ 说明语言识别没走到中文</b></td>
+</tr>
+<tr>
+  <td class="no"><input type="checkbox" data-k="m6l"></td><td class="id">M6-12</td>
+  <td>走一遍完整闭环：<b>听（复读）— 看（卡片）— 复读（慢速/循环）— 收词（点 chip）</b></td>
+  <td>全程<b>不跳页、不弹窗遮挡</b>，一屏内完成</td>
+  <td>这是 M6 的验收标准本身（R22：交互成本过高 = 做了等于没做）。哪里卡手最值得反馈</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="boundary">7. 已知边界（不算缺陷，不用报）</h2>
+<div class="card ok">
+下列都是<b>设计上明确不做或尚未实现</b>的，看到它们出现属预期；反过来，如果它们"看起来能用了"，才需要告诉我。
+<table>
+<thead><tr><th>现象</th><th>原因 / 状态</th></tr></thead>
+<tbody>
+<tr><td>学习模式里没有「只看目标语言的句子」</td><td>依赖 7.5 逐段语言检测，<b>该能力尚未实现</b>。刻意不做假开关（附录 B.9）</td></tr>
+<tr><td>导出表格的「释义」列是空的</td><td>端侧生成释义（Foundation Models）尚未实现，<b>不做假占位</b></td></tr>
+<tr><td>生词判定只支持英语与中文</td><td>只备了这两份词表；选到别的语言会<b>关闭判定并提示</b>，不会乱标</td></tr>
+<tr><td>跟读比对不给"发音分数"</td><td>whisper 只能回答"读对了没有"。把 think 读成 sink 会被判错，但舌位略偏仍会判对（R21）</td></tr>
+<tr><td>生词本没有复习计划 / 记忆曲线</td><td>v1 明确不做 SRS（8.7），只做生词本 + 手动标记已掌握</td></tr>
+<tr><td>译文里偶有失真</td><td>端侧翻译的固有限制（R16）；原文始终显示在译文上方</td></tr>
+<tr><td>录音里偶尔混入手机外放的声音</td><td>默认「共存」会话模式的代价 —— 换来的是"一直能录"（R28）。会议模式（M8）天然绕开</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="report">8. 结果怎么回给我</h2>
+<div class="card">
+<p>最有用的是这三样，按价值排序：</p>
+<ul>
+<li><b>不通过的项 + 当时的日志导出</b>（自检页 →「查看日志 / 导出」→ 分享给我）。有日志我基本能直接定位。</li>
+<li><b>M2-5 的实时倍率数值</b>（日志 <code>asr</code> 分类「实时倍率」）。这是目前最缺的一项数据，它决定模型选型与实时字幕是否可行。</li>
+<li><b>主观感受</b>：哪一步最卡手、哪句话你觉得标错了生词、哪句译文明显不对。这类反馈代码里看不出来，但直接决定要不要改。</li>
+</ul>
+<p class="hint">整份清单不必一次做完。M1 的两条硬闸门（8 小时前台 / 8 小时锁屏）建议单独安排，插着电放着就行。</p>
+</div>
+
+<script>
+(function () {
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('input[type=checkbox][data-k]'));
+  var doneEl = document.getElementById('done');
+  var totalEl = document.getElementById('total');
+  var gateEl = document.getElementById('gateText');
+  var KEY = 'moments.acceptance.v1';
+
+  totalEl.textContent = boxes.length;
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function save(state) {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  }
+  function refresh() {
+    var n = 0;
+    boxes.forEach(function (b) {
+      var row = b.closest('tr');
+      if (row) row.classList.toggle('done', b.checked);
+      if (b.checked) n++;
+    });
+    doneEl.textContent = n;
+    // 硬闸门（M1 与 P1/M2-1）单独统计：它们不通过时，整体结论是"不可用"
+    var gates = ['p1', 'm1a', 'm1b', 'm2a'];
+    var hit = gates.filter(function (k) {
+      var el = document.querySelector('input[data-k="' + k + '"]');
+      return el && el.checked;
+    }).length;
+    gateEl.textContent = '硬闸门 ' + hit + '/' + gates.length;
+    gateEl.style.color = hit === gates.length ? '#4ade80' : '#fb923c';
+  }
+
+  var state = load();
+  boxes.forEach(function (b) {
+    b.checked = !!state[b.getAttribute('data-k')];
+    b.addEventListener('change', function () {
+      state[b.getAttribute('data-k')] = b.checked;
+      save(state);
+      refresh();
+    });
+  });
+  refresh();
+
+  window.resetAll = function () {
+    if (!confirm('清空全部勾选？')) return;
+    state = {};
+    save(state);
+    boxes.forEach(function (b) { b.checked = false; });
+    refresh();
+  };
+})();
+</script>
+
+</main>
+</body>
+</html>
