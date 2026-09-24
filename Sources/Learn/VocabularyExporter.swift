@@ -96,8 +96,10 @@ enum VocabularyExporter {
 
     // MARK: - 辅助
 
-    /// 导出文件名（带日期，便于多次导出后区分）
-    static func fileName(extension ext: String) -> String {
+    /// 导出文件名（带日期，便于多次导出后区分）。
+    /// 参数标签刻意不写成 `extension:` —— 虽然 Swift 允许关键字作标签，
+    /// 但没必要在这里赌一次编译。
+    static func fileName(withExtension ext: String) -> String {
         let day = Date().formatted(.iso8601.year().month().day())
         return "moment-vocabulary-\(day).\(ext)"
     }

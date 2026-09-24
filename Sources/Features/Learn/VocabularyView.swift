@@ -286,7 +286,7 @@ struct VocabularyView: View {
         let csv = VocabularyExporter.ankiCSV(items: items, sessionTitles: titles)
         if let url = VocabularyExporter.writeToTemporaryFile(
             contents: csv,
-            fileName: VocabularyExporter.fileName(extension: "csv")
+            fileName: VocabularyExporter.fileName(withExtension: "csv")
         ) {
             files.append(ExportFile(title: "表格（Anki 导入用）", url: url))
         }
@@ -294,7 +294,7 @@ struct VocabularyView: View {
         let markdown = VocabularyExporter.markdown(items: items, sessionTitles: titles)
         if let url = VocabularyExporter.writeToTemporaryFile(
             contents: markdown,
-            fileName: VocabularyExporter.fileName(extension: "md")
+            fileName: VocabularyExporter.fileName(withExtension: "md")
         ) {
             files.append(ExportFile(title: "Markdown（可直接阅读）", url: url))
         }

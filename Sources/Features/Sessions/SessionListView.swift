@@ -211,6 +211,11 @@ struct SessionDetailView: View {
     @ObservedObject private var asr = TranscriptionService.shared
     @ObservedObject private var diarization = DiarizationService.shared
     @ObservedObject private var profiles = SpeakerProfileStore.shared
+    /// 本视图要用到设置里的：导出开关、生词水平档、学习语言、默认源语言。
+    /// 必须声明成属性才能参与 SwiftUI 的变更通知 ——
+    /// 直接写 `AppSettings.shared.x` 读到的值在设置变化时不会触发重算
+    ///（水平档改了但生词标注不刷新，就会被当成"设置没生效"）。
+    @ObservedObject private var settings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var transcript: TranscriptDocument?
@@ -228,10 +233,12 @@ struct SessionDetailView: View {
     @State private var targetLanguage = ""
     /// 源语言。系统翻译**不支持"源语言自动判定"**，必须显式指定，
     /// 因此界面上必须有这一项 —— 假装它自己知道是错的。
-    /// 源语言。**取持久化的设置值并写回** ——
-    /// 此前它是纯局部状态，每次进入都重置为 zh-Hans：用户改成 en、退出再进来又变回去，
-    /// 而"源语言与目标语言相同"是无效组合，界面还会就地纠正一次，等于每次都要重选。
-    @State private var sourceLanguage = AppSettings.shared.defaultSourceLanguage
+    /// 源语言。初值在 onAppear 里从设置读取（与 targetLanguage 同一处理）。
+    ///
+    /// **不写成 `@State private var sourceLanguage = AppSettings.shared.defaultSourceLanguage`**：
+    /// AppSettings 是 @MainActor 隔离的，在非隔离的 @State 初始化式里访问它
+    /// 构成隔离问题。本文件里 targetLanguage 已经踩过这一点，注释也留在这里了。
+    @State private var sourceLanguage = ""
     @State private var displayMode: TranscriptDisplayMode = .bilingual
     /// 当前语言已翻好的片段（segmentId → 译文）
     @State private var translationMap: [String: String] = [:]
@@ -271,6 +278,12 @@ struct SessionDetailView: View {
             reloadSpeakerTimeline()
             if targetLanguage.isEmpty {
                 targetLanguage = AppSettings.shared.defaultTargetLanguage
+            }
+            // 源语言改为从设置读取并写回：此前它是纯局部状态、每次进入都重置为 zh-Hans，
+            // 用户改成 en、退出再进来又变回去，而"源语言与目标语言相同"是无效组合，
+            // 界面还会就地纠正一次 —— 等于每次都要重选。
+            if sourceLanguage.isEmpty {
+                sourceLanguage = settings.defaultSourceLanguage
             }
             // 源语言与目标语言相同是无效组合（自己翻自己）。
             // 默认值确实可能撞车（用户既以中文为主要语言、默认目标也可能是中文），
