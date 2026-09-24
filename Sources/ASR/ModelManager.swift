@@ -420,14 +420,12 @@ final class ModelManager: ObservableObject {
             return "无法读取文件体积"
         }
 
-        guard let magic = readMagic(at: url) else {
+        guard let header = readHeader(at: url) else {
             return "无法读取文件头部（\(size) 字节）"
         }
-        // whisper.cpp 的 ggml 模型头部魔数属于这一族（ggml / ggmf / ggjt）。
-        // 认不出来即说明拿到的不是模型文件 —— 最可能就是服务器返回的错误页。
-        let knownMagics = ["ggml", "ggmf", "ggjt"]
-        guard knownMagics.contains(magic) else {
-            return "下载到的不是模型文件（头部为「\(magic)」，共 \(size) 字节）"
+        guard Self.knownMagics.contains(header.value) else {
+            return "下载到的不是模型文件（头部 0x\(String(format: "%08X", header.value))"
+                + "＝「\(header.ascii)」，共 \(size) 字节）"
         }
 
         let lower = Int64(Double(descriptor.approximateBytes) * 0.75)
@@ -437,18 +435,48 @@ final class ModelManager: ObservableObject {
         return nil
     }
 
-    /// 读文件前 4 个字节，按可见字符表示（非可见字节写成 0xNN）。
-    /// 报错信息里必须能看出"这到底是什么格式"，否则"不是模型文件"这句话
-    /// 对排查毫无帮助。
-    private func readMagic(at url: URL) -> String? {
+    /// 已知的模型文件魔数。
+    ///
+    /// ## ⚠️ 必须按**小端 uint32** 比较，不能拿 ASCII 字符串比（2026-09-24 踩过）
+    /// ggml 把魔数写成 uint32，所以文件里的字节是**反的**：
+    /// 「ggml」(0x67676D6C) 在磁盘上是 `6C 6D 67 67`，按 ASCII 看是 **lmgg**。
+    ///
+    /// 第一版实现拿 ASCII 的 `"ggml" / "ggmf" / "ggjt"` 去比，
+    /// 结果在一个**完全正常**的 59,707,625 字节模型上误报"不是模型文件"，
+    /// 白白花掉一轮构建。教训：**新增的判据必须先在真实文件上核对过** ——
+    /// 当时我验证了下载地址是对的，却没有拿真实文件头核对这条新校验。
+    ///
+    /// 实测证据（ggml-base-q5_1.bin 的前 16 字节）：
+    ///   `6C 6D 67 67 99 CA 00 00 DC 05 00 00 00 02 00 00`
+    ///   → 魔数 0x67676D6C，其后依次是 n_vocab=51865 / n_audio_ctx=1500 /
+    ///     n_audio_state=512，与 whisper base 的实际结构一致。
+    private static let knownMagics: Set<UInt32> = [
+        0x67676D6C,  // ggml（whisper.cpp 的 .bin 用的就是它；磁盘字节 lmgg）
+        0x67676D66,  // ggmf（ggml v2；磁盘字节 fmgg）
+        0x67676A74,  // ggjt（ggml v3；磁盘字节 tjgg）
+        0x46554747,  // GGUF（新格式；磁盘字节恰好就是 ASCII 的 GGUF）
+    ]
+
+    /// 读文件前 4 字节：按小端解释的数值 + 它的 ASCII 呈现。
+    ///
+    /// 两者一起报是为了排查 —— 数值能对上常量表，ASCII 能让人一眼看出
+    /// "这是文本错误页"（例如 `Entry not found` 的头 4 字节是 `Entr`）。
+    private func readHeader(at url: URL) -> (value: UInt32, ascii: String)? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return nil }
-        return data.map { byte in
-            (0x20...0x7E).contains(byte)
-                ? String(UnicodeScalar(byte))
-                : String(format: "0x%02X", byte)
-        }.joined()
+
+        let bytes = [UInt8](data)
+        // 手写小端拼装，而不用 loadUnaligned：字节序在这里是**语义的一部分**，
+        // 显式写出来比依赖平台默认更不容易被改错。
+        let value = UInt32(bytes[0])
+            | (UInt32(bytes[1]) << 8)
+            | (UInt32(bytes[2]) << 16)
+            | (UInt32(bytes[3]) << 24)
+        let ascii = bytes
+            .map { (0x20...0x7E).contains($0) ? String(UnicodeScalar($0)) : "·" }
+            .joined()
+        return (value, ascii)
     }
 
     private func cleanupPartialDownloads() {
