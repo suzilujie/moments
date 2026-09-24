@@ -89,6 +89,25 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(preferModelMirror, forKey: Keys.modelMirror) }
     }
 
+    /// 首次使用时是否**自动**下载默认的实时模型（Base）。
+    ///
+    /// 默认**开**。这条推翻了原先"一律由用户显式点击下载"的决定 ——
+    /// 原因是真机验收暴露的事实：用户面对 Tiny/Base/Small/Medium 四个名字
+    /// 根本不知道该下哪个，结果不是"省了流量"，而是**核心功能一直不可用**
+    ///（设备日志里 32 分钟零字节，界面也没有任何进度）。
+    @Published var autoPrepareModel: Bool {
+        didSet { defaults.set(autoPrepareModel, forKey: Keys.autoPrepareModel) }
+    }
+
+    /// 自动下载是否允许走**移动网络**。默认**关**。
+    ///
+    /// 关闭时只在非计费网络（Wi-Fi / 有线）下自动下载。
+    /// 理由：57 MB 不该由 App 替用户决定花在移动流量上 ——
+    /// 静默下载的边界必须止于"可能让用户多付钱"这一条。
+    @Published var autoPrepareOnCellular: Bool {
+        didSet { defaults.set(autoPrepareOnCellular, forKey: Keys.autoPrepareOnCellular) }
+    }
+
     /// 正在学习的语言（用户已确认为英语）
     @Published var learningLanguage: String {
         didSet { defaults.set(learningLanguage, forKey: Keys.learningLang) }
@@ -140,6 +159,8 @@ final class AppSettings: ObservableObject {
         finalModelId = defaults.string(forKey: Keys.finalModel) ?? WhisperModelCatalog.finalDefaultId
         transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
+        autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
+        autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false
         realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
         learningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
         // 用 zh-Hans 而不是 zh：系统翻译框架的语言标识符采用 BCP-47 形式，
@@ -176,6 +197,8 @@ final class AppSettings: ObservableObject {
         static let finalModel = "moments.asr.finalModel"
         static let transcriptionLang = "moments.asr.language"
         static let modelMirror = "moments.model.preferMirror"
+        static let autoPrepareModel = "moments.model.autoPrepare"
+        static let autoPrepareOnCellular = "moments.model.autoPrepareOnCellular"
         static let realtimeDenoise = "moments.asr.realtimeDenoise"
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"

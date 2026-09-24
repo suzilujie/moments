@@ -103,8 +103,12 @@ enum ModelDownloadState: Equatable {
 /// 2. **主站失败自动回退镜像**。本项目交付依赖 GitHub，实测已多次遇到
 ///    github.com / huggingface.co 不可达（工作日志「阶段十一」）——
 ///    模型下不下来会直接让转写功能失效，所以必须有第二条路。
-/// 3. **不在 App 启动时自动下载**。模型动辄上百 MB，
-///    自动下载会消耗用户流量且不可预期；一律由用户显式点击。
+/// 3. **首次使用时自动准备默认实时模型**（2026-09-24 改，此前是"一律由用户显式点击"）。
+///    原决定的理由是"上百 MB 不该替用户决定消耗流量"。真机验收推翻了这个前提：
+///    用户面对 Tiny/Base/Small/Medium 四个名字**根本不知道该下哪个** ——
+///    结果不是"省了流量"，而是**核心功能一直不可用**（设备日志里 32 分钟零字节）。
+///    现改为：自动下载默认实时模型（Base），但**仅在非计费网络下**；
+///    移动网络下不静默下载，只留说明与一次点击的入口。其余模型仍由用户自选。
 @MainActor
 final class ModelManager: ObservableObject {
 
@@ -118,6 +122,14 @@ final class ModelManager: ObservableObject {
 
     private var downloaders: [String: ModelDownloader] = [:]
     private let fileManager = FileManager.default
+    private let settings = AppSettings.shared
+
+    /// 自动准备的说明（目前只用于"因计费网络而跳过"这一种情况）。
+    ///
+    /// 为什么单独一个字段而不是复用 `lastMessage`：`lastMessage` 是
+    /// "最近一次操作的结果"，而这里是"我们**没有**发起操作的原因" ——
+    /// 混在一起，就会出现"上一次下载成功了，但这条跳过说明还挂着"。
+    @Published private(set) var autoPrepareNote: String?
 
     private init() {
         refreshInstalled()
@@ -166,6 +178,46 @@ final class ModelManager: ObservableObject {
         }
         // 清理可能残留的半截下载文件（上次被系统杀掉时留下的）
         cleanupPartialDownloads()
+    }
+
+    // MARK: - 首次使用自动准备
+
+    /// 首次使用时静默备好默认实时模型（Base）。
+    ///
+    /// **只在非计费网络下自动下载**：57 MB 不该由我们替用户决定花在移动流量上。
+    /// 计费网络下不静默下载，但会留下说明、由界面给一次点击的入口 ——
+    /// 这与"什么都不做、还让用户自己去猜该下哪个"是两回事。
+    ///
+    /// 重复调用安全：已装或有下载在进行中都会直接返回（每次启动都会调一次）。
+    func autoPrepareIfNeeded() {
+        guard settings.autoPrepareModel else { return }
+
+        let modelId = WhisperModelCatalog.realtimeDefaultId
+        guard let descriptor = WhisperModelCatalog.model(id: modelId) else { return }
+        guard !isInstalled(modelId), !(states[modelId]?.isDownloading ?? false) else { return }
+
+        NetworkReach.checkUnmetered { [weak self] unmetered in
+            guard let self else { return }
+            guard unmetered || self.settings.autoPrepareOnCellular else {
+                self.autoPrepareNote = "默认模型「\(descriptor.displayName)」"
+                    + "（\(descriptor.sizeText)）尚未下载。"
+                    + "当前是移动网络，未自动下载以免消耗你的流量 —— "
+                    + "可直接在下方点「下载」，或在上面打开「允许在移动网络下自动下载」。"
+                Log.shared.info(
+                    .model,
+                    "自动准备｜跳过｜当前为计费网络，且未允许移动网络自动下载"
+                )
+                return
+            }
+
+            Log.shared.info(
+                .model,
+                "自动准备｜开始静默下载 \(descriptor.displayName)"
+                    + "（\(descriptor.sizeText)）"
+                    + "｜网络 \(unmetered ? "非计费（Wi-Fi/有线）" : "计费（用户已允许）")"
+            )
+            self.download(modelId, preferMirror: self.settings.preferModelMirror)
+        }
     }
 
     // MARK: - 下载
@@ -253,6 +305,9 @@ final class ModelManager: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.downloaders[modelId] = nil
+                    // 有了结果，"为何没自动下载"的说明就该消失
+                    //（否则会出现"已经装好了，提示还说没下"）
+                    self.autoPrepareNote = nil
 
                     switch result {
                     case .success(let url):

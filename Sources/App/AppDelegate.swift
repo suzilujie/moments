@@ -45,6 +45,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         verifyBackgroundMode()
         startMonitors()
         logCapabilitySnapshot()
+        // 首次使用时静默备好默认实时模型（Base）。放在能力清单之后：
+        // 这样日志里先是"已下载模型｜（无）"，紧接着才是"自动准备｜开始静默下载"，
+        // 顺序与因果关系一目了然（排查时最怕的就是顺序错乱的日志）。
+        ModelManager.shared.autoPrepareIfNeeded()
 
         return true
     }

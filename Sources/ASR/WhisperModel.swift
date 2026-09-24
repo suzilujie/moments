@@ -17,6 +17,18 @@ struct WhisperModelDescriptor: Identifiable, Hashable {
         case realtime
         /// 事后补跑，作为留档（准确率优先）
         case final
+
+        /// 给用户看的**用途**名。
+        ///
+        /// 存在的理由是真机验收的一句反馈：「用户可能根本不知道这几个模型是干嘛用的」。
+        /// Tiny / Base / Small / Medium 是发布方的内部命名，对用户没有任何含义 ——
+        /// 界面上必须写清楚"它是用来干什么的"，而不是让用户去推理型号大小。
+        var purposeTitle: String {
+            switch self {
+            case .realtime: return "录音时出实时字幕"
+            case .final: return "事后转成准确文字"
+            }
+        }
     }
 
     let id: String

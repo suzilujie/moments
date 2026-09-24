@@ -138,6 +138,26 @@ struct SettingsView: View {
 
     private var modelSection: some View {
         Section {
+            // 自动准备的说明放在最前面：它回答的是"我到底要不要自己操作"，
+            // 而这正是用户打开这一页时最可能问的问题。
+            if let note = models.autoPrepareNote {
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+
+            Toggle("首次使用自动准备模型", isOn: $settings.autoPrepareModel)
+            Text("开启后，首次使用时自动下载默认的实时模型（Base，约 57 MB），"
+                + "不需要你自己挑哪个。其余模型仍由你按需下载。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Toggle("允许在移动网络下自动下载", isOn: $settings.autoPrepareOnCellular)
+            Text("默认关闭 —— 57 MB 的流量不该由 App 替你决定花。"
+                + "关闭时只在 Wi-Fi 下自动下载。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
             Toggle("模型下载优先走镜像", isOn: $settings.preferModelMirror)
             Text("当 huggingface.co 不可达时打开此项。它只改变下载来源，不影响识别结果。")
                 .font(.footnote)
@@ -169,7 +189,22 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.displayName).bold()
+                    HStack(spacing: 6) {
+                        Text(model.displayName).bold()
+                        // 型号名对用户没有含义，必须紧跟一句"它用来干什么"。
+                        // 真机验收的反馈正是「用户可能根本不知道这几个模型是干嘛用的」。
+                        Text(model.role.purposeTitle)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.secondary.opacity(0.14), in: Capsule())
+                            .foregroundStyle(.secondary)
+                        if isInUse(model) {
+                            Text("当前使用中")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                        }
+                    }
                     Text(model.note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -206,6 +241,14 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    /// 这个模型是否是当前配置正在用的（实时 / 终稿各一个）。
+    ///
+    /// 用户最需要知道的就是"我到底要下哪个" —— 直接把答案标出来，
+    /// 而不是让他从四个名字里自己推。
+    private func isInUse(_ model: WhisperModelDescriptor) -> Bool {
+        model.id == settings.realtimeModelId || model.id == settings.finalModelId
     }
 
     @ViewBuilder

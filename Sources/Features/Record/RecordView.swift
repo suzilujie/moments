@@ -14,6 +14,9 @@ struct RecordView: View {
     /// 实时字幕（非终稿）。两稿分离是设计文档 5.4 的核心：
     /// 这一份会被不断改写，只求当场可读；准确版本由终稿负责。
     @ObservedObject private var live = LiveTranscriber.shared
+    /// 必须观察：实时字幕区的提示要能反映"模型正在后台自动下载"及其进度，
+    /// 否则首次使用时用户看到的是"尚未下载"，而实际上正在下。
+    @ObservedObject private var models = ModelManager.shared
     @State private var showingSettings = false
     /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
     @State private var liveHint: String?
@@ -22,7 +25,9 @@ struct RecordView: View {
         NavigationStack {
             List {
                 statusSection
-                if session.snapshot.state.isActive { subtitleSection }
+                // 正在自动准备模型时也要显示字幕区：用户需要知道"还在准备什么"，
+                // 而不是打开 App 看到一片空白、以为功能坏了
+                if session.snapshot.state.isActive || isPreparingModel { subtitleSection }
                 metricsSection
                 if session.snapshot.totalGapMs > 0 { gapSection }
                 if let error = session.snapshot.lastError { errorSection(error) }
@@ -190,9 +195,9 @@ struct RecordView: View {
                 Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            } else if let liveHint {
+            } else if let hint = subtitleStatusText {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(liveHint)
+                    Text(hint)
                         .font(.footnote)
                         .foregroundStyle(.orange)
                     // 提示里说"可在设置中下载"，而设置入口只是右上角一枚齿轮 ——
@@ -251,13 +256,19 @@ struct RecordView: View {
             return
         }
         guard let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId) else {
-            let name = WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
-                ?? settings.realtimeModelId
-            // 文案必须指明**入口在哪**："可在设置中下载"没有说设置在哪，
-            // 而它只是一个右上角的齿轮图标 —— 找不到入口的提示等于没有提示。
-            liveHint = "实时字幕未启动：模型「\(name)」尚未下载。"
-                + "点下方「去下载模型」，或右上角齿轮（设置）→「模型」区下载。"
-                + "下载后下次录音自动启用；录音本身与终稿转写不受影响。"
+            // 模型正在后台自动下载时**不写死**"尚未下载"：那会把动态的下载进度
+            // 盖掉，用户看到的是"没下载"，而实际上正在下。
+            if models.states[settings.realtimeModelId]?.isDownloading ?? false {
+                liveHint = nil
+            } else {
+                let name = WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
+                    ?? settings.realtimeModelId
+                // 文案必须指明**入口在哪**："可在设置中下载"没有说设置在哪，
+                // 而它只是一个右上角的齿轮图标 —— 找不到入口的提示等于没有提示。
+                liveHint = "实时字幕未启动：模型「\(name)」尚未下载。"
+                    + "点下方「去下载模型」，或右上角齿轮（设置）→「模型」区下载。"
+                    + "下载后下次录音自动启用；录音本身与终稿转写不受影响。"
+            }
             return
         }
         liveHint = nil
@@ -266,6 +277,31 @@ struct RecordView: View {
             language: settings.transcriptionLanguage,
             denoiseEnabled: settings.realtimeDenoiseEnabled
         )
+    }
+
+    /// 实时字幕区的状态说明。
+    ///
+    /// `liveHint` 是**开始录音那一刻算一次的静态文本**，它无法反映
+    /// "模型正在后台自动下载" —— 于是首次使用时用户会看到"尚未下载"，
+    /// 而实际上正在下。这里改为动态计算：在下载就显示进度，
+    /// 下载完成后提示自动消失（下一句就不该再提这件事）。
+    private var subtitleStatusText: String? {
+        if let liveHint { return liveHint }
+
+        let modelId = settings.realtimeModelId
+        guard ModelManager.shared.installedURL(for: modelId) == nil else { return nil }
+
+        let name = WhisperModelCatalog.model(id: modelId)?.displayName ?? modelId
+        if let progress = models.states[modelId]?.progress {
+            return "模型「\(name)」正在下载：\(progress.summary)。"
+                + "下载完成后，下次开始录音会自动启用实时字幕。"
+        }
+        return "模型「\(name)」尚未下载。"
+    }
+
+    /// 是否正在准备模型（未录音时也要显示字幕区，让"还在准备"可见）。
+    private var isPreparingModel: Bool {
+        models.states[settings.realtimeModelId]?.isDownloading ?? false
     }
 
     private func row(_ title: String, _ value: String) -> some View {

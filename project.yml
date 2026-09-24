@@ -56,6 +56,11 @@ targets:
       # 显式声明而不依赖自动链接：本项目已经因为漏了 CoreML 而失败过一次
       # （whisper 静态库里含 CoreML 目标文件），系统框架宁可写全。
       - sdk: Translation.framework
+      # ═══ Network（首次使用自动准备模型：区分 Wi-Fi 与移动网络）═══
+      # 用于判断当前是否"不计流量"（NWPathMonitor），决定要不要静默下载 57 MB 的模型。
+      # 与 Translation.framework 同理**显式声明**：漏链接的失败形态是链接错误，
+      # 不带行列号，在无 Xcode 的环境里极难定位。
+      - sdk: Network.framework
       # ggml（whisper 的底层张量库）依赖这些系统框架：BLAS 走 Accelerate，GPU 走 Metal
       - sdk: Accelerate.framework
       - sdk: Metal.framework
