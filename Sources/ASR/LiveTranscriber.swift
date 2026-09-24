@@ -357,7 +357,10 @@ final class LiveTranscriptionEngine {
         let local = engine.transcribe(
             samples: audio,
             language: requested,
-            translateToEnglish: false
+            translateToEnglish: false,
+            // 实时字幕过滤幻觉（音乐/噪声处 whisper 会编出"很像真的"短句）。
+            // 终稿不传这个开关 —— 留档要完整，可见性优先于干净。
+            dropLikelySilence: true
         )
         // **只在真的出了字之后才锁定**：whisper 对一段"VAD 认为有人声、
         // 但一个词都没听出来"的音频给出的语言判定，可信度是最低的，
@@ -448,22 +451,92 @@ final class LiveTranscriptionEngine {
         }
     }
 
-    /// 组装显示列表：**窗口内重写、窗口外冻结**。
+    /// 组装显示列表：**窗口内重写、窗口外冻结**，并做两道去重与一次合并。
     ///
-    /// 这一步是"自我修正"体验的落点：用户在屏幕上看到的最新几句可能变，
-    /// 但更早的内容不会再变 —— 这正是承诺给他人的行为。
+    /// 这一步是"自我修正"体验的落点：最新几句可能变，更早的内容不会再变。
+    ///
+    /// ## 为什么需要去重与合并（2026-09-24 真机反馈）
+    /// 用户看到的是"很多零碎的识别"，其中两类可以直接在这里修掉：
+    ///   · **重复**：同一句话出现两次（真机上 02:02 与 02:04 一字不差）
+    ///   · **碎片**：三五个字就占一行
+    ///
+    /// 根源：每 5 秒把最近 15 秒**重新识别一遍**，而**两次的分段边界并不相同** ——
+    /// 上次切成 A+B，这次切成 A1+A2+B'。已冻结的 A 不会消失，新窗口又送来 A2
+    ///（甚至又一次 B），屏幕上就留下两份。
+    /// **这不是模型乱说，是拼接规则的问题**，所以修在这里最直接。
     private func assemble(windowSegments: [TranscriptSegment], windowStartMs: Int) {
         let frozen = display.filter { $0.endMs <= windowStartMs }
-        let combined = frozen + windowSegments
+        let frozenEnd = frozen.last?.endMs ?? 0
+
+        // 去重一：丢掉完全落在"已冻结时间范围"内的新片段。
+        // 判据用**时间重叠**而不是文本相等 —— 同一个词的两次识别在字面上常有
+        // 细微差异，等不上；而时间重叠是它们的共同特征。
+        var fresh = windowSegments.filter { $0.endMs > frozenEnd }
+
+        // 去重二：丢掉与"上一句"文本完全相同的片段。
+        // 这一类**时间上并不重叠**（04 秒那句确实晚于 02 秒那句），所以上面那条
+        // 时间判据抓不到它 —— 它正是典型的分段漂移重复。
+        // 代价：若有人在一两秒内真的把同一句话说了两遍，会被吃掉一遍。
+        // 权衡后保留：分段漂移的重复远比"真人复述"常见。
+        var kept: [TranscriptSegment] = []
+        var droppedDuplicate = 0
+        for segment in fresh {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+
+            let previousText = (kept.last ?? frozen.last)?.text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if previousText == text {
+                droppedDuplicate += 1
+                continue
+            }
+
+            // 合并极短且紧邻的片段：这是"三个字占一行"的来源。
+            // **只在 fresh 内部合并，不跨冻结边界** —— 跨过去就改到了
+            // "承诺不再变"的内容（窗口外冻结是本功能对用户的承诺）。
+            if let last = kept.last, Self.shouldMerge(last, segment) {
+                var merged = last
+                merged.text += segment.text          // 中文之间不加空格
+                merged.endMs = segment.endMs
+                kept[kept.count - 1] = merged
+                continue
+            }
+
+            kept.append(segment)
+        }
+        fresh = kept
+
+        if droppedDuplicate > 0 {
+            Log.shared.info(.asr, "实时拼接｜丢弃 \(droppedDuplicate) 个重复片段（重解边界漂移）")
+        }
 
         // 重新编号，保证顺序稳定（界面用 seq 排序，而不是依赖时间戳相等性）
-        display = combined.enumerated().map { index, segment in
+        display = (frozen + fresh).enumerated().map { index, segment in
             var copy = segment
             copy.seq = index
             return copy
         }
 
         onSegments?(display)
+    }
+
+    /// 是否把 `next` 并进 `previous`。**刻意保守**：三个条件同时满足才并。
+    ///
+    ///   1. 上一段很短（< 10 字）—— 长句本来就不该并
+    ///   2. 两段挨得很近（间隔 < 300ms）—— 隔得远说明是两句独立的话
+    ///   3. 上一段结尾没有句末标点 —— 有标点说明它自己就是一句完整的话
+    ///
+    /// 合并后取两者的时间跨度，因此"点句回听"仍然定得到位置。
+    private static func shouldMerge(_ previous: TranscriptSegment, _ next: TranscriptSegment) -> Bool {
+        let gap = next.startMs - previous.endMs
+        return previous.text.count < 10
+            && gap >= 0 && gap < 300
+            && !endsWithSentencePunctuation(previous.text)
+    }
+
+    private static func endsWithSentencePunctuation(_ text: String) -> Bool {
+        guard let last = text.trimmingCharacters(in: .whitespacesAndNewlines).last else { return false }
+        return "。！？!?…".contains(last)
     }
 }
 

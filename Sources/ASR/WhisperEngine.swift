@@ -105,10 +105,29 @@ final class WhisperEngine {
     ///   - language: 语言代码（如 "zh" / "en"）；传 nil 由模型自动判定
     ///   - translateToEnglish: 是否让 whisper 直接输出英文（注意：whisper 只能译成英文）
     /// - Returns: 分段文本；失败返回空数组并写入 lastError
+    /// 「非语音概率」超过它就判定为幻觉并丢弃（**仅在调用方要求时生效**）。
+    ///
+    /// 取 0.65 的取向：**宁可漏掉少数真话，也不要把幻觉留在屏幕上** ——
+    /// 幻觉是"看起来很真"的假内容，比缺一句更容易误导人。
+    ///
+    /// 注意这与采集层的取向**相反**（那里是宁多勿漏，因为"漏掉＝没录上"）。
+    /// 差别在于位置：这里是**显示层**（实时字幕，可读性优先），
+    /// 那里是**数据层**。而且**终稿不做这个过滤** —— 留档要完整。
+    private static let noSpeechDropThreshold: Float = 0.65
+
+    /// 转写一段 16 kHz 单声道 PCM。
+    /// - Parameters:
+    ///   - samples: 16 kHz 单声道 Float32 样本
+    ///   - language: 语言代码（如 "zh" / "en"）；传 nil 由模型自动判定
+    ///   - translateToEnglish: 是否让 whisper 直接输出英文（注意：whisper 只能译成英文）
+    ///   - dropLikelySilence: 是否丢弃"疑似幻觉"的分段（非语音概率过高）。
+    ///     **只给实时字幕用**；终稿必须传 false，留档不能丢内容。
+    /// - Returns: 分段文本；失败返回空数组并写入 lastError
     func transcribe(
         samples: [Float],
         language: String? = nil,
-        translateToEnglish: Bool = false
+        translateToEnglish: Bool = false,
+        dropLikelySilence: Bool = false
     ) -> [Segment] {
         guard let context else {
             lastError = "模型尚未加载"
@@ -134,6 +153,24 @@ final class WhisperEngine {
             if let languagePointer { free(languagePointer) }
         }
         params.language = languagePointer.map { UnsafePointer($0) }
+
+        // 简体偏置：whisper 的中文训练数据里繁体占比高，**默认倾向输出繁体**
+        //（真机实测：鏈結 / 不一樣 / 壞人家）。给它一句"简体语境"的提示即可，
+        // 这是社区公认的做法。
+        //
+        // **只在调用方明确指定了中文时才加**：若在"自动判定"时也加，会把语言
+        // 判定本身往中文偏 —— 那就变成另一种错误了（该判英文时判成中文）。
+        var promptPointer: UnsafeMutablePointer<CChar>?
+        if let language, language.hasPrefix("zh") {
+            promptPointer = strdup("以下是普通话的简体中文句子。")
+        }
+        defer {
+            if let promptPointer { free(promptPointer) }
+        }
+        params.initial_prompt = promptPointer.map { UnsafePointer($0) }
+        // 每个解码窗口都带上这句提示。默认只在第一个窗口生效，
+        // 而实时字幕每 5 秒就重解一次 —— 只在首窗生效的话，后面又退回繁体了。
+        params.carry_initial_prompt = promptPointer != nil
 
         let started = Date()
         var status: Int32 = -1
@@ -164,6 +201,24 @@ final class WhisperEngine {
             guard let textPointer = whisper_full_get_segment_text(context, index) else { continue }
             let text = String(cString: textPointer).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
+
+            // 幻觉过滤（仅实时字幕，见参数说明）。
+            // 「非语音概率」高的分段基本是 whisper 对着音乐/背景声编出来的，
+            // 特征很好认：极短、像半句话、常带括号、还会重复出现。
+            //
+            // 每丢弃一条都写日志：**阈值能不能站得住，只能靠真机日志校准** ——
+            // 把被丢掉的原话打出来，才能判断"丢的是幻觉还是真话"。
+            if dropLikelySilence {
+                let noSpeechProb = whisper_full_get_segment_no_speech_prob(context, index)
+                if noSpeechProb >= Self.noSpeechDropThreshold {
+                    Log.shared.info(
+                        .asr,
+                        "丢弃疑似幻觉的分段｜非语音概率 \(String(format: "%.2f", noSpeechProb))"
+                            + "｜「\(text.prefix(24))」"
+                    )
+                    continue
+                }
+            }
 
             // whisper 的时间单位是 10 毫秒
             let t0 = whisper_full_get_segment_t0(context, index)
