@@ -36,3 +36,7 @@ third_party/
 # 且它们与 CI 中固定的 sherpa tag 是一组，应当一起演进。
 Resources/SherpaModels/
 Resources/WordLists/
+# 设备导出的日志存放处（真机验收/排错用）。
+# **刻意不入库**：日志里含设备名、路由端口名、Bundle ID 等信息，
+# 而概念文档里已明确"本项目日志不出本机" —— 放这里只是便于分析，不进版本历史。
+device-logs/
