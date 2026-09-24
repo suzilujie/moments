@@ -60,6 +60,16 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
     static let shared = SearchIndex()
 
     enum Capability: String {
+        /// 尚未探测完成。
+        ///
+        /// **必须与 `unavailable` 分开**：能力是在后台队列上探测、再经
+        /// `Task { @MainActor in }` 异步发布回来的，因此任何**同步**读它的代码
+        ///（例如 AppDelegate 的启动摘要）拿到的必然是初始值。
+        /// 原先初始值就是 `.unavailable`，于是真机日志里出现了自相矛盾的两行：
+        ///   「检索索引就绪｜SQLite 3.51.0｜能力 LIKE 扫描（降级）」← 实测结果
+        ///   「检索索引｜不可用」                                      ← 尚未探测
+        /// 而排查者读到后者，只会以为检索整体坏了。
+        case unknown
         /// 系统 SQLite 带 FTS5，走真正的全文索引
         case fts5
         /// 无 FTS5，降级为 LIKE 扫描
@@ -69,6 +79,7 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
 
         var title: String {
             switch self {
+            case .unknown: return "尚未探测"
             case .fts5: return "FTS5 全文索引"
             case .likeFallback: return "LIKE 扫描（降级）"
             case .unavailable: return "不可用"
@@ -77,6 +88,8 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
 
         var detail: String {
             switch self {
+            case .unknown:
+                return "索引能力在后台探测中，结果由 storage 类别的日志给出"
             case .fts5:
                 return "中文用 trigram 分词，任意子串都能命中，且随文本量增长仍保持速度"
             case .likeFallback:
@@ -87,7 +100,7 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @Published private(set) var capability: Capability = .unavailable
+    @Published private(set) var capability: Capability = .unknown
     @Published private(set) var sqliteVersion = "-"
     @Published private(set) var indexedSessions = 0
     @Published private(set) var indexedSegments = 0

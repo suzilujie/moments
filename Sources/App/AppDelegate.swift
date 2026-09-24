@@ -123,6 +123,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 + "｜生词本 \(VocabularyStore.shared.summary())"
         )
 
+        // 注意：此处读到的可能是「尚未探测」—— 索引能力是在后台队列上探测、
+        // 再异步发布回主 actor 的，而本摘要是**同步**写的。
+        // 真实结果由 storage 类别的「检索索引就绪｜…｜能力 …」那行给出。
+        // （本轮之前这里会把异步发布前的初始值当成"不可用"写进日志，
+        //   与 storage 行的"LIKE 扫描（降级）"自相矛盾 —— 真机日志里实际发生了。）
         Log.shared.info(.app, "检索索引｜\(SearchIndex.shared.capability.title)")
     }
 

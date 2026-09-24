@@ -257,6 +257,12 @@ final class TranscriptionWorker {
     private let cancelLock = NSLock()
     private var cancelled = false
 
+    /// 已锁定的语言（仅当 `inputs.language == "auto"` 时使用）。
+    /// 与实时路径同理：自动判定只做一次，之后沿用 —— 否则同一场会话的不同分片
+    /// 可能被判成不同语言，最终文字稿里混着两三种语言。
+    /// 只在本 worker 自己的串行队列上读写，不需要锁（与其它 worker 状态一致）。
+    private var pinnedLanguage: String?
+
     var onStage: ((TranscriptionStage) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
     var onFinished: ((Outcome) -> Void)?
@@ -357,9 +363,10 @@ final class TranscriptionWorker {
                         let audio = denoiser?.denoise(samples) ?? samples
                         let local = engine.transcribe(
                             samples: audio,
-                            language: inputs.language == "auto" ? nil : inputs.language,
+                            language: inputs.language == "auto" ? pinnedLanguage : inputs.language,
                             translateToEnglish: false
                         )
+                        pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
                         // 相对分片 → 相对会话。做错的后果是点句回听定位偏移（见 TranscriptMath）
                         segments.append(contentsOf: TranscriptMath.mapToSessionTimeline(
                             local: local,
@@ -413,6 +420,20 @@ final class TranscriptionWorker {
         } catch {
             onFinished?(.failed("保存转写稿失败：\(error.localizedDescription)"))
         }
+    }
+
+    /// 语言锁定：与实时路径同一处修复（见 `LiveTranscriptionEngine.pinLanguageIfNeeded`）。
+    ///
+    /// 终稿是**逐分片**转写的，若每个分片都各自自动判定，同一场会话的不同分片
+    /// 可能被判成不同语言 —— 最终文字稿里就会混着两三种语言。而一场会话
+    /// 几乎总是同一门语言，判一次就够。
+    private func pinLanguageIfNeeded(afterDetecting detected: String?) {
+        guard inputs.language == "auto", pinnedLanguage == nil, let detected else { return }
+        pinnedLanguage = detected
+        Log.shared.info(
+            .asr,
+            "终稿语言已锁定｜\(detected)（由首个出字分片自动判定，后续分片不再重判）"
+        )
     }
 
     private func makeDocument(segments: [TranscriptSegment], isComplete: Bool, note: String?) -> TranscriptDocument {

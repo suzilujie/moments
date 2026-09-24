@@ -191,6 +191,8 @@ struct RecordView: View {
 
     private var subtitleSection: some View {
         Section {
+            liveLanguageRow
+
             if !settings.realtimeTranscriptionEnabled {
                 Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
                     .font(.footnote)
@@ -275,6 +277,59 @@ struct RecordView: View {
         live.start(
             modelURL: modelURL,
             language: settings.transcriptionLanguage,
+            denoiseEnabled: settings.realtimeDenoiseEnabled
+        )
+    }
+
+    /// 识别语言：显示当前**实际**用的语言，并允许一键更改。
+    ///
+    /// ## 为什么这个入口是必需的，不是锦上添花
+    /// 「自动判定」会被**锁定**（见 `LiveTranscriptionEngine.pinLanguageIfNeeded`）——
+    /// 这是为了消灭"每个窗口重新判一次、结果来回跳"（真机反馈：
+    /// 「实时识别有的扯淡，出现各种语言」）。但锁定意味着**判错一次就会错一整场**，
+    /// 所以必须有可见、可改的出路：
+    ///   · 显示锁定结果 → 判错时用户能看出来（而不是只觉得"识别很扯"）
+    ///   · 一键改语言 → 不必停止录音，立刻重启字幕引擎
+    private var liveLanguageRow: some View {
+        HStack(spacing: 8) {
+            Text("识别语言")
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if live.isActive, !live.pinnedLanguage.isEmpty {
+                Text("已锁定 \(WhisperModelCatalog.languageName(live.pinnedLanguage))")
+                    .foregroundStyle(.green)
+            } else {
+                Text(settings.transcriptionLanguage == "auto"
+                    ? "自动判定（首个出字窗口后锁定）"
+                    : WhisperModelCatalog.languageName(settings.transcriptionLanguage))
+            }
+
+            Menu {
+                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
+                    Button(item.name) { restartLiveTranscription(language: item.code) }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .disabled(!live.isActive)
+        }
+        .font(.footnote)
+    }
+
+    /// 切换识别语言并**立即重启字幕引擎**（不必停止录音）。
+    ///
+    /// 同时写回设置：用户在录音中改语言就是他真实的偏好，
+    /// 下次不该又回到"自动判定"再错一遍。
+    private func restartLiveTranscription(language: String) {
+        settings.transcriptionLanguage = language
+        guard live.isActive,
+              let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId)
+        else { return }
+        live.start(
+            modelURL: modelURL,
+            language: language,
             denoiseEnabled: settings.realtimeDenoiseEnabled
         )
     }

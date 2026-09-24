@@ -137,9 +137,11 @@ enum TranscriptionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .modelNotInstalled(let name):
-            // 必须写到**图标**为止：设置入口只是右上角一枚齿轮，
-            // 只说"设置"用户找不到（真机验收时用户就卡在这一步）。
-            return "转写模型「\(name)」尚未下载。请到右上角齿轮（设置）→「模型」区下载。"
+            // 指向**最近的那个入口**：会话详情页在缺模型时会就地给出
+            // 「下载终稿模型」按钮，比让用户自己去找设置更直接。
+            //（真机日志显示用户连点 4 次转写都被拒 —— 原先的引导不够。）
+            return "转写模型「\(name)」尚未下载。可在下方直接下载，"
+                + "或右上角齿轮（设置）→「模型」区。"
         case .modelLoadFailed(let reason):
             return "模型加载失败：\(reason)"
         case .sessionNotFound(let id):

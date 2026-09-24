@@ -91,6 +91,14 @@ final class WhisperEngine {
 
     // MARK: - 转写
 
+    /// 最近一次转写实际使用的语言（**仅当 `language` 传 nil、即自动判定时有意义**）。
+    ///
+    /// 用途：实时字幕据此**锁定**语言。原先实时路径对每个 15 秒窗口都传 nil，
+    /// 于是同一段对话里 whisper 每 15 秒重新判一次语言、结果来回跳 ——
+    /// 用户看到的就是「识别结果出现各种语言」（真机反馈原话）。
+    /// 详见 `LiveTranscriptionEngine.pinLanguageIfNeeded`。
+    private(set) var lastDetectedLanguage: String?
+
     /// 转写一段 16 kHz 单声道 PCM。
     /// - Parameters:
     ///   - samples: 16 kHz 单声道 Float32 样本
@@ -138,6 +146,16 @@ final class WhisperEngine {
             lastError = "whisper_full 返回 \(status)"
             Log.shared.error(.asr, lastError ?? "")
             return []
+        }
+
+        // 记下本次实际使用的语言（只在自动判定时有意义）。
+        // 传了明确语言时清空 —— 免得调用方把上一次的判定结果当成"这次也是它"。
+        lastDetectedLanguage = nil
+        if language == nil {
+            let languageId = whisper_full_lang_id(context)
+            if languageId >= 0, let languagePointer = whisper_lang_str(languageId) {
+                lastDetectedLanguage = String(cString: languagePointer)
+            }
         }
 
         let count = whisper_full_n_segments(context)

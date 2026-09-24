@@ -1033,13 +1033,49 @@ struct SessionDetailView: View {
             }
             .disabled(!hasAnyAudio)
 
-            // 模型没下载时，光有一句"请先到设置中下载"是不够的 ——
-            // 入口只是一枚齿轮图标。入口统一走 OpenModelSettingsButton。
+            // 终稿模型未下载时：**一键下载**，而不是"去设置里再点一次"。
+            //
+            // 真机日志给出了直接证据：用户连续 4 次点转写都被拒
+            //（「转写被拒：模型未下载｜Small」），说明"再去设置里找下载按钮"
+            // 这一步实际上把人挡住了。这与生词收录是同一条原则 ——
+            // **关键动作必须零成本**：多一次跳转，就等于没有这个入口。
             if hasAnyAudio && !isFinalModelInstalled {
-                OpenModelSettingsButton()
+                finalModelDownloadRow
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 终稿模型的一键下载。下载中就地显示进度，避免"点了没反应"。
+    @ViewBuilder
+    private var finalModelDownloadRow: some View {
+        let modelId = settings.finalModelId
+        let descriptor = WhisperModelCatalog.model(id: modelId)
+        let name = descriptor?.displayName ?? modelId
+
+        if let progress = models.states[modelId]?.progress {
+            if progress.isProportional {
+                ProgressView(value: progress.fraction)
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+            }
+            Text("正在下载终稿模型「\(name)」：\(progress.summary)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            Button {
+                models.download(modelId, preferMirror: settings.preferModelMirror)
+            } label: {
+                Label(
+                    "下载终稿模型" + (descriptor.map { "（\($0.sizeText)）" } ?? ""),
+                    systemImage: "arrow.down.circle"
+                )
+                .font(.footnote)
+            }
+            .buttonStyle(.borderless)
+        }
     }
 
     /// 终稿模型是否已就绪。提示文案与入口按钮共用同一个判据 ——
@@ -1053,12 +1089,13 @@ struct SessionDetailView: View {
             return "音频已按保留期清理，无法再生成文字稿。文字稿只能对尚存的音频生成。"
         }
         if !isFinalModelInstalled {
-            let name = WhisperModelCatalog.model(id: settings.finalModelId)?.displayName
-                ?? settings.finalModelId
-            // 名称必须写到**图标**为止：入口只是右上角一枚齿轮，
-            // 只说"设置"用户找不到。
-            return "终稿模型「\(name)」尚未下载。点下方「去设置下载模型」，"
-                + "或右上角齿轮（设置）→「模型」区下载。"
+            let descriptor = WhisperModelCatalog.model(id: settings.finalModelId)
+            let name = descriptor?.displayName ?? settings.finalModelId
+            // 直接指向**本页就在下面**的那个按钮：不要求用户先理解
+            // "设置在哪"再自己找一遍。
+            return "终稿模型「\(name)」尚未下载。点下方「下载终稿模型」"
+                + (descriptor.map { "（约 \($0.sizeText)）" } ?? "")
+                + "即可 —— 下好之后这里的「转写为文字」就能用了。"
         }
         return "尚未转写。全程在本机离线完成，音频不会离开设备。"
     }

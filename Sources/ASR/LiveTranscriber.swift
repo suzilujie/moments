@@ -59,6 +59,12 @@ final class LiveTranscriptionEngine {
     private var language = "auto"
     private var didFailLoading = false
 
+    /// 已**锁定**的语言（仅当设置为"自动判定"时使用）。
+    ///
+    /// 首个出字窗口判出来的语言会锁定在这里，后续窗口一律沿用它。
+    /// 原因见 `pinLanguageIfNeeded(afterDetecting:)`。
+    private var pinnedLanguage: String?
+
     // M3：真 VAD 与降噪器。都按需加载、且只在本引擎队列上使用 ——
     // 这两个类都持有 C 指针、不是线程安全的，因此一路一实例、不共享。
     private var denoiseEnabled = false
@@ -92,6 +98,10 @@ final class LiveTranscriptionEngine {
     /// 状态回调（模型加载中 / 运行中 / 已暂停 / 失败）。同样在引擎队列上触发。
     var onStatus: ((String) -> Void)?
 
+    /// 语言锁定回调（仅"自动判定"模式、且首次锁定成功时触发一次）。
+    /// 同样在引擎队列上触发，调用方自行切回主线程。
+    var onLanguagePinned: ((String) -> Void)?
+
     private init() {}
 
     // MARK: - 生命周期
@@ -112,6 +122,8 @@ final class LiveTranscriptionEngine {
             self.modelURL = modelURL
             self.language = language
             self.denoiseEnabled = denoiseEnabled
+            // 每次开始都重新判定：上一次会话锁定的语言不该带到这一次
+            self.pinnedLanguage = nil
             self.window = []
             self.display = []
             self.lastRunSampleIndex = 0
@@ -339,11 +351,15 @@ final class LiveTranscriptionEngine {
         // 计时用**单调时钟**而不是墙钟：窗口耗时是性能指标，
         // 系统对时会让墙钟跳变，而单调时钟不会（与看门狗同一取舍）
         let started = ProcessInfo.processInfo.systemUptime
+        // 自动判定时：首个出字窗口判出的语言会被**锁定**，之后沿用，不再让
+        // whisper 每个窗口重新决定"这段在说什么语言"（见 pinLanguageIfNeeded）
+        let requested = (language == "auto") ? pinnedLanguage : language
         let local = engine.transcribe(
             samples: audio,
-            language: language == "auto" ? nil : language,
+            language: requested,
             translateToEnglish: false
         )
+        pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
         let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
 
         windowCount += 1
@@ -359,6 +375,30 @@ final class LiveTranscriptionEngine {
         )
         assemble(windowSegments: mapped, windowStartMs: windowStartMs)
         reportLiveStatsIfNeeded(windowFrames: window.count)
+    }
+
+    /// 语言锁定：自动判定只做**一次**，之后沿用。
+    ///
+    /// ## 为什么必须锁（真机问题）
+    /// whisper 的语言判定是**每个窗口独立做的**。原先实时路径对每个 15 秒窗口
+    /// 都传 `nil`（自动判定），于是一段本来只用一种语言的对话，会因为窗口间
+    /// 音频内容的差异反复改变判定结果 —— 用户看到的就是
+    /// 「实时识别有的扯淡，出现各种语言」。
+    ///
+    /// **这不是模型的问题，是我们让它每 15 秒重新决定一次在说什么语言。**
+    /// 一段对话几乎总是同一门语言，判一次就够了。
+    ///
+    /// 锁错也有出路：界面会把锁定的语言显示出来并提供一键更改（见 RecordView）——
+    /// **看得见才可能被纠正**。
+    private func pinLanguageIfNeeded(afterDetecting detected: String?) {
+        guard language == "auto", pinnedLanguage == nil, let detected else { return }
+        pinnedLanguage = detected
+        Log.shared.info(
+            .asr,
+            "实时字幕语言已锁定｜\(detected)"
+                + "（由首个出字窗口自动判定，后续窗口不再重判 —— 避免窗口间来回跳）"
+        )
+        onLanguagePinned?(detected)
     }
 
     /// 每 N 个窗口汇总一行实时统计（含**实时倍率**）。
@@ -437,6 +477,11 @@ final class LiveTranscriber: ObservableObject {
     @Published private(set) var statusText = "未启动"
     @Published private(set) var isActive = false
     @Published private(set) var isPaused = false
+    /// "自动判定"模式下已被锁定的语言（空表示尚未锁定，或本来就不是自动判定）。
+    ///
+    /// **必须在界面上显示出来**：锁错了若看不见，用户只会觉得"识别结果很扯"，
+    /// 而不会想到"把它改成中文就好了"。看得见才可能被纠正。
+    @Published private(set) var pinnedLanguage = ""
 
     private init() {
         let engine = LiveTranscriptionEngine.shared
@@ -449,11 +494,16 @@ final class LiveTranscriber: ObservableObject {
                 self?.isActive = !status.contains("停止") && !status.contains("失败")
             }
         }
+        engine.onLanguagePinned = { [weak self] language in
+            Task { @MainActor in self?.pinnedLanguage = language }
+        }
     }
 
     /// 开始实时字幕。需要调用方（录音页）先确认模型已下载。
     func start(modelURL: URL, language: String, denoiseEnabled: Bool = false) {
         segments = []
+        // 上一次会话锁定的语言不该带到这一次（换个语言/重开录音都要重判）
+        pinnedLanguage = ""
         statusText = "正在启动…"
         LiveTranscriptionEngine.shared.start(
             modelURL: modelURL,

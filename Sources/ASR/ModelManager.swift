@@ -342,8 +342,13 @@ final class ModelManager: ObservableObject {
                             return
                         }
                         self.states[modelId] = .installed
-                        let via = index == 0 ? "主站" : "镜像（第 \(index + 1) 个地址）"
-                        self.lastMessage = "\(descriptor.displayName) 已下载完成（\(via)）"
+                        // 来源必须按**实际主机**报，不能按候选序号 ——
+                        // 「优先走镜像」打开时 candidates[0] 就是镜像，而原实现
+                        // 按 `index == 0` 输出"主站"，把日志直接写反
+                        //（真机日志里确实出现了"首选 hf-mirror.com"紧接着
+                        //  "下载完成｜来源 主站"这种自相矛盾的两行）。
+                        let via = source.host ?? "未知来源"
+                        self.lastMessage = "\(descriptor.displayName) 已下载完成（来源 \(via)）"
                         Log.shared.info(
                             .model,
                             "模型下载完成｜\(descriptor.displayName)｜来源 \(via)"
