@@ -66,8 +66,20 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(finalModelId, forKey: Keys.finalModel) }
     }
 
-    /// 转写语言。"auto" 表示由模型自动判定 ——
-    /// 中英夹杂的对话下强制指定单一语言会让另一种语言被识别成错字（见 WhisperModelCatalog）。
+    /// 转写语言。取值见 `WhisperModelCatalog.languageOptions`，**默认 "zh"**。
+    ///
+    /// ## 为什么默认是具体语言，而不是"自动判定"（2026-09-24 真机教训后的决定）
+    /// "自动判定"等于**让模型去猜**一件用户本来就知道的事，而它手里的证据只有
+    /// 开头那一段音频 —— 猜错的代价是整场文字都按错的语言重新拼一遍
+    ///（真机反馈：「实时识别有的扯淡，出现各种语言」）。
+    ///
+    /// **指认语言是知识，检测语言是猜测：能问就不要猜。**
+    ///
+    /// 而"指定中文"并不会妨碍识别夹在里面的英文词 —— whisper 的 language 参数
+    /// 只钉住解码起始的语言 token，并不限制词表，所以日常中文语境下这样最稳。
+    /// 整段外语（例如全英材料）会明显退化，那种场景一键切换即可。
+    ///
+    /// "自动判定"仍保留为可选项，但不再是默认；它的代价写在设置页里。
     @Published var transcriptionLanguage: String {
         didSet { defaults.set(transcriptionLanguage, forKey: Keys.transcriptionLang) }
     }
@@ -167,7 +179,8 @@ final class AppSettings: ObservableObject {
             stored: defaults.string(forKey: Keys.finalModel),
             fallback: WhisperModelCatalog.finalDefaultId
         )
-        transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
+        // 默认 "zh" 而不是 "auto"：理由见 transcriptionLanguage 的说明
+        transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "zh"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
         autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false

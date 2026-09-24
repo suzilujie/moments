@@ -111,8 +111,14 @@ struct SettingsView: View {
                     Text(item.name).tag(item.code)
                 }
             }
-            Text("默认「自动判定」：中英夹杂的对话里强制指定某一种语言，"
-                + "会把另一种语言识别成错字。")
+            Text("建议直接指定你实际说的语言。指定中文时，夹在里面的英文词照样会"
+                + "照原样输出（例如「这个 deadline 有点紧」）—— whisper 的语言参数"
+                + "只决定解码的起手语言，不会限制它写出别的语言的词。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text("「自动判定」的含义是：由模型在开头猜一次，之后整场沿用。"
+                + "猜错的代价是整场文字都按错的语言重拼（真机上出现过「各种语言」），"
+                + "所以它不再是默认值。录整段外语材料时，记得把这里或录音页的语言切过去。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 

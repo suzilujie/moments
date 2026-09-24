@@ -320,12 +320,19 @@ final class PronunciationPractice: ObservableObject {
         }
 
         stage = .evaluating
-        let language = AppSettings.shared.transcriptionLanguage
+        // 跟读**固定用自动判定**，不跟随全局的"识别语言"设置。
+        //
+        // 两条理由都是确定的：
+        // 1) 跟读是**单次**调用（读一句、判一次），而"自动判定"最大的缺点 ——
+        //    每个窗口各判一次、结果来回跳 —— 在这里根本不存在；
+        // 2) 参考句可能是英文（练口语）也可能是中文，自动判定正好适配。
+        //    若跟随全局默认（现在是中文），读英文句子时会被按中文解码，
+        //    识别结果变差、分数被冤枉 —— 那是把一个能用的功能改坏了。
         worker.evaluate(
             recordingURL: recordingURL,
             reference: referenceText,
             modelURL: modelURL,
-            language: language == "auto" ? nil : language
+            language: nil
         ) { [weak self] result in
             // 回调来自 worker 队列：必须用 `Task { @MainActor in }` 回到主 actor，
             // 不能用 DispatchQueue.main.async（后者不被识别为主 actor 上下文）
