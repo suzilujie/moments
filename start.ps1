@@ -48,6 +48,47 @@ function Invoke-Git([string[]]$GitArgs) {
     }
 }
 
+# --- helper: GitHub Actions API request headers ---
+function New-ApiHeaders() {
+    return @{ 'User-Agent' = 'start-script'; 'Accept' = 'application/vnd.github+json' }
+}
+
+# --- helper: print the exact ipa download links for a run ---
+#
+# Why this exists: the Actions tab only shows a list of runs, so the user has to
+# hunt for the right one and then click through. The per-artifact URL is stable
+# and can be pasted straight into a download, so print it here instead of
+# describing where to look.
+function Write-IpaLinks([string]$RunId, [string]$RunUrl) {
+    Write-Host ""
+    Write-Host "=== ipa download ===" -ForegroundColor Cyan
+    Write-Host ("Run page : " + $RunUrl)
+    try {
+        $auri = "https://api.github.com/repos/$Owner/$Repo/actions/runs/" + $RunId + "/artifacts"
+        $arts = Invoke-RestMethod -Uri $auri -Headers (New-ApiHeaders) -TimeoutSec 25
+        foreach ($art in $arts.artifacts) {
+            $size = [math]::Round($art.size_in_bytes / 1MB, 1)
+            Write-Host ("Artifact : " + $art.name + "  (" + $size + " MB)")
+            Write-Host ("Download : https://github.com/" + $Owner + "/" + $Repo + "/actions/runs/" + $RunId + "/artifacts/" + $art.id)
+        }
+    }
+    catch {
+        Write-Host "  (artifact list unavailable; open the run page above)" -ForegroundColor Yellow
+    }
+}
+
+# --- helper: find the Actions run for a commit sha (best effort) ---
+function Get-RunForSha([string]$Sha) {
+    try {
+        $uri = "https://api.github.com/repos/$Owner/$Repo/actions/runs?per_page=10"
+        $result = Invoke-RestMethod -Uri $uri -Headers (New-ApiHeaders) -TimeoutSec 25
+        return @($result.workflow_runs | Where-Object { $_.head_sha -like "$Sha*" } | Select-Object -First 1)
+    }
+    catch {
+        return @()
+    }
+}
+
 # --- [0/5] make sure this is a git repository with a remote ---
 if (-not (Test-Path (Join-Path $ScriptDir ".git"))) {
     Write-Host "[0/5] No .git found. Initialising a new repository..." -ForegroundColor Yellow
@@ -103,19 +144,34 @@ else {
 }
 
 # --- [4/5] tell the user where to grab the ipa ---
+#
+# Prints the exact run + per-artifact URL for the commit that was just pushed,
+# not just a link to the Actions list. Without -Wait the run may still be
+# queued, in which case the artifact links are not there yet -- that is called
+# out explicitly rather than printing a link that does not work.
 Write-Host ""
 Write-Host "[4/5] Where to get the ipa" -ForegroundColor Cyan
+$shaHead = (git rev-parse HEAD).Substring(0, 7)
 if ($Owner -and $Repo) {
-    Write-Host ("      https://github.com/" + $Owner + "/" + $Repo + "/actions") -ForegroundColor Green
-    Write-Host "      Open the latest 'ios-build' run, download the artifact"
-    Write-Host "      'Moments-unsigned-ipa', then side-load it with Sideloadly."
+    $run = Get-RunForSha $shaHead
+    if ($run) {
+        Write-IpaLinks ([string]$run.id) $run.html_url
+        if ($run.status -ne 'completed') {
+            Write-Host "  (the run is still in progress; artifact links appear when it finishes)" -ForegroundColor Gray
+            Write-Host "  (re-run with -Wait to print them automatically)" -ForegroundColor Gray
+        }
+    }
+    else {
+        Write-Host ("      https://github.com/" + $Owner + "/" + $Repo + "/actions") -ForegroundColor Green
+        Write-Host "      Open the latest 'ios-build' run and download 'Moments-unsigned-ipa'."
+    }
 }
 else {
     Write-Host "      Set Owner/Repo at the top of this script to print the exact link."
     Write-Host "      Otherwise: open the repository's Actions tab and pick the latest run."
 }
-Write-Host "      After installing, open the app and check the commit shown on the"
-Write-Host "      self-check screen matches the one printed above."
+Write-Host "      Side-load the ipa with Sideloadly, then check the commit shown on the"
+Write-Host ("      self-check screen matches: " + $shaHead)
 
 # --- [5/5] optionally wait for CI ---
 if ($Wait) {
@@ -146,6 +202,10 @@ if ($Wait) {
                 foreach ($run in $mine) {
                     $color = if ($run.conclusion -eq 'success') { 'Green' } else { 'Red' }
                     Write-Host ("{0,-14} -> {1}" -f $run.name, $run.conclusion) -ForegroundColor $color
+                }
+                $okRun = $mine | Where-Object { $_.conclusion -eq 'success' } | Select-Object -First 1
+                if ($okRun) {
+                    Write-IpaLinks ([string]$okRun.id) $okRun.html_url
                 }
                 $done = $true
             }
