@@ -299,10 +299,13 @@ final class SelfCheckModel: ObservableObject {
             + "｜已翻 \(translationCoverage.translated)/\(translationCoverage.total) 次会话"
             + "｜\(entryCount) 条译文"
 
-        // 词频表是懒加载的，这里主动触发一次，好让"是否可用"如实显示 ——
-        // 生词判定失效时界面不能表现为"这段材料没有生词"
-        WordFrequencyTable.shared.loadIfNeeded()
-        vocabularyText = "词频表 \(WordFrequencyTable.shared.availability.text)"
+        // 词表是懒加载的，这里把内置的几份都主动载入一次，
+        // 好让"哪门语言可用"如实显示 —— 判定失效时界面不能表现为"这段材料没有生词"
+        for entry in WordFrequencyTable.catalog {
+            WordFrequencyTable.shared.load(language: entry.code)
+        }
+        vocabularyText = "词表 \(WordFrequencyTable.shared.summary)"
+            + "｜学习语言 \(AppSettings.shared.learningLanguage)"
             + "｜水平档 \(AppSettings.shared.vocabularyLevel.title)"
             + "｜生词本 \(VocabularyStore.shared.summary())"
         speechText = SpeechReader.availableVoicesSummary()

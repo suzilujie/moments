@@ -264,6 +264,15 @@ struct SettingsView: View {
 
     private var learningSection: some View {
         Section {
+            Picker("学习语言", selection: $settings.learningLanguage) {
+                Text("英语").tag("en")
+                Text("中文").tag("zh")
+            }
+            Text("决定生词判定用哪一份词表。目前备好了英语与中文两份 ——"
+                + "选到缺词表的语言时判定会关闭并明确提示，而不是拿另一门语言的词表乱标。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
             Picker("生词水平档", selection: $settings.vocabularyLevel) {
                 ForEach(VocabularyLevel.allCases, id: \.self) { level in
                     Text(level.title).tag(level)

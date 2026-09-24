@@ -1148,8 +1148,10 @@ struct SessionDetailView: View {
     /// 放进 View 的 body 会导致每次滚动、每次状态变化都重算一遍分词与查表。
     /// 提取本身很轻（切词 + 字典查询），一次算完即可。
     private func reloadVocabulary() {
-        // 词频表是懒加载的（首次查询时才读文件），这里主动触发
-        WordFrequencyTable.shared.loadIfNeeded()
+        let language = settings.learningLanguage
+        // 词表是懒加载的（首次查询时才读文件），这里主动触发一次
+        WordFrequencyTable.shared.load(language: language)
+
         guard highlightsVocabulary else {
             segmentVocabulary = [:]
             return
@@ -1159,13 +1161,17 @@ struct SessionDetailView: View {
         // 那样设置页里改水平档就不会生效 —— 等于那个开关是假的。
         var options = VocabularyExtractor.Options()
         options.rankThreshold = settings.vocabularyLevel.rankThreshold
-        // 只支持英语：词频表是英语的。对其它学习语言宁可关闭判定，
-        // 也不能拿英语词表去判中文材料（那会把每个词都标成生词）
-        options.enabled = WordFrequencyTable.shared.isReady && settings.learningLanguage == "en"
+        // 该语言必须有词表，否则判定整体关闭 ——
+        // 拿一门语言的词表去判另一门语言，会把每个词都标成生词。
+        options.enabled = WordFrequencyTable.shared.isReady(language: language)
 
         var result: [String: [VocabularyCandidate]] = [:]
         for segment in transcriptSegments {
-            let candidates = VocabularyExtractor.extract(from: segment.text, options: options)
+            let candidates = VocabularyExtractor.extract(
+                from: segment.text,
+                language: language,
+                options: options
+            )
             if !candidates.isEmpty { result[segment.id] = candidates }
         }
         segmentVocabulary = result

@@ -336,6 +336,30 @@ jobs:
           fi
           echo "::notice::wordlist en_top10k.txt $LINES 行 $(stat -f%z "$DEST/en_top10k.txt") bytes"
 
+          # ── 中文词表（M6）──
+          #
+          # 源是 jieba 的词典（词 + 词频 + 词性，约 4.8 MB）。
+          #
+          # 关键：**在 CI 里显式按词频降序重排，再取前 2 万词**。
+          # 不直接信上游文件顺序，因为上游并未承诺 dict.txt 是按词频排序的；
+          # 一旦它变了顺序，我们的"行号即排名"就整体失效 ——
+          # 那会让生词判定静默地全错（每个词都标成生词，或全都不标），
+          # 而真机上看起来只是"标得有点多"，极难追查。
+          # 重排之后还顺带把体积从 4.8 MB 压到几百 KB。
+          if [ ! -f "$DEST/zh_top20k.txt" ]; then
+            curl -fL --retry 3 -o /tmp/jieba_dict.txt \
+              "https://raw.githubusercontent.com/fxsjy/jieba/master/jieba/dict.txt" \
+              || { echo "::error::下载中文词典失败"; exit 1; }
+            sort -k2 -nr /tmp/jieba_dict.txt | head -n 20000 | awk '{print $1}' > "$DEST/zh_top20k.txt"
+          fi
+          ZH_LINES=$(wc -l < "$DEST/zh_top20k.txt" | tr -d ' ')
+          echo "中文词表行数 = $ZH_LINES"
+          if [ "$ZH_LINES" -lt 10000 ]; then
+            echo "::error::中文词表行数异常（$ZH_LINES 行），中文生词判定会大面积误判"
+            exit 1
+          fi
+          echo "::notice::wordlist zh_top20k.txt $ZH_LINES 行 $(stat -f%z "$DEST/zh_top20k.txt") bytes"
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -550,12 +574,14 @@ jobs:
             echo "内置模型已打包 $f ($(stat -f%z "$APP_DIR/$f") bytes)"
           done
 
-          # M6 词频表同理：它是生词判定的判据，缺了会让该功能静默失效
-          if [ ! -f "$APP_DIR/en_top10k.txt" ]; then
-            echo "::error::词频表未打进包：en_top10k.txt"
-            exit 1
-          fi
-          echo "词频表已打包 en_top10k.txt ($(stat -f%z "$APP_DIR/en_top10k.txt") bytes)"
+          # M6 词表同理：它是生词判定的判据，缺了会让该功能静默失效
+          for LIST in en_top10k.txt zh_top20k.txt; do
+            if [ ! -f "$APP_DIR/$LIST" ]; then
+              echo "::error::词表未打进包：$LIST"
+              exit 1
+            fi
+            echo "词表已打包 $LIST ($(stat -f%z "$APP_DIR/$LIST") bytes)"
+          done
 
           echo "verify passed"
 

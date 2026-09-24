@@ -67,10 +67,11 @@ struct VocabularyView: View {
                 }
             }
             .task {
-                // 词频表是懒加载的（首次查询时才读文件），这里主动触发一次，
+                // 词表是懒加载的（首次查询时才读文件），这里主动触发一次，
                 // 好让"是否可用"能在界面上如实显示，而不是等用户点开某句才发现
-                WordFrequencyTable.shared.loadIfNeeded()
-                frequencyReady = WordFrequencyTable.shared.isReady
+                let language = settings.learningLanguage
+                WordFrequencyTable.shared.load(language: language)
+                frequencyReady = WordFrequencyTable.shared.isReady(language: language)
                 prepareExport()
             }
             // 生词数量变化后重新生成导出文件，否则导出的是旧内容
@@ -103,13 +104,15 @@ struct VocabularyView: View {
     /// 否则用户会看到"一个生词都没有"，以为是自己的材料太简单 ——
     /// 而真实原因是判据本身没装进来。
     private var frequencyMissingSection: some View {
-        Section {
-            Label("生词判定不可用：词频表未打进安装包", systemImage: "exclamationmark.triangle.fill")
+        let language = settings.learningLanguage
+        return Section {
+            Label("生词判定不可用：\(language) 的词表未就绪", systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote)
                 .foregroundStyle(.orange)
         } footer: {
-            Text("生词判定依赖一份内置的英语词频表。它缺失时不会误标，但也不会标出任何生词。"
-                + "请确认使用的是 CI 构建的安装包（词频表由 CI 下载并打包）。")
+            Text("生词判定依赖一份内置的词频表（由 CI 下载并打包）。"
+                + "它缺失时不会误标，但也不会标出任何生词 —— 这一点必须说清楚，"
+                + "否则你会以为自己的材料太简单。")
         }
     }
 

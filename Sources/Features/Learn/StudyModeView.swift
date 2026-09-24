@@ -243,7 +243,7 @@ struct StudyModeView: View {
         let keys = Set(candidates.map { $0.word })
         guard !keys.isEmpty else { return Text(text) }
 
-        let tokens = VocabularyExtractor.locateTokens(in: text)
+        let tokens = VocabularyExtractor.locateTokens(in: text, language: settings.learningLanguage)
         guard !tokens.isEmpty else { return Text(text) }
 
         var output = Text("")
@@ -549,19 +549,24 @@ struct StudyModeView: View {
     /// 生词判定不可用时的说明。**必须显式告知** ——
     /// 否则用户看到的是"这段材料没有生词"，而真相是判据根本没生效。
     private var vocabularyUnavailableNotice: String? {
-        if !WordFrequencyTable.shared.isReady {
-            return "生词判定不可用：词频表未打进安装包。"
+        let language = settings.learningLanguage
+        switch WordFrequencyTable.shared.availability(language: language) {
+        case .ready:
+            return nil
+        case .unsupported:
+            return "生词判定暂不支持这门语言（当前学习语言：\(language)）。"
+                + "可在「设置 → 学习」里改为英语或中文。"
+        case .missing:
+            return "生词判定不可用：词表未打进安装包。"
+        case .failed(let reason):
+            return "生词判定不可用：词表读取失败（\(reason)）。"
         }
-        if settings.learningLanguage != "en" {
-            return "生词判定目前只支持英语（当前学习语言：\(settings.learningLanguage)）。"
-        }
-        return nil
     }
 
     // MARK: - 载入
 
     private func load() {
-        WordFrequencyTable.shared.loadIfNeeded()
+        WordFrequencyTable.shared.load(language: settings.learningLanguage)
 
         // 与阅读视图同一取舍：优先终稿，没有则用实时稿
         let pass: TranscriptPass = TranscriptStore.shared.exists(sessionId: manifest.id, pass: .final)
@@ -584,6 +589,7 @@ struct StudyModeView: View {
         }
 
         let options = vocabularyOptions()
+        let language = settings.learningLanguage
         cards = document.segments.map { segment in
             StudyCard(
                 id: segment.id,
@@ -591,7 +597,11 @@ struct StudyModeView: View {
                 endMs: segment.endMs,
                 original: segment.text,
                 translated: translated[segment.id],
-                candidates: VocabularyExtractor.extract(from: segment.text, options: options)
+                candidates: VocabularyExtractor.extract(
+                    from: segment.text,
+                    language: language,
+                    options: options
+                )
             )
         }
         index = 0
@@ -604,9 +614,10 @@ struct StudyModeView: View {
     private func vocabularyOptions() -> VocabularyExtractor.Options {
         var options = VocabularyExtractor.Options()
         options.rankThreshold = settings.vocabularyLevel.rankThreshold
-        // 只支持英语：词频表是英语的。对其它学习语言宁可关闭判定，
-        // 也不能让它用英语词表去判中文材料（那会把每个词都标成生词）。
-        options.enabled = WordFrequencyTable.shared.isReady && settings.learningLanguage == "en"
+        // 该学习语言必须有词表（当前有英语与中文）。
+        // 没有就整体关闭：拿一门语言的词表去判另一门语言，
+        // 会把每个词都标成生词 —— 那比不标更糟。
+        options.enabled = WordFrequencyTable.shared.isReady(language: settings.learningLanguage)
         return options
     }
 
