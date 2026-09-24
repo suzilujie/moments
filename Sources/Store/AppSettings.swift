@@ -212,7 +212,11 @@ final class AppSettings: ObservableObject {
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
         autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false
         realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
-        learningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
+        // 存成局部变量：下面的实时翻译默认值要用它，而**不能在 init 里直接读
+        // learningLanguage 属性**（带 didSet 的属性被读会触发 definite-initialization
+        // 检查，报 used before being initialized —— 见下方说明）
+        let storedLearningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
+        learningLanguage = storedLearningLanguage
         // 用 zh-Hans 而不是 zh：系统翻译框架的语言标识符采用 BCP-47 形式，
         // 写 "zh" 时 LanguageAvailability 可能与目录里的条目对不上
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh-Hans"
@@ -220,10 +224,22 @@ final class AppSettings: ObservableObject {
         defaultSourceLanguage = defaults.string(forKey: Keys.sourceLang) ?? "zh-Hans"
         // 实时翻译默认**开启**、目标取「我正在学」（2026-09-24 用户拍板）：
         // 理由见 liveTranslationTargetLanguage 的说明。
-        // **必须放在 learningLanguage 赋值之后** —— 默认值就是从它推出来的。
+        //
+        // ⚠️ 这两行**必须这么写**。第一版写成链式表达式：
+        //      liveTranslationTargetLanguage = defaults.string(...) 
+        //          ?? TranslationLanguageCatalog.identifier(forWhisperCode: learningLanguage)
+        //          ?? ""
+        //    CI 直接编译失败，报的是：
+        //      variable 'self.liveTranslationTargetLanguage' used before being initialized
+        //    原因是两条叠在一起：① 在 init 里读**带 didSet 的属性**（learningLanguage）；
+        //    ② 多行 ?? 长链。改法就是拆成局部变量、只赋值一次。
+        //    **而本机 linter 对这个问题一个字都没报** —— 见日志里的教训：
+        //    Swift 的语言语义错误只有 CI 才是真检查，"零 lint"不等于"能编译"。
+        let liveTargetFallback = TranslationLanguageCatalog.identifier(
+            forWhisperCode: storedLearningLanguage
+        ) ?? ""
         liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget)
-            ?? TranslationLanguageCatalog.identifier(forWhisperCode: learningLanguage)
-            ?? ""
+            ?? liveTargetFallback
         let rawLevel = defaults.string(forKey: Keys.vocabLevel) ?? ""
         vocabularyLevel = VocabularyLevel(rawValue: rawLevel) ?? .fallback
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
