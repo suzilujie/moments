@@ -117,8 +117,10 @@ final class AppSettings: ObservableObject {
     /// 自动下载是否允许走**移动网络**。默认**关**。
     ///
     /// 关闭时只在非计费网络（Wi-Fi / 有线）下自动下载。
-    /// 理由：57 MB 不该由 App 替用户决定花在移动流量上 ——
+    /// 理由：上百 MB 不该由 App 替用户决定花在移动流量上 ——
     /// 静默下载的边界必须止于"可能让用户多付钱"这一条。
+    /// （2026-09-24 默认实时模型改为 Small 后，静默下载体量由 57 MB 变为 190 MB，
+    ///   这条边界因此更重要，而不是更不重要。）
     @Published var autoPrepareOnCellular: Bool {
         didSet { defaults.set(autoPrepareOnCellular, forKey: Keys.autoPrepareOnCellular) }
     }

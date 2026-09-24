@@ -124,6 +124,19 @@ final class SherpaVad {
         SherpaOnnxVoiceActivityDetectorReset(handle)
     }
 
+    /// 当前是否处于语音中（**流式状态**，反映"此刻"）。
+    ///
+    /// 与 `containsSpeech(in:)` 的区别是决定性的：那个方法会把整段音频喂完、
+    /// flush、再 reset，回答的是"**这段里有没有过语音**"；
+    /// 本属性不改任何状态，回答的是"**现在是不是正在说话**"。
+    ///
+    /// 实时字幕的切窗逻辑需要后者：只有在"正在说话"时才允许因长度上限强切，
+    /// 否则长时间静音也会被当成一段送进 whisper（白跑一遍，还容易编出幻觉）。
+    var isSpeechDetected: Bool {
+        guard let handle else { return false }
+        return SherpaOnnxVoiceActivityDetectorDetected(handle) != 0
+    }
+
     /// 一次性判断「这段音频里有没有人声」。
     ///
     /// 实现上走完整的 accept → flush → reset 流程，而不是只看 Detected 标志：

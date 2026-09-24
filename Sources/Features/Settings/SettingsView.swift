@@ -135,8 +135,11 @@ struct SettingsView: View {
         } header: {
             Text("转写")
         } footer: {
-            Text("实时字幕求快、终稿求准，因此分开选模型。终稿在充电或息屏时执行，"
-                + "不占用你使用手机的时段。")
+            // 2026-09-24 起默认两边都是 Small（实测实时余量足够），
+            // 所以这里不能再写"实时求快、终稿求准"——那是旧默认下的说法。
+            Text("实时与终稿分开选模型：可以让实时用更小更快的、终稿用更大更准的，"
+                + "也可以两边都用同一个（默认两边都是 Small）。"
+                + "终稿在充电或息屏时执行，不占用你使用手机的时段。")
         }
     }
 
@@ -153,13 +156,17 @@ struct SettingsView: View {
             }
 
             Toggle("首次使用自动准备模型", isOn: $settings.autoPrepareModel)
-            Text("开启后，首次使用时自动下载默认的实时模型（Base，约 57 MB），"
-                + "不需要你自己挑哪个。其余模型仍由你按需下载。")
+            // 模型名与体积**从清单读，不写死**：2026-09-24 默认由 Base（57 MB）
+            // 改成 Small（190 MB）时，写死的文案立刻变成错误信息
+            //（界面说 57 MB，实际下 190 MB）。
+            Text("开启后，首次使用时自动下载默认的实时模型"
+                + "（\(defaultRealtimeModelText)），不需要你自己挑哪个。"
+                + "其余模型仍由你按需下载。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
             Toggle("允许在移动网络下自动下载", isOn: $settings.autoPrepareOnCellular)
-            Text("默认关闭 —— 57 MB 的流量不该由 App 替你决定花。"
+            Text("默认关闭 —— 上百 MB 的流量不该由 App 替你决定花。"
                 + "关闭时只在 Wi-Fi 下自动下载。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -307,6 +314,14 @@ struct SettingsView: View {
                 + "），不需要下载 —— 它们的原始托管地址在交付环境实测不可达，"
                 + "做成下载会让这些功能直接不可用。")
         }
+    }
+
+    /// 默认实时模型的"名字（体积）"文案。**读清单，不写死** ——
+    /// 默认值一改，写死的文案就会变成错误信息（界面说 57 MB、实际下 190 MB）。
+    private var defaultRealtimeModelText: String {
+        let id = WhisperModelCatalog.realtimeDefaultId
+        guard let model = WhisperModelCatalog.model(id: id) else { return id }
+        return "\(model.displayName)，约 \(model.sizeText)"
     }
 
     private var languageSection: some View {

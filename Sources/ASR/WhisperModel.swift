@@ -17,6 +17,18 @@ struct WhisperModelDescriptor: Identifiable, Hashable {
         case realtime
         /// 事后补跑，作为留档（准确率优先）
         case final
+        /// **两用**（2026-09-24 新增）。
+        ///
+        /// Small 原先只作终稿，理由是"实时求快"。真机实测推翻了这条前提：
+        /// Base 的实时倍率是 **0.03**（快于实时约 33 倍），余量足够放更准的模型。
+        /// 而实时字幕最被诟病的一点恰恰是「Base 中文错字较多」——
+        /// 用"快 33 倍"换掉准确率，等于拿一个用不完的资源去换一个天天被感知的短板。
+        case both
+
+        /// 可用于实时字幕
+        var canRealtime: Bool { self != .final }
+        /// 可用于终稿
+        var canFinal: Bool { self != .realtime }
 
         /// 给用户看的**用途**名。
         ///
@@ -27,6 +39,7 @@ struct WhisperModelDescriptor: Identifiable, Hashable {
             switch self {
             case .realtime: return "录音时出实时字幕"
             case .final: return "事后转成准确文字"
+            case .both: return "实时字幕与终稿都能用"
             }
         }
     }
@@ -91,9 +104,23 @@ extension WhisperModelDescriptor {
 /// **改这里之前必须先查上游真实文件名，不要按 q5_0 / q5_1 的规律类推。**
 enum WhisperModelCatalog {
 
-    /// 实时稿默认模型：base 量化版。选择理由：在 iPhone 上能跑出快于实时的速度，
-    /// 中文可用；tiny 虽更快但中文错字明显，做实时字幕会让人误以为识别很差。
-    static let realtimeDefaultId = "base-q5_1"
+    /// 实时稿默认模型：small 量化版（**2026-09-24 由 base 改为 small**）。
+    ///
+    /// ## 为什么改
+    /// 原选 base 的理由是"要快"。真机实测（概念文档 P23）把这个前提推翻了：
+    /// base 平均 440ms / 15 秒音频 = **实时倍率 0.03，快于实时约 33 倍**。
+    /// 也就是说我们一直在为一个**不存在的**性能问题付准确率的代价，
+    /// 而 base 的中文错字多（本文件里就标注着"中文错字较多"）是天天被感知的短板。
+    /// 按参数量推算 small 约 0.10，仍快于实时近 10 倍。
+    ///
+    /// ## 必须知道的连带影响
+    /// **首次使用自动准备下载的就是它**（见 `ModelManager.autoPrepareIfNeeded`）——
+    /// 所以静默下载的体量从 57 MB 变成 **190 MB**（仍只在 Wi-Fi 下，
+    /// 除非用户另外打开「允许在移动网络下自动下载」）。
+    /// **静默下载的体量变了，这是本次改动的代价之一，不是附带细节。**
+    ///
+    /// 若哪天真机发热明显，改回 `"base-q5_1"` 或让用户切到 Base 即可（设置里可选）。
+    static let realtimeDefaultId = "small-q5_1"
 
     /// 终稿默认模型：small 量化版。准确率明显优于 base，且可在充电/息屏时慢慢跑，
     /// 速度不是约束（设计文档 5.4）。
@@ -118,17 +145,20 @@ enum WhisperModelCatalog {
             role: .realtime,
             speedHint: "快于实时",
             accuracyHint: "日常对话可用",
-            note: "实时字幕的默认选择：速度与准确率的平衡点"
+            // 2026-09-24：它不再是默认（默认已改为 Small）。保留为"省电档"——
+            // 发热明显或想省电时切到它，代价是中文错字变多。
+            note: "省电档：速度余量最大（实测快于实时约 33 倍），但中文准确率一般"
         ),
         WhisperModelDescriptor(
             id: "small-q5_1",
             displayName: "Small",
             fileName: "ggml-small-q5_1.bin",
             approximateBytes: 190_100_000,
-            role: .final,
+            // 2026-09-24：改为两用 —— 实时字幕的默认也用它（实测余量足够，见 realtimeDefaultId）
+            role: .both,
             speedHint: "接近实时",
             accuracyHint: "好",
-            note: "终稿的默认选择：事后补跑，不占用使用时段"
+            note: "实时与终稿都能用：中文明显比 Base 准；实时下约慢 3 倍，但仍有近 10 倍余量"
         ),
         WhisperModelDescriptor(
             id: "medium-q5_0",
@@ -147,11 +177,11 @@ enum WhisperModelCatalog {
     }
 
     static var realtimeCandidates: [WhisperModelDescriptor] {
-        all.filter { $0.role == .realtime }
+        all.filter { $0.role.canRealtime }
     }
 
     static var finalCandidates: [WhisperModelDescriptor] {
-        all.filter { $0.role == .final }
+        all.filter { $0.role.canFinal }
     }
 
     /// 识别语言候选。

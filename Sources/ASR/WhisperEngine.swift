@@ -22,6 +22,28 @@ final class WhisperEngine {
         let text: String
     }
 
+    /// 解码策略。**与"换模型"是完全不同的两个杠杆**：
+    /// 模型决定"能听懂多少"，解码决定"同一个模型能选出多好的结果"。
+    enum DecodeMode {
+        /// 贪心：每步只取当前概率最高的字，一条路走到黑。
+        /// 快，但**一步错、步步错**（局部最优不等于全局最优）。
+        case greedy
+        /// beam search：保留若干条候选路径，最后比整体概率。
+        /// 慢几倍，但能在歧义处纠回来 —— 中文同音字（是/时/事/实）正是贪心最容易错的地方。
+        ///
+        /// **刻意不显式设 `beam_size`**：whisper.cpp 在 `WHISPER_SAMPLING_BEAM_SEARCH`
+        /// 下已经给出默认值（5）。多引一个字段名就多一处跨版本编译风险，
+        /// 而这里没有任何理由偏离官方默认值。
+        case beamSearch
+
+        var text: String {
+            switch self {
+            case .greedy: return "贪心"
+            case .beamSearch: return "beam"
+            }
+        }
+    }
+
     private var context: OpaquePointer?
     private let modelPath: String
     private(set) var lastError: String?
@@ -122,12 +144,17 @@ final class WhisperEngine {
     ///   - translateToEnglish: 是否让 whisper 直接输出英文（注意：whisper 只能译成英文）
     ///   - dropLikelySilence: 是否丢弃"疑似幻觉"的分段（非语音概率过高）。
     ///     **只给实时字幕用**；终稿必须传 false，留档不能丢内容。
+    ///   - decodeMode: 解码策略（默认贪心）。实时字幕传 `.beamSearch` ——
+    ///     它最被诟病的是错字，而 beam 正是针对错字的手段（见 DecodeMode 的说明）。
+    ///     终稿仍用贪心：终稿本来就慢，且"换模型"对它的提升更直接，
+    ///     两个变量一起动会让成效无法归因。
     /// - Returns: 分段文本；失败返回空数组并写入 lastError
     func transcribe(
         samples: [Float],
         language: String? = nil,
         translateToEnglish: Bool = false,
-        dropLikelySilence: Bool = false
+        dropLikelySilence: Bool = false,
+        decodeMode: DecodeMode = .greedy
     ) -> [Segment] {
         guard let context else {
             lastError = "模型尚未加载"
@@ -135,7 +162,10 @@ final class WhisperEngine {
         }
         guard !samples.isEmpty else { return [] }
 
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        let strategy = decodeMode == .beamSearch
+            ? WHISPER_SAMPLING_BEAM_SEARCH
+            : WHISPER_SAMPLING_GREEDY
+        var params = whisper_full_default_params(strategy)
         params.n_threads = Int32(Self.recommendedThreadCount)
         params.translate = translateToEnglish
         // 全部关闭：这些是给命令行工具用的实时打印，在 App 里只会拖慢速度
@@ -234,7 +264,7 @@ final class WhisperEngine {
                 .asr,
                 "转写完成｜音频 \(audioMs)ms｜耗时 \(costMs)ms"
                     + "｜实时倍率 \(String(format: "%.2f", ratio))（<1.0 表示快于实时）"
-                    + "｜分段 \(result.count)"
+                    + "｜解码 \(decodeMode.text)｜分段 \(result.count)"
             )
         }
         return result

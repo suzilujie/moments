@@ -112,7 +112,7 @@ enum ModelDownloadState: Equatable {
 ///    原决定的理由是"上百 MB 不该替用户决定消耗流量"。真机验收推翻了这个前提：
 ///    用户面对 Tiny/Base/Small/Medium 四个名字**根本不知道该下哪个** ——
 ///    结果不是"省了流量"，而是**核心功能一直不可用**（设备日志里 32 分钟零字节）。
-///    现改为：自动下载默认实时模型（Base），但**仅在非计费网络下**；
+///    现改为：自动下载默认实时模型（**Small，190 MB**），但**仅在非计费网络下**；
 ///    移动网络下不静默下载，只留说明与一次点击的入口。其余模型仍由用户自选。
 @MainActor
 final class ModelManager: ObservableObject {
@@ -187,17 +187,26 @@ final class ModelManager: ObservableObject {
 
     // MARK: - 首次使用自动准备
 
-    /// 首次使用时静默备好默认实时模型（Base）。
+    /// 首次使用时静默备好默认实时模型（**目前是 Small，190 MB**）。
     ///
-    /// **只在非计费网络下自动下载**：57 MB 不该由我们替用户决定花在移动流量上。
+    /// **只在非计费网络下自动下载**：上百 MB 不该由我们替用户决定花在移动流量上。
     /// 计费网络下不静默下载，但会留下说明、由界面给一次点击的入口 ——
     /// 这与"什么都不做、还让用户自己去猜该下哪个"是两回事。
+    ///
+    /// 2026-09-24 起默认实时模型由 Base（57 MB）改为 Small（190 MB），
+    /// 因此**静默下载的体量变成了原来的三倍多** —— 这是换准确率的代价，
+    /// 而不是附带细节（见 `WhisperModelCatalog.realtimeDefaultId` 的说明）。
     ///
     /// 重复调用安全：已装或有下载在进行中都会直接返回（每次启动都会调一次）。
     func autoPrepareIfNeeded() {
         guard settings.autoPrepareModel else { return }
 
-        let modelId = WhisperModelCatalog.realtimeDefaultId
+        // 用**设置里生效的那个模型**，而不是默认常量：
+        // 若用户已手动选过（例如为省电选了 Base），就该准备他真正要用的那个 ——
+        // 否则会出现"静默下了 190 MB，而他一直在用 Base"：既费流量，还毫无用处。
+        // 未设置过时，设置里的值本身来自 `realtimeDefaultId`，
+        // 所以这与"准备默认模型"是等价的，不是另加一条规则。
+        let modelId = settings.realtimeModelId
         guard let descriptor = WhisperModelCatalog.model(id: modelId) else { return }
         guard !isInstalled(modelId), !(states[modelId]?.isDownloading ?? false) else { return }
 
