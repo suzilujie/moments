@@ -65,11 +65,16 @@ struct ModelDownloadProgress: Equatable {
 /// 导致 32 分钟无数据却查不出到底发生了什么）。
 enum ModelDownloadError: LocalizedError {
     case stalled(idleSeconds: Double)
+    /// 服务器返回了非 2xx。**必须单独成一种**：URLSession 不会把 404/500
+    /// 当作错误，若不自己检查，错误页正文会被当成模型文件存下来。
+    case badStatus(code: Int, host: String)
 
     var errorDescription: String? {
         switch self {
         case .stalled(let seconds):
             return "下载停滞：已 \(Int(seconds)) 秒没有收到任何数据"
+        case .badStatus(let code, let host):
+            return "服务器返回 HTTP \(code)（\(host)）"
         }
     }
 }
@@ -311,10 +316,29 @@ final class ModelManager: ObservableObject {
 
                     switch result {
                     case .success(let url):
-                        guard self.isPlausible(descriptor: descriptor, at: url) else {
+                        if let problem = self.validate(descriptor: descriptor, at: url) {
+                            // 校验不过**不是终点**：它同样意味着"这个地址没给对东西"，
+                            // 必须继续尝试下一个地址 —— 否则一个错地址就会让整条回退链断掉。
+                            // 真机上正是如此：镜像返回 404，回退链就此中断，
+                            // 用户只看到一句与真实原因不相干的"体积异常"。
                             try? self.fileManager.removeItem(at: url)
-                            self.states[modelId] = .failed("下载文件体积异常，已丢弃（可能被网络中间层截断）")
-                            Log.shared.error(.model, "模型文件体积异常｜\(descriptor.fileName)")
+                            Log.shared.warn(
+                                .model,
+                                "模型文件校验未通过｜\(descriptor.displayName)"
+                                    + "｜\(problem)｜尝试下一个地址"
+                            )
+                            if index + 1 < candidates.count {
+                                self.lastMessage = "\(descriptor.displayName)：\(problem)，"
+                                    + "正在改试 \(candidates[index + 1].host ?? "下一个地址")…"
+                            }
+                            self.attemptDownload(
+                                modelId: modelId,
+                                descriptor: descriptor,
+                                candidates: candidates,
+                                index: index + 1,
+                                destination: destination,
+                                lastFailure: problem
+                            )
                             return
                         }
                         self.states[modelId] = .installed
@@ -376,19 +400,55 @@ final class ModelManager: ObservableObject {
 
     // MARK: - 内部
 
-    /// 体积合理性检查。
+    /// 校验下载到的文件。返回 nil 表示通过，否则返回一句**可读的原因**。
     ///
-    /// 这里**刻意不做哈希校验**：模型几百 MB，哈希要额外读一遍全文件，
-    /// 在手机上代价明显；而"体积明显不对"已经能拦住绝大多数失败
-    /// （下载被中断、被网络中间层替换成错误页）。
-    /// 真正的正确性由加载时验证 —— whisper 初始化失败会给出明确错误。
-    private func isPlausible(descriptor: WhisperModelDescriptor, at url: URL) -> Bool {
+    /// **两道检查各管一件事，都不能省**：
+    /// · **头部魔数**：一次识破"根本不是模型"的东西（错误页、HTML、任意内容）。
+    ///   真机上就是被这一步救的 —— 服务器 404 的正文是 15 字节的
+    ///   `Entry not found`，只看体积只会觉得"小了点"，看不出"完全不是模型"。
+    /// · **体积下界**：识破"头部对但内容被截断"。
+    ///
+    /// 返回字符串而不是 Bool：失败原因必须能写进日志与界面。
+    /// 原先只报一句"体积异常"，把"服务器 404""被截断""格式不对"混成一句，
+    /// 排查时被误导了整整一轮。
+    ///
+    /// 仍然**刻意不做哈希校验**：模型几百 MB，哈希要额外读一遍全文件，
+    /// 手机上代价明显；而这两道检查已能覆盖全部已知失败形态，
+    /// 最终正确性由加载时验证（whisper 初始化失败会给出明确错误）。
+    private func validate(descriptor: WhisperModelDescriptor, at url: URL) -> String? {
         guard let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value else {
-            return false
+            return "无法读取文件体积"
         }
-        // 允许 ±25% 浮动：不同量化版本的实际体积与估算值会有差异
+
+        guard let magic = readMagic(at: url) else {
+            return "无法读取文件头部（\(size) 字节）"
+        }
+        // whisper.cpp 的 ggml 模型头部魔数属于这一族（ggml / ggmf / ggjt）。
+        // 认不出来即说明拿到的不是模型文件 —— 最可能就是服务器返回的错误页。
+        let knownMagics = ["ggml", "ggmf", "ggjt"]
+        guard knownMagics.contains(magic) else {
+            return "下载到的不是模型文件（头部为「\(magic)」，共 \(size) 字节）"
+        }
+
         let lower = Int64(Double(descriptor.approximateBytes) * 0.75)
-        return size >= lower
+        guard size >= lower else {
+            return "文件被截断（\(size) 字节，至少应有 \(lower) 字节）"
+        }
+        return nil
+    }
+
+    /// 读文件前 4 个字节，按可见字符表示（非可见字节写成 0xNN）。
+    /// 报错信息里必须能看出"这到底是什么格式"，否则"不是模型文件"这句话
+    /// 对排查毫无帮助。
+    private func readMagic(at url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return nil }
+        return data.map { byte in
+            (0x20...0x7E).contains(byte)
+                ? String(UnicodeScalar(byte))
+                : String(format: "0x%02X", byte)
+        }.joined()
     }
 
     private func cleanupPartialDownloads() {
@@ -584,6 +644,19 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // **HTTP 状态必须自己检查**：URLSession 不把 404/500 当错误 ——
+        // 它会把错误页正文当作"下载成功"存下来。真机上正是这样被误导的：
+        // 镜像对不存在的文件名返回 404、正文是 15 字节的 `Entry not found`，
+        // 结果被当成模型文件存下，最后报成"体积异常（可能被网络中间层截断）"——
+        // 提示与真实原因毫不相干，而且换地址的回退链在此中断。
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            finish(with: .failure(
+                ModelDownloadError.badStatus(code: http.statusCode, host: sourceHost)
+            ))
+            return
+        }
+
         // 这个回调返回后系统会删除临时文件，因此必须**同步**把它搬走。
         guard let destination else {
             finish(with: .failure(TranscriptionError.modelLoadFailed("缺少目标路径")))

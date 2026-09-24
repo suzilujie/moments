@@ -155,8 +155,18 @@ final class AppSettings: ObservableObject {
         minFreeDiskGB = defaults.object(forKey: Keys.minFreeDiskGB) as? Double ?? 1.0
 
         realtimeTranscriptionEnabled = defaults.object(forKey: Keys.realtime) as? Bool ?? true
-        realtimeModelId = defaults.string(forKey: Keys.realtimeModel) ?? WhisperModelCatalog.realtimeDefaultId
-        finalModelId = defaults.string(forKey: Keys.finalModel) ?? WhisperModelCatalog.finalDefaultId
+        // 模型 id 会随上游文件名变化（2026-09-24：base-q5_0 → base-q5_1，
+        // 因为上游根本没有 q5_0 那个文件）。存下来的旧 id 若已不在清单里，
+        // 必须回落到默认值 —— 否则会留下"设置里记着某模型、清单里查不到"的状态：
+        // 界面表现为「模型目录不可用」，而且用户自己无法恢复（下哪个都不对）。
+        realtimeModelId = Self.resolveModelId(
+            stored: defaults.string(forKey: Keys.realtimeModel),
+            fallback: WhisperModelCatalog.realtimeDefaultId
+        )
+        finalModelId = Self.resolveModelId(
+            stored: defaults.string(forKey: Keys.finalModel),
+            fallback: WhisperModelCatalog.finalDefaultId
+        )
         transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
@@ -182,6 +192,12 @@ final class AppSettings: ObservableObject {
             + "｜上限=\(maxSessionHours)h"
             + "｜音频保留=\(retentionDays)天"
             + "｜磁盘下限=\(minFreeDiskGB)GB"
+    }
+
+    /// 把存储的模型 id 解析成清单里**真实存在**的 id（不存在则回落默认）。
+    private static func resolveModelId(stored: String?, fallback: String) -> String {
+        guard let stored, WhisperModelCatalog.model(id: stored) != nil else { return fallback }
+        return stored
     }
 
     private enum Keys {

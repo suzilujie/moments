@@ -73,42 +73,58 @@ extension WhisperModelDescriptor {
 
 /// 模型清单。**只列经过权衡的几个**，而不是把 whisper.cpp 全部尺寸都摆出来 ——
 /// 选项过多会让用户无法决策，而"选哪个"恰恰是这里最不该让用户操心的事。
+///
+/// ## ⚠️ 文件名必须与上游逐字一致，而上游的量化命名**并不统一**（2026-09-24 真机教训）
+///
+/// 上游 `ggerganov/whisper.cpp` 里**实际存在**的量化文件是：
+///   · tiny   → `ggml-tiny-q5_1.bin`     （32,152,673 字节）
+///   · base   → `ggml-base-q5_1.bin`     （59,707,625 字节）
+///   · small  → `ggml-small-q5_1.bin`    （190,085,487 字节）
+///   · medium → `ggml-medium-q5_0.bin`   （539,212,467 字节）← **只有它叫 q5_0**
+///
+/// 即 base / small **根本没有 q5_0 版本**。本项目最初写的
+/// `ggml-base-q5_0.bin` / `ggml-small-q5_0.bin` 在上游不存在，服务器返回 404，
+/// 正文是 15 字节的 `Entry not found` —— 而该正文会被 URLSession 当作
+/// "下载成功"存成模型文件，最终以「体积异常（可能被网络中间层截断）」报错，
+/// 与真实原因完全不符（真机验收就是这么被误导的）。
+///
+/// **改这里之前必须先查上游真实文件名，不要按 q5_0 / q5_1 的规律类推。**
 enum WhisperModelCatalog {
 
     /// 实时稿默认模型：base 量化版。选择理由：在 iPhone 上能跑出快于实时的速度，
     /// 中文可用；tiny 虽更快但中文错字明显，做实时字幕会让人误以为识别很差。
-    static let realtimeDefaultId = "base-q5_0"
+    static let realtimeDefaultId = "base-q5_1"
 
     /// 终稿默认模型：small 量化版。准确率明显优于 base，且可在充电/息屏时慢慢跑，
     /// 速度不是约束（设计文档 5.4）。
-    static let finalDefaultId = "small-q5_0"
+    static let finalDefaultId = "small-q5_1"
 
     static let all: [WhisperModelDescriptor] = [
         WhisperModelDescriptor(
             id: "tiny-q5_1",
             displayName: "Tiny",
             fileName: "ggml-tiny-q5_1.bin",
-            approximateBytes: 31_000_000,
+            approximateBytes: 32_150_000,
             role: .realtime,
             speedHint: "最快",
             accuracyHint: "一般（中文错字较多）",
             note: "仅在设备过热或电量极低时作为兜底档使用，不建议日常选它"
         ),
         WhisperModelDescriptor(
-            id: "base-q5_0",
+            id: "base-q5_1",
             displayName: "Base",
-            fileName: "ggml-base-q5_0.bin",
-            approximateBytes: 57_000_000,
+            fileName: "ggml-base-q5_1.bin",
+            approximateBytes: 59_700_000,
             role: .realtime,
             speedHint: "快于实时",
             accuracyHint: "日常对话可用",
             note: "实时字幕的默认选择：速度与准确率的平衡点"
         ),
         WhisperModelDescriptor(
-            id: "small-q5_0",
+            id: "small-q5_1",
             displayName: "Small",
-            fileName: "ggml-small-q5_0.bin",
-            approximateBytes: 181_000_000,
+            fileName: "ggml-small-q5_1.bin",
+            approximateBytes: 190_100_000,
             role: .final,
             speedHint: "接近实时",
             accuracyHint: "好",
@@ -118,7 +134,7 @@ enum WhisperModelCatalog {
             id: "medium-q5_0",
             displayName: "Medium",
             fileName: "ggml-medium-q5_0.bin",
-            approximateBytes: 539_000_000,
+            approximateBytes: 539_200_000,
             role: .final,
             speedHint: "慢于实时",
             accuracyHint: "很好",
