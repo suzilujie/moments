@@ -17,6 +17,8 @@ struct RecordView: View {
     /// 必须观察：实时字幕区的提示要能反映"模型正在后台自动下载"及其进度，
     /// 否则首次使用时用户看到的是"尚未下载"，而实际上正在下。
     @ObservedObject private var models = ModelManager.shared
+    /// 实时翻译（逐句翻）。与实时字幕是两件事：字幕是本机识别，翻译走系统翻译框架。
+    @ObservedObject private var translation = TranslationService.shared
     @State private var showingSettings = false
     /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
     @State private var liveHint: String?
@@ -46,6 +48,25 @@ struct RecordView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
+            // 实时翻译：configuration 非 nil 时这个 translationTask 就开始工作，
+            // 并一直跑到 stopLive() 把它置回 nil（见 TranslationService.runLive 的说明）。
+            // **session 只能由视图拿到** —— 这是系统框架的约束，不是设计选择。
+            .translationTask(translation.liveConfiguration) { session in
+                await translation.runLive(with: session)
+            }
+            // 字幕每出一句就把最新几句交给翻译。
+            // 只传后缀而不是整份列表：字幕只增不改内容（成句即定稿），所以最新的
+            // 一定是后缀；而一场 8 小时的会话有数千句，每次全扫是白费。
+            // 真正的去重由 TranslationService 按 id 完成，这里不承担正确性。
+            .onChange(of: live.segments) { translation.enqueueLive(Array(live.segments.suffix(30))) }
+            // 「自动判定」模式下要等语言锁定才知道源语言 —— 这一刻才是能启动的时候
+            .onChange(of: live.pinnedLanguage) { syncLiveTranslation() }
+            // 录完就停：否则翻译会话会一直挂着一个 session（切窗引擎已经停了）
+            .onChange(of: session.snapshot.state.isActive) {
+                if !session.snapshot.state.isActive { translation.stopLive() }
+            }
+            // 设置里改了目标语言（含"关闭"）要立刻生效，而不是等下次录音
+            .onChange(of: settings.liveTranslationTargetLanguage) { syncLiveTranslation() }
         }
     }
 
@@ -192,6 +213,8 @@ struct RecordView: View {
     private var subtitleSection: some View {
         Section {
             liveLanguageRow
+            // 实时翻译的状态行：只在开启时出现（关闭时不占界面）
+            if !settings.liveTranslationTargetLanguage.isEmpty { liveTranslationRow }
 
             if !settings.realtimeTranscriptionEnabled {
                 Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
@@ -233,6 +256,13 @@ struct RecordView: View {
                         Text(segment.text)
                             .font(.body)
                             .foregroundStyle(segment.isProvisional ? .secondary : .primary)
+                        // 实时译文贴在原文下方。**没有译文就不显示任何占位** ——
+                        // 占位符会让"还没翻到"看起来像"翻译坏了"。
+                        if let translated = translation.liveTranslations[segment.id] {
+                            Text(translated)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 2)
                 }
@@ -240,8 +270,12 @@ struct RecordView: View {
         } header: {
             Text("实时字幕")
         } footer: {
-            Text("实时字幕是「先出、再改对」的：标着「识别中」的句子后续可能被修正，"
-                + "这是离线识别的固有特性而非故障。录音与音频不受影响，准确文本以终稿为准。")
+            // 这段文案随 VAD 切窗一起改过：原先写的是「先出、再改对」，
+            // 而现在切点由 VAD 决定、一句话说完才识别，文字出现即定稿。
+            // 文案不跟着改的话，它本身就在误导用户。
+            Text("字幕**成句即定稿**：切点由 VAD 决定，一句话说完才送去识别，"
+                + "所以文字一旦出现就不会再变。录音与音频不受影响，"
+                + "最准确的文本仍以终稿为准。")
                 .font(.footnote)
         }
     }
@@ -279,6 +313,9 @@ struct RecordView: View {
             language: settings.transcriptionLanguage,
             denoiseEnabled: settings.realtimeDenoiseEnabled
         )
+        // 识别语言若是明确指定的，这一刻就知道源语言，可以立刻开始翻；
+        // 若是「自动判定」，则要等锁定（见 syncLiveTranslation 的说明）。
+        syncLiveTranslation()
     }
 
     /// 识别语言：显示当前**实际**用的语言，并允许一键更改。
@@ -332,6 +369,70 @@ struct RecordView: View {
             language: language,
             denoiseEnabled: settings.realtimeDenoiseEnabled
         )
+        // 改成明确语言后源语言立刻可知，实时翻译该跟着重启（若在等锁定的话）
+        syncLiveTranslation()
+    }
+
+    /// 实时翻译的状态行。
+    ///
+    /// **必须显示**：翻译没出结果时，用户要能分辨是"还没配好"（语言包缺失）
+    /// 还是"还没轮到翻"（在等识别语言锁定），而不是盯着没有译文的界面猜。
+    private var liveTranslationRow: some View {
+        HStack(spacing: 8) {
+            Text("实时翻译")
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let message = translation.liveMessage {
+                Text(message)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+            } else if translation.liveConfiguration != nil {
+                Text("\(targetLanguageName)｜已翻 \(translation.liveTranslatedCount) 句")
+                    .foregroundStyle(.green)
+            } else if session.snapshot.state.isActive {
+                // 自动判定尚未锁定：这时**确实还不能翻**（系统翻译不支持源语言自动判定）
+                Text("\(targetLanguageName)｜等识别语言锁定…")
+            } else {
+                Text("\(targetLanguageName)（录音时生效）")
+            }
+        }
+        .font(.footnote)
+    }
+
+    private var targetLanguageName: String {
+        TranslationLanguageCatalog.name(for: settings.liveTranslationTargetLanguage)
+    }
+
+    /// 启动 / 停止实时翻译。
+    ///
+    /// ## 一处真实的不兼容（必须说清，否则会被当成 bug）
+    /// 系统翻译**不支持"源语言自动判定"**，而识别侧默认就是「自动判定」——
+    /// 所以这条路径下只能**等**：等首个出字把识别语言锁定，才知道要翻的是什么语言。
+    /// 等多久取决于用户说第一句话的时间。
+    /// 若希望一开始就能翻，把识别语言设成具体语言即可（本页那行的菜单里可改）。
+    private func syncLiveTranslation() {
+        let target = settings.liveTranslationTargetLanguage
+        guard !target.isEmpty else {
+            translation.stopLive()
+            return
+        }
+        guard session.snapshot.state.isActive else { return }
+
+        let sourceCode = live.pinnedLanguage.isEmpty
+            ? settings.transcriptionLanguage
+            : live.pinnedLanguage
+        guard sourceCode != "auto",
+              let source = TranslationLanguageCatalog.identifier(forWhisperCode: sourceCode)
+        else { return }
+
+        // 语言对变了必须重启：不重启就会把新语言的句子按旧语言的假设去翻。
+        //（自动判定锁定后源语言会变化，那是正常路径，不是异常。）
+        if let running = translation.livePair, running.source != source || running.target != target {
+            translation.stopLive()
+        }
+        translation.startLive(source: source, target: target)
+        // 追上已经出过的句子
+        translation.enqueueLive(live.segments)
     }
 
     /// 实时字幕区的状态说明。

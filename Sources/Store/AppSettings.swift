@@ -148,6 +148,20 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(defaultSourceLanguage, forKey: Keys.sourceLang) }
     }
 
+    /// 实时翻译的目标语言。**空字符串 = 关闭**（默认）。
+    ///
+    /// ## 为什么默认关闭，而不是默认跟随"我正在学"
+    /// 实时翻译要在录音过程中额外调用系统翻译，而且**语言包必须预先装好**
+    ///（系统只在 prepareTranslation 时弹下载界面，那要求页面在屏上）。
+    /// 默认打开的话，没准备语言包的用户会在**录音刚开始时**撞上系统下载弹窗 ——
+    /// 那是在最不该打断他的时刻打断他。
+    ///
+    /// 要用的人在设置 →「语言」里选一次即可：那里同时显示语言包状态、
+    /// 并提供一个当场装好的入口（`TranslationService.prepareLanguagePack`）。
+    @Published var liveTranslationTargetLanguage: String {
+        didSet { defaults.set(liveTranslationTargetLanguage, forKey: Keys.liveTranslateTarget) }
+    }
+
     /// 生词判定的水平档（设计文档 8.5：按用户自选水平调整分数线）
     @Published var vocabularyLevel: VocabularyLevel {
         didSet { defaults.set(vocabularyLevel.rawValue, forKey: Keys.vocabLevel) }
@@ -196,6 +210,8 @@ final class AppSettings: ObservableObject {
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh-Hans"
         // 与 SessionListView 此前的默认值保持一致（zh-Hans），不改变既有行为
         defaultSourceLanguage = defaults.string(forKey: Keys.sourceLang) ?? "zh-Hans"
+        // 实时翻译默认**关闭**（空串）：理由见 liveTranslationTargetLanguage 的说明
+        liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget) ?? ""
         let rawLevel = defaults.string(forKey: Keys.vocabLevel) ?? ""
         vocabularyLevel = VocabularyLevel(rawValue: rawLevel) ?? .fallback
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
@@ -237,6 +253,7 @@ final class AppSettings: ObservableObject {
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"
         static let sourceLang = "moments.lang.source"
+        static let liveTranslateTarget = "moments.translate.liveTarget"
         static let vocabLevel = "moments.learn.vocabularyLevel"
         static let export = "moments.export.enabled"
     }

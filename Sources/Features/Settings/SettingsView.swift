@@ -1,4 +1,8 @@
 import SwiftUI
+// 必须 import：`.translationTask` 与 `LanguageAvailability` 都定义在 Translation 模块里，
+// 不 import 会报 "value of type 'some View' has no member 'translationTask'"
+// —— 这与"框架没链接"无关，纯粹是模块可见性问题（SessionListView 已踩过一次）。
+import Translation
 
 /// 设置页。
 ///
@@ -9,7 +13,15 @@ struct SettingsView: View {
 
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var models = ModelManager.shared
+    @ObservedObject private var translation = TranslationService.shared
     @Environment(\.dismiss) private var dismiss
+    /// 实时翻译语言包的可用性。
+    ///
+    /// **存枚举，不存文案**：界面要判"是否已就绪"，若靠字符串相等，
+    /// 改一次文案就静默失效（本项目已因这类比较吃过亏 —— 见 cut reason 处同一取舍）。
+    @State private var livePackStatus: LanguageAvailability.Status?
+    /// 特殊情况说明（源语言与目标语言相同），此时没有可查的语言对
+    @State private var livePackNote: String?
 
     var body: some View {
         NavigationStack {
@@ -30,7 +42,50 @@ struct SettingsView: View {
                     Button("完成") { dismiss() }
                 }
             }
+            .task { await refreshLivePackStatus() }
+            .onChange(of: settings.liveTranslationTargetLanguage) {
+                Task { await refreshLivePackStatus() }
+            }
+            .onChange(of: settings.defaultSourceLanguage) {
+                Task { await refreshLivePackStatus() }
+            }
+            // 语言包准备：与录音页的实时翻译用**不同的 configuration**，互不干扰
+            //（一个 configuration 对应一个 session，共用会互相抢）。
+            // 它**不主动置回 nil**：置回会让 SwiftUI 取消正在跑的 task，
+            // 而这里的 task 本来就短、且离开设置页时修饰器消失、会话自然释放。
+            .translationTask(translation.prepareConfiguration) { session in
+                await translation.runPrepare(with: session)
+            }
         }
+    }
+
+    /// 查询实时翻译语言包的状态。
+    ///
+    /// 源语言用设置里的「默认源语言」估算：识别侧锁定后的结果最终会映射到**同一个**
+    /// 标识符（whisper 的 zh → zh-Hans，见 TranslationLanguageCatalog.identifier），
+    /// 所以这里查出来的可用性与录音时一致。
+    private func refreshLivePackStatus() async {
+        livePackStatus = nil
+        livePackNote = nil
+
+        let target = settings.liveTranslationTargetLanguage
+        guard !target.isEmpty else { return }
+
+        let source = settings.defaultSourceLanguage
+        guard source != target else {
+            livePackNote = "源语言与目标语言相同，无需语言包（但也不会翻译）"
+            return
+        }
+        livePackStatus = await translation.availability(from: source, to: target)
+    }
+
+    /// 语言包是否已就绪（用枚举判断，不用文案）
+    private var isLivePackReady: Bool { livePackStatus == .installed }
+
+    private var livePackStatusText: String {
+        if let livePackNote { return livePackNote }
+        guard let livePackStatus else { return "查询中…" }
+        return TranslationService.describe(livePackStatus)
     }
 
     private var captureSection: some View {
@@ -336,10 +391,65 @@ struct SettingsView: View {
                     Text(language.name).tag(language.code)
                 }
             }
+            Picker("实时翻译成", selection: $settings.liveTranslationTargetLanguage) {
+                Text("关闭").tag("")
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Text(language.name).tag(language.code)
+                }
+            }
+            if !settings.liveTranslationTargetLanguage.isEmpty {
+                livePackRow
+            }
             Text("「默认翻译成」决定打开会话时默认的目标语言。"
-                + "「我正在学」将决定 M6 学习模式的生词判定方向（学习模式尚未实现）。")
+                + "「实时翻译成」决定**录音时**把每句字幕实时翻成哪门语言（显示在原文下方），"
+                + "选「关闭」就不做实时翻译。"
+                + "实时翻译依赖系统翻译的语言包，所以它默认关闭 ——"
+                + "需要时在这里选一次、把语言包装好即可。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 语言包状态 + 准备入口。
+    ///
+    /// ## 为什么必须在**设置页**准备
+    /// 语言包首次使用必须联网下载，而系统只在 `prepareTranslation()` 时弹下载界面 ——
+    /// 那要求**页面在屏上**。若留到录音时才准备，用户会在录音刚开始的那一刻
+    /// 撞上系统弹窗，而那时他很可能已经锁屏走开了。
+    /// 所以：在这里备好，录音时只是用它。
+    @ViewBuilder
+    private var livePackRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("语言包")
+                    .foregroundStyle(.secondary)
+                Text(livePackStatusText)
+                    .foregroundStyle(isLivePackReady ? .green : .orange)
+                Spacer()
+            }
+            .font(.footnote)
+
+            // 只在「系统支持该语言对、但语言包还没装」时给准备入口。
+            // 对 .unsupported（系统压根不支持这对语言）**不给按钮** ——
+            // 那是个必然失败的假入口，而用户会以为是网络问题、反复重试。
+            if livePackStatus == .supported {
+                Button("准备语言包（会联网下载一次）") {
+                    translation.prepareLanguagePack(
+                        source: settings.defaultSourceLanguage,
+                        target: settings.liveTranslationTargetLanguage
+                    )
+                }
+                .font(.footnote)
+            } else if livePackStatus == .unsupported {
+                Text("这对语言系统不支持（本机翻译只覆盖系统已支持的语言对），换一门目标语言试试。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let message = translation.prepareMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
