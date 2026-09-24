@@ -146,6 +146,7 @@ struct RootView: View {
             row("检索索引", model.searchIndexText)
             row("翻译（M5）", model.translationText)
             row("生词（M6）", model.vocabularyText)
+            row("朗读语音（M6）", model.speechText)
 
             if let message = TranscriptionService.shared.lastMessage {
                 note(message, color: .secondary)
@@ -255,6 +256,8 @@ final class SelfCheckModel: ObservableObject {
     @Published var translationText = "-"
     /// M6：词频表状态与生词本规模
     @Published var vocabularyText = "-"
+    /// M6：系统 TTS 的可用语音规模（语言学习依赖语音包，而"有没有装"只能在设备上看）
+    @Published var speechText = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -300,7 +303,9 @@ final class SelfCheckModel: ObservableObject {
         // 生词判定失效时界面不能表现为"这段材料没有生词"
         WordFrequencyTable.shared.loadIfNeeded()
         vocabularyText = "词频表 \(WordFrequencyTable.shared.availability.text)"
+            + "｜水平档 \(AppSettings.shared.vocabularyLevel.title)"
             + "｜生词本 \(VocabularyStore.shared.summary())"
+        speechText = SpeechReader.availableVoicesSummary()
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty

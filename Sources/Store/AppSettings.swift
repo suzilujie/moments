@@ -99,6 +99,24 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(defaultTargetLanguage, forKey: Keys.targetLang) }
     }
 
+    /// 默认翻译源语言。
+    ///
+    /// **改为持久化，是为了修掉一个真实的重复劳动**：此前源语言是会话详情页的
+    /// `@State`（每次进入都重置为 zh-Hans）。用户把它改成 en、退出去再进来，
+    /// 又变回 zh-Hans —— 而"源语言与目标语言相同"是无效组合，界面还会就地纠正一次。
+    /// 等于每次都要重选。持久化后只选一次。
+    ///
+    /// TTS 读原文也需要这个值：系统合成语音必须显式指定语言，
+    /// 否则会用默认语音把中文按英文读出来（见 SpeechReader）。
+    @Published var defaultSourceLanguage: String {
+        didSet { defaults.set(defaultSourceLanguage, forKey: Keys.sourceLang) }
+    }
+
+    /// 生词判定的水平档（设计文档 8.5：按用户自选水平调整分数线）
+    @Published var vocabularyLevel: VocabularyLevel {
+        didSet { defaults.set(vocabularyLevel.rawValue, forKey: Keys.vocabLevel) }
+    }
+
     /// 是否允许导出（生词本 / 会话文本）
     @Published var exportEnabled: Bool {
         didSet { defaults.set(exportEnabled, forKey: Keys.export) }
@@ -127,6 +145,10 @@ final class AppSettings: ObservableObject {
         // 用 zh-Hans 而不是 zh：系统翻译框架的语言标识符采用 BCP-47 形式，
         // 写 "zh" 时 LanguageAvailability 可能与目录里的条目对不上
         defaultTargetLanguage = defaults.string(forKey: Keys.targetLang) ?? "zh-Hans"
+        // 与 SessionListView 此前的默认值保持一致（zh-Hans），不改变既有行为
+        defaultSourceLanguage = defaults.string(forKey: Keys.sourceLang) ?? "zh-Hans"
+        let rawLevel = defaults.string(forKey: Keys.vocabLevel) ?? ""
+        vocabularyLevel = VocabularyLevel(rawValue: rawLevel) ?? .fallback
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
     }
 
@@ -157,6 +179,8 @@ final class AppSettings: ObservableObject {
         static let realtimeDenoise = "moments.asr.realtimeDenoise"
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"
+        static let sourceLang = "moments.lang.source"
+        static let vocabLevel = "moments.learn.vocabularyLevel"
         static let export = "moments.export.enabled"
     }
 }

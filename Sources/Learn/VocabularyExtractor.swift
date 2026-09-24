@@ -134,6 +134,58 @@ enum VocabularyExtractor {
         text.split(whereSeparator: { "。！？.!?\n".contains($0) }).map(String.init)
     }
 
+    /// 词元及其在原文中的位置（界面做生词高亮用）。
+    struct LocatedToken {
+        /// 原文形式（保留撇号与连字符）
+        let text: String
+        /// 归一化比较键（小写、仅字母）
+        let key: String
+        let range: Range<String.Index>
+    }
+
+    /// 扫描出所有词元及其位置。
+    ///
+    /// **为什么必须带位置**：界面要高亮生词，就得把原句切成"词 / 非词"交替来着色。
+    /// 若只拿词列表重新拼接，会丢掉标点与空格（中文句子会被拼坏）——
+    /// 而学习材料一旦显示得和原文不一样，就失去对照价值了。
+    static func locateTokens(in text: String) -> [LocatedToken] {
+        var result: [LocatedToken] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            guard isLatinWordCharacter(text[index]) else {
+                index = text.index(after: index)
+                continue
+            }
+
+            let start = index
+            var end = index
+            while end < text.endIndex {
+                let character = text[end]
+                if isLatinWordCharacter(character) {
+                    end = text.index(after: end)
+                } else if isInnerConnector(character),
+                          text.index(after: end) < text.endIndex,
+                          isLatinWordCharacter(text[text.index(after: end)]) {
+                    // 词内的连字符/撇号：只有后面还跟着字母才算这个词的一部分。
+                    // 否则 "well-" 末尾那个连字符会被并进词里，导致查表查不到。
+                    end = text.index(after: end)
+                } else {
+                    break
+                }
+            }
+
+            let raw = String(text[start..<end])
+            let key = raw.lowercased().filter { $0.isLetter }
+            if !key.isEmpty {
+                result.append(LocatedToken(text: raw, key: key, range: start..<end))
+            }
+            index = end
+        }
+
+        return result
+    }
+
     /// 拉丁文字切词：按非字母切分，但保留词内的连字符与撇号
     /// （"well-known" 是一个词，"don't" 是一个词）。
     static func latinTokens(in text: String) -> [String] {

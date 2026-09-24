@@ -228,7 +228,10 @@ struct SessionDetailView: View {
     @State private var targetLanguage = ""
     /// 源语言。系统翻译**不支持"源语言自动判定"**，必须显式指定，
     /// 因此界面上必须有这一项 —— 假装它自己知道是错的。
-    @State private var sourceLanguage = "zh-Hans"
+    /// 源语言。**取持久化的设置值并写回** ——
+    /// 此前它是纯局部状态，每次进入都重置为 zh-Hans：用户改成 en、退出再进来又变回去，
+    /// 而"源语言与目标语言相同"是无效组合，界面还会就地纠正一次，等于每次都要重选。
+    @State private var sourceLanguage = AppSettings.shared.defaultSourceLanguage
     @State private var displayMode: TranscriptDisplayMode = .bilingual
     /// 当前语言已翻好的片段（segmentId → 译文）
     @State private var translationMap: [String: String] = [:]
@@ -242,6 +245,10 @@ struct SessionDetailView: View {
     @State private var highlightsVocabulary = true
     /// 跟读比对的目标句（非 nil 时弹出跟读页）
     @State private var practiceTarget: TranscriptRow?
+    /// 学习模式（M6 收尾）
+    @State private var showingStudyMode = false
+    /// 文字稿导出文件的 URL（受「允许导出」开关控制，文字稿载入时生成一次）
+    @State private var transcriptExportURL: URL?
 
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
@@ -282,9 +289,15 @@ struct SessionDetailView: View {
         .onChange(of: diarization.stage) { reloadSpeakerTimeline() }
         .onChange(of: targetLanguage) { reloadTranslationMap() }
         // 源语言变了，所有语言对的可用性都会变，必须重查
-        .onChange(of: sourceLanguage) { Task { await refreshLanguageStatus() } }
+        .onChange(of: sourceLanguage) {
+            // 写回设置：下次进来不用重选
+            AppSettings.shared.defaultSourceLanguage = sourceLanguage
+            Task { await refreshLanguageStatus() }
+        }
         // 关掉生词高亮后不必重算，但重新打开必须重算（之前的结果已被清空）
         .onChange(of: highlightsVocabulary) { reloadVocabulary() }
+        // 水平档变了必须重算：否则"改了设置但标注没变化"会被当成没生效
+        .onChange(of: settings.vocabularyLevel) { reloadVocabulary() }
         .onChange(of: translation.stage) { reloadTranslationMap() }
         // 系统翻译框架要求由**视图**拿到 TranslationSession，
         // 因此把真正的执行挂在这里（见 TranslationService 里对两段式设计的说明）
@@ -304,6 +317,12 @@ struct SessionDetailView: View {
         // 前者把"要读的是哪一句"作为数据带过去，不必再维护一份"当前选中句"的状态
         .sheet(item: $practiceTarget) { row in
             PracticeView(referenceText: row.text)
+        }
+        // 学习模式整屏进入。不做成"原地重组会话详情页"的开关：
+        // 这一页已经承载了文字稿 / 说话人 / 双语 / 播放 / 生词 / 检索入口，
+        // 再塞一套重组逻辑的收益远小于改坏它的风险（详见 StudyModeView 的说明）
+        .fullScreenCover(isPresented: $showingStudyMode) {
+            StudyModeView(manifest: manifest)
         }
     }
 
@@ -681,6 +700,86 @@ struct SessionDetailView: View {
             .texts(for: targetLanguage)
     }
 
+    // MARK: - 学习模式与导出（M6 收尾）
+
+    /// 学习模式入口 + 文字稿导出。
+    private var studyModeRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                showingStudyMode = true
+            } label: {
+                Label("学习模式", systemImage: "text.book.closed")
+            }
+            .font(.footnote)
+
+            Spacer()
+
+            if !settings.exportEnabled {
+                Text("导出已在设置中关闭")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let url = transcriptExportURL {
+                ShareLink(item: url) {
+                    Label("导出文字稿", systemImage: "square.and.arrow.up")
+                        .font(.footnote)
+                }
+            } else {
+                // 还没生成好或生成失败：给出明确状态，不给一个点了没反应的按钮
+                Text("文字稿暂不可导出")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 生成文字稿导出文件（Markdown 纯文本）。
+    ///
+    /// 在**文字稿载入时生成一次**并缓存 URL，而不是在 body 里现算 ——
+    /// 后者会让每次渲染都产生一次磁盘写入。
+    private func generateTranscriptExport() {
+        guard settings.exportEnabled, let transcript, !transcript.isEmpty else {
+            transcriptExportURL = nil
+            return
+        }
+
+        var lines: [String] = []
+        lines.append("# \(manifest.title)")
+        lines.append("")
+        lines.append(
+            "> 录制 \(manifest.startedAt.formatted(date: .numeric, time: .shortened))"
+                + "｜时长 \(manifest.durationText())｜\(transcript.segments.count) 句"
+        )
+        if manifest.hasGap {
+            // 断口必须写进导出文件：导出的文本是"留档"用的，
+            // 拿到它的人有权知道哪一段当时没录上
+            lines.append(">")
+            lines.append(
+                "> 注意：本次录音存在断口 \(manifest.gaps.count) 处，"
+                    + "累计约 \(manifest.totalGapMs / 1000) 秒 —— 断口期间没有音频。"
+            )
+        }
+        lines.append("")
+
+        for segment in transcript.segments {
+            lines.append("**[\(segment.timeText)]** \(segment.text)")
+            if let translated = translationMap[segment.id], !translated.isEmpty {
+                lines.append("")
+                lines.append("> \(translated)")
+            }
+            lines.append("")
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moment-transcript-\(manifest.id).md")
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            transcriptExportURL = url
+        } catch {
+            Log.shared.error(.storage, "文字稿导出写入失败｜\(error.localizedDescription)")
+            transcriptExportURL = nil
+        }
+    }
+
     // MARK: - 生词（M6）
 
     /// 一句里的生词 chips。点一下即收录 —— 收录动作必须**零成本**：
@@ -731,6 +830,7 @@ struct SessionDetailView: View {
             } else if let transcript, !transcript.isEmpty {
                 passPicker
                 transcriptActions
+                studyModeRow
                 playbackControls
                 translationControls
                 if let error = player.lastError {
@@ -1026,6 +1126,7 @@ struct SessionDetailView: View {
     private func reloadTranscript() {
         transcript = TranscriptStore.shared.load(sessionId: manifest.id, pass: selectedPass)
         reloadVocabulary()
+        generateTranscriptExport()
     }
 
     /// 逐句提取生词。
@@ -1041,9 +1142,17 @@ struct SessionDetailView: View {
             return
         }
 
+        // 阈值**跟随设置里的水平档**：不传的话提取器会用写死的 3000，
+        // 那样设置页里改水平档就不会生效 —— 等于那个开关是假的。
+        var options = VocabularyExtractor.Options()
+        options.rankThreshold = settings.vocabularyLevel.rankThreshold
+        // 只支持英语：词频表是英语的。对其它学习语言宁可关闭判定，
+        // 也不能拿英语词表去判中文材料（那会把每个词都标成生词）
+        options.enabled = WordFrequencyTable.shared.isReady && settings.learningLanguage == "en"
+
         var result: [String: [VocabularyCandidate]] = [:]
         for segment in transcriptSegments {
-            let candidates = VocabularyExtractor.extract(from: segment.text)
+            let candidates = VocabularyExtractor.extract(from: segment.text, options: options)
             if !candidates.isEmpty { result[segment.id] = candidates }
         }
         segmentVocabulary = result

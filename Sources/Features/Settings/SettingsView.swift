@@ -20,6 +20,7 @@ struct SettingsView: View {
                 modelSection
                 bundledModelSection
                 languageSection
+                learningSection
                 aboutSection
             }
             .navigationTitle("设置")
@@ -256,6 +257,33 @@ struct SettingsView: View {
                 + "「我正在学」将决定 M6 学习模式的生词判定方向（学习模式尚未实现）。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - 学习
+
+    private var learningSection: some View {
+        Section {
+            Picker("生词水平档", selection: $settings.vocabularyLevel) {
+                ForEach(VocabularyLevel.allCases, id: \.self) { level in
+                    Text(level.title).tag(level)
+                }
+            }
+
+            Text(settings.vocabularyLevel.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Toggle("允许导出", isOn: $settings.exportEnabled)
+            Text("导出的是生词本（Anki 表格 / Markdown）与会话文字稿。"
+                + "关掉它只是不生成导出文件，数据本身不受影响。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("学习")
+        } footer: {
+            Text("水平档决定「哪个词算生词」：选得越低，标出来的生词越多。"
+                + "它只影响标注与生词本，不改变转写与翻译的结果。")
         }
     }
 

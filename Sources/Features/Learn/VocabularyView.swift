@@ -7,6 +7,7 @@ import SwiftUI
 struct VocabularyView: View {
 
     @ObservedObject private var store = VocabularyStore.shared
+    @ObservedObject private var settings = AppSettings.shared
 
     enum SortMode: String, CaseIterable {
         case time
@@ -22,6 +23,15 @@ struct VocabularyView: View {
     @State private var editingNoteFor: VocabularyItem?
     @State private var draftNote = ""
     @State private var frequencyReady = false
+    @State private var exportFiles: [ExportFile] = []
+    @State private var exportError: String?
+
+    /// 导出文件。生成一次后缓存 URL —— 在 body 里现算会导致每次渲染都写一次盘。
+    private struct ExportFile: Identifiable {
+        let title: String
+        let url: URL
+        var id: String { url.absoluteString }
+    }
 
     var body: some View {
         NavigationStack {
@@ -38,15 +48,33 @@ struct VocabularyView: View {
                     vocabularySection
                 }
 
+                exportSection
                 aboutSection
             }
             .navigationTitle("生词本")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if settings.exportEnabled {
+                        Menu {
+                            ForEach(exportFiles) { file in
+                                ShareLink(item: file.url) { Text(file.title) }
+                            }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .disabled(exportFiles.isEmpty)
+                    }
+                }
+            }
             .task {
                 // 词频表是懒加载的（首次查询时才读文件），这里主动触发一次，
                 // 好让"是否可用"能在界面上如实显示，而不是等用户点开某句才发现
                 WordFrequencyTable.shared.loadIfNeeded()
                 frequencyReady = WordFrequencyTable.shared.isReady
+                prepareExport()
             }
+            // 生词数量变化后重新生成导出文件，否则导出的是旧内容
+            .onChange(of: store.totalCount) { prepareExport() }
             .alert("备注", isPresented: noteBinding) {
                 TextField("这个词的备注", text: $draftNote, axis: .vertical)
                 Button("取消", role: .cancel) { editingNoteFor = nil }
@@ -207,10 +235,87 @@ struct VocabularyView: View {
         .padding(.vertical, 2)
     }
 
+    /// 导出区。
+    ///
+    /// 这里也是设置里那个「允许导出」开关的**唯一落点** ——
+    /// 此前它只在 `AppSettings` 里声明，既没有界面也没有实现。
+    /// 一个有开关、有文案、却什么都不做的设置项，是最容易被发现的缺陷。
+    private var exportSection: some View {
+        Section {
+            if !settings.exportEnabled {
+                Text("导出已在「设置 → 学习」中关闭。生词本本身不受影响，只是不生成导出文件。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if let exportError {
+                Text(exportError)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            } else if store.items.isEmpty {
+                Text("还没有生词，暂无可导出内容。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("点右上角分享按钮导出。表格为制表符分隔，用 Anki 的「导入文件」直接选它即可 ——"
+                    + "列顺序是：词形 / 难度 / 备注 / 来源句 / 来源。"
+                    + "注意首行就是数据、不是表头（Anki 按顺序映射字段，给表头会多出一张脏卡片）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("导出")
+        }
+    }
+
+    /// 生成导出文件。
+    private func prepareExport() {
+        exportFiles = []
+        exportError = nil
+        guard settings.exportEnabled else { return }
+
+        let items = store.sortedByTime(includeMastered: true)
+        guard !items.isEmpty else { return }
+
+        // 会话标题映射：导出里写「某次会议的标题」比写一个 sessionId 有用得多
+        var titles: [String: String] = [:]
+        for manifest in RecordingLibrary.shared.listSessions() {
+            titles[manifest.id] = manifest.title
+        }
+
+        var files: [ExportFile] = []
+
+        let csv = VocabularyExporter.ankiCSV(items: items, sessionTitles: titles)
+        if let url = VocabularyExporter.writeToTemporaryFile(
+            contents: csv,
+            fileName: VocabularyExporter.fileName(extension: "csv")
+        ) {
+            files.append(ExportFile(title: "表格（Anki 导入用）", url: url))
+        }
+
+        let markdown = VocabularyExporter.markdown(items: items, sessionTitles: titles)
+        if let url = VocabularyExporter.writeToTemporaryFile(
+            contents: markdown,
+            fileName: VocabularyExporter.fileName(extension: "md")
+        ) {
+            files.append(ExportFile(title: "Markdown（可直接阅读）", url: url))
+        }
+
+        if files.isEmpty {
+            exportError = "导出文件生成失败，详见日志。"
+        }
+        exportFiles = files
+    }
+
     private var aboutSection: some View {
         Section("生词是怎么判定的") {
             Text("判据是词频，不是 AI：一个词只含拉丁字母、长度 ≥ 3、"
                 + "不是句中首字母大写（专有名词启发式）、且排名在常用词之外，就标为生词。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            // 水平档必须在这里说出来：同样的材料在不同档位下会得到不同的生词表，
+            // 不显示当前档位的话，用户会以为自己看到的判定结果是"客观事实"
+            Text("当前水平档：\(settings.vocabularyLevel.title) —— \(settings.vocabularyLevel.detail)。"
+                + "可在「设置 → 学习」里调整；改档会改变这里的判定结果。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
