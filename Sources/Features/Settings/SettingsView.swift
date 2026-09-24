@@ -178,8 +178,27 @@ struct SettingsView: View {
                 modelAction(for: model, state: state)
             }
             if case .downloading(let progress) = state {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
+                // 服务器给了总大小才画确定进度；否则用不确定动画 ——
+                // 后者的意义是"确实在动"，而不是一条永远停在 0% 的死线
+                //（真机上那条 0% 的线看起来与"什么都没发生"没有区别）。
+                if progress.isProportional {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                }
+                Text(progress.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                // 长时间收不到数据必须当场说出来 ——
+                // 这正是用户最需要知道、而原实现完全不显示的状态。
+                if progress.idleSeconds >= 8 {
+                    Text("最近 \(Int(progress.idleSeconds)) 秒没有收到数据；"
+                        + "累计 \(Int(ModelDownloader.stallSeconds)) 秒无数据会自动改试另一个地址。")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
             if case .failed(let message) = state {
                 Text(message)
