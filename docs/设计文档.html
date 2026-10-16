@@ -206,7 +206,7 @@ li{margin:6px 0}
 <article>
 
 <h1>时刻（Moments）· iOS 全时录音转写 App 设计文档</h1>
-<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.5（新增 B.10 App 图标设计；附录 B 记录 M2–M6 实现偏差） ｜ 日期 2026-09-22 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
+<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.6（新增 11.7 / 11.8：结束即保留三件产物、录音页主按钮常驻与字幕吸底；此前 v1.5 新增 B.10 App 图标设计） ｜ 日期 2026-09-22 ｜ 最近更新 2026-10-16 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
 
 <div class="card">
 <b>一句话定义</b>：在 iPhone 上实现一个「点一下就一直在录」的随身语音记录器 —— 锁屏、切 App 都不中断，全程<b>纯离线</b>（无任何网络请求、无服务器、无 API 费用）把周围说话人的声音转成文字、区分「谁在说」、<b>翻成任意目标语言</b>，并把真实录音变成可跟读、可收藏生词的<b>语言学习材料</b>。
@@ -1751,6 +1751,55 @@ protocol TaskScheduling {
 <b>设计提醒</b>：这是本项目唯一一个「用户会长时间停留」的界面，也是唯一一个「单手操作 + 频繁点击」的界面。它的交互成本直接决定这个功能会不会被用起来 —— 一个跳三层的复读按钮等于没有。
 </div>
 
+<h3 id="ui-autokeep">11.7 结束即保留：三件产物（2026-10-16 实施）</h3>
+
+<div class="card">
+<b>用户提出的期望（也是本次实施的判据）</b>：点开始 → 实时识别 → 按所选语言实时翻译 → <b>结束时自动保留录音、识别文字与译文</b>。
+实施前逐链路核对，发现：录音一直是自动落盘的，而<b>实时识别稿与实时译文此前只存在于内存</b> —— 停止时被清空，任何地方都没有留存（<code>transcript-live.json</code> 这个文件名只出现在路径构造函数里，从来没有被写过）。
+因此这不是"页面优化"，而是一个<b>功能缺口（feature gap）</b>，优先级高于界面美化。
+</div>
+
+<table>
+<thead><tr><th>产物</th><th>落盘时机</th><th>文件</th><th>本次改动</th></tr></thead>
+<tbody>
+<tr><td>音频分片</td><td>录音过程中逐片写盘（既有）</td><td><code>{sessionId}/000000.m4a…</code>、<code>manifest.json</code></td><td>无</td></tr>
+<tr><td><b>实时识别稿</b></td><td><b>停止录音时</b>（本次新增）</td><td><code>{sessionId}/transcript-live.json</code>（<code>pass: .live</code>）</td><td>LiveTranscriber 新增落盘</td></tr>
+<tr><td><b>实时译文</b></td><td><b>停止录音时</b>（本次新增）</td><td><code>{sessionId}/translations.json</code>（<code>pass: .live</code> 分区）</td><td>TranslationService 新增落盘</td></tr>
+</tbody>
+</table>
+
+<h4>为什么落在"停止"这一刻，而不是边录边写</h4>
+<ul>
+<li><b>实时稿</b>：一句话说完即定稿（见 11.2），因此停止时写一次就是完整的一稿；边写要整份 JSON 反复重写（8 小时会话数千句 = 数千次读-改-写，而 60 秒一写的价值只在于"被强杀时少丢一点"）</li>
+<li><b>实时译文</b>：复用批量翻译同一条落盘路径（<code>TranslationStore.merge</code>），因此自动获得两项既有保证 —— <code>pass</code> 分区不覆盖终稿译文、<code>editedByUser</code> 不覆盖人工修正</li>
+<li><b>落盘由 <code>RecordingSession.finishStop</code> 统一触发</b>，而不是只由录音页的 <code>onChange</code>：会话也可能因失败 / 磁盘告警自行结束，那条路径下界面不一定有机会做清理（与既有的 <code>LiveTranscriber.stop()</code> 同一条理由）</li>
+<li>已知代价：会话被系统强杀 / 崩溃的路径拿不到这两份内容（需要周期性落盘，已登记 P31）。音频不受影响 —— 它一直是分片实时写盘的</li>
+</ul>
+
+<h4>跨引擎重启的累计（一处必须做对的地方）</h4>
+<p>录音中切换识别语言会<b>重启实时字幕引擎</b>（见 11.2）。引擎重启后显示内容从空开始，若留档也按"当前这次运行"写，<b>切一次语言就等于把之前识别的内容从留档里抹掉</b>。因此引擎侧把"界面显示"与"会话累计"分成两份数据：界面用前者（切了就重新显示），留档用后者（按 <code>id</code> 去重累加）。译文侧同理：换目标语言时先把已翻好的译文落盘、再清内存。</p>
+<p>留档里的 <code>seq</code> 会重排为 0…n-1（否则同场会话会出现两个 <code>#0</code>），而 <code>id</code> <b>保持原值不动</b> —— 它是译文的对应键，改了会让已翻好的句子对不上原文。</p>
+
+<h3 id="ui-record-layout">11.8 录音页布局：主按钮常驻 + 字幕自动吸底（2026-10-16 实施）</h3>
+
+<table>
+<thead><tr><th>问题（改前）</th><th>处理</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>主按钮在 <code>List</code> 的最后一个 Section 里</td><td>移到 <code>safeAreaInset(edge: .bottom)</code> 常驻底部</td><td>实时看字幕时要一路滚到底才够得着停止；录音页最该"一秒可达"的就是这个按钮</td></tr>
+<tr><td>字幕只显示最后 12 句、且不能滚</td><td>改为固定高度的可滚区（<code>ScrollViewReader</code> + <code>LazyVStack</code>）</td><td>要能回看上一句</td></tr>
+<tr><td>新句子出现在可视区之外，要手动追着滚</td><td><b>自动吸底</b>（iOS 18 的 <code>onScrollGeometryChange</code>）</td><td>"实时字幕要手动追着滚"等于看不了</td></tr>
+<tr><td>停止后没有任何"已保存什么"的反馈</td><td>新增「已保存」区：时长 / 分片 / 识别句数 / 译文句数 + 进详情页的入口</td><td>用户按下停止后第一个想问的就是"东西存哪了"</td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<b>自动吸底的判据是"只在你本来就在底部时才滚"</b>：用户主动往上翻看历史时，新句子不该把他拽回底部。因此必须<b>先判位置、再决定要不要滚</b>（距底部 40 点以内算"在底部"，给惯性留余量），而不是每来一句就滚 —— 后者在用户回看时会变成新的烦人点。
+</div>
+
+<blockquote>
+<p><b>刻意没做的一项</b>：运行指标（分片数 / 落盘耗时 / 丢弃帧数）本轮<b>保持原样</b>，未折叠进「诊断详情」。它是"录音是否健康"的唯一依据（见 11.2 第 3 条），折叠属界面层次调整，与本次"结束即保留"这个功能缺口分开做 —— 一次只动一个变量，否则真机验收时无法归因。</p>
+</blockquote>
+
 <h2 id="ci">12. 构建、分发与调试</h2>
 
 <h3 id="ci-flow">12.1 CI 流水线</h3>
@@ -2324,6 +2373,8 @@ protocol TaskScheduling {
 <a class="sub" href="#ui-speaker">11.4 说话人管理</a>
 <a class="sub" href="#ui-language">11.5 语言选择界面</a>
 <a class="sub" href="#ui-study">11.6 学习模式界面</a>
+<a class="sub" href="#ui-autokeep">11.7 结束即保留三件产物</a>
+<a class="sub" href="#ui-record-layout">11.8 录音页布局</a>
 <a href="#ci">12. 构建分发与调试</a>
 <a class="sub" href="#ci-flow">12.1 CI 流水线</a>
 <a class="sub" href="#ci-model">12.2 模型与资源</a>

@@ -867,10 +867,43 @@ final class LiveTranscriber: ObservableObject {
     /// 而不会想到"把它改成中文就好了"。看得见才可能被纠正。
     @Published private(set) var pinnedLanguage = ""
 
+    /// 上一场会话一共出了多少句实时字幕。
+    ///
+    /// **为什么必须单独留一个数字**：`segments` 在 `stop()` 时会被清空，
+    /// 而界面要在停止之后告诉用户"识别了 N 句、已保存" ——
+    /// 直接读 `segments.count` 会在停止那一刻变成 0，看起来像什么都没留下。
+    @Published private(set) var lastSessionSegmentCount = 0
+
+    // MARK: - 落盘所需的会话信息
+    //
+    // 这三项都由调用方（录音页）在 start 时给出：本类不知道自己在给哪一次录音出字幕，
+    // 而落盘必须写进 `Audio/{sessionId}/transcript-live.json`。
+
+    /// 本次实时字幕所属的会话 id
+    private var sessionId: String?
+    /// 实际使用的模型 id 与识别语言（写进实时稿元信息，供事后判断"这份稿是怎么来的"）
+    private var modelId = ""
+    private var usedLanguage = "auto"
+    /// 本场会话中途是否改过识别语言。
+    ///
+    /// **必须显式记下来**：改过之后 `usedLanguage` 只剩"最后一次"的值，
+    /// 而留档里其实是多种语言设置生成的内容混在一起 ——
+    /// 不写这一句，后人（或下一版实现）会以为整份稿都出自同一个语言设置。
+    private var didSwitchLanguage = false
+
+    /// 本场会话**累计**的实时句（跨引擎重启累加）。
+    ///
+    /// 与 `segments` 的区别必须分清，两者缺一不可：
+    ///   · `segments` 是**当前这次引擎运行**的显示内容 —— 切换识别语言会重启引擎、
+    ///     它被清空重来（这是既有行为，界面侧就是"切了就重新开始显示"）；
+    ///   · 本数组是**整场会话**的累计，只用于落盘留档 ——
+    ///     因为切过一次语言就把之前识别的内容从留档里抹掉，是不能接受的。
+    private var accumulated: [TranscriptSegment] = []
+
     private init() {
         let engine = LiveTranscriptionEngine.shared
         engine.onSegments = { [weak self] segments in
-            Task { @MainActor in self?.segments = segments }
+            Task { @MainActor in self?.publish(segments) }
         }
         engine.onStatus = { [weak self] status in
             Task { @MainActor in
@@ -883,8 +916,45 @@ final class LiveTranscriber: ObservableObject {
         }
     }
 
+    /// 更新界面显示，并把这批句子并进"本场会话累计"（落盘用）。
+    ///
+    /// 累计方式为**按 id 去重后追加**，而不是整体替换：引擎每次给的是
+    /// "当前这次运行的全部句子"，切语言重启后它从空开始 ——
+    /// 整体替换会把切换之前的内容从留档里抹掉。
+    private func publish(_ display: [TranscriptSegment]) {
+        segments = display
+
+        var known = Set(accumulated.map { $0.id })
+        for segment in display where !known.contains(segment.id) {
+            accumulated.append(segment)
+            known.insert(segment.id)
+        }
+    }
+
     /// 开始实时字幕。需要调用方（录音页）先确认模型已下载。
-    func start(modelURL: URL, language: String, denoiseEnabled: Bool = false) {
+    /// - Parameters:
+    ///   - sessionId: 本次录音的会话 id。停止时据此把实时稿落盘。
+    ///   - modelId: 实际使用的实时模型 id（写进实时稿的元信息）。
+    func start(
+        sessionId: String,
+        modelId: String,
+        modelURL: URL,
+        language: String,
+        denoiseEnabled: Bool = false
+    ) {
+        // 换会话就清空累计；**同一会话内因切语言而重启时要保留** ——
+        // 这正是"切识别语言不该丢掉已识别内容"的落点。
+        if self.sessionId != sessionId {
+            accumulated = []
+            didSwitchLanguage = false
+        } else {
+            // 同一场会话再次 start ⇒ 用户在录音中改了识别语言（见 restartLiveTranscription）
+            didSwitchLanguage = true
+        }
+        self.sessionId = sessionId
+        self.modelId = modelId
+        self.usedLanguage = language
+
         segments = []
         // 上一次会话锁定的语言不该带到这一次（换个语言/重开录音都要重判）
         pinnedLanguage = ""
@@ -897,9 +967,58 @@ final class LiveTranscriber: ObservableObject {
     }
 
     func stop() {
+        // **先落盘再清空**，这两步的顺序不能反：清完 `segments` 与累计之后，
+        // 整场会话的识别结果就没有任何地方留存了（这正是本次要修的缺口）。
+        persistLiveTranscript()
+        lastSessionSegmentCount = accumulated.count
         LiveTranscriptionEngine.shared.stop()
         segments = []
         isActive = false
+    }
+
+    /// 把本场会话的实时稿落盘（`transcript-live.json`，`pass: .live`）。
+    ///
+    /// ## 为什么必须有这一步（这是一个功能缺口，不是增强）
+    /// 在此之前实时字幕只活在内存里：`stop()` 一清 `segments`，整场录音的识别结果
+    /// 就没有任何地方留存。用户停止录音后回到记录页，看到的是
+    /// 「还没有文字稿，请先点『转写为文字』」—— 想拿回自己刚说过的话，
+    /// 必须先花一次终稿模型的算力。而用户的预期是"结束时会自动保留识别内容"。
+    ///
+    /// 落 `pass: .live`，与终稿（`.final`）**分文件**存，两者互不覆盖：
+    /// 事后在详情页仍可点「转写为文字」得到更准的一稿，两稿可对照
+    ///（会话详情页本来就会"有终稿优先用终稿、否则用实时稿"）。
+    ///
+    /// - Note: 会话被系统强杀 / 崩溃的路径拿不到这里的内容（那需要周期性落盘，
+    ///   属后续增强）。音频不受影响 —— 它一直是分片实时写盘的。
+    private func persistLiveTranscript() {
+        guard let sessionId, !accumulated.isEmpty else { return }
+
+        // 顺序号重排：切识别语言会让引擎重启并从 0 重新编号，
+        // 不重排的话留档里会出现两个 `#0`（同一场会话却有两段同号）。
+        // `id` **不动** —— 它是译文的对应键（见 TranslationService 的 liveTranslations），
+        // 改了会让已翻好的句子对不上原文。
+        let segments = accumulated.enumerated().map { index, segment -> TranscriptSegment in
+            var copy = segment
+            copy.seq = index
+            return copy
+        }
+
+        let document = TranscriptDocument(
+            sessionId: sessionId,
+            pass: .live,
+            modelId: modelId,
+            language: usedLanguage,
+            createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
+            isComplete: true,
+            segments: segments,
+            note: "录音过程中实时生成（停止录音时自动保存）；最准确的文本仍以终稿为准"
+                + (didSwitchLanguage ? "。中途改过识别语言，本稿由多种语言设置生成，语言字段为最后一次的值" : "")
+        )
+        TranscriptStore.shared.saveAsync(document)
+        Log.shared.info(
+            .storage,
+            "实时稿已落盘｜\(sessionId)｜\(segments.count) 句｜语言 \(usedLanguage)｜模型 \(modelId)"
+        )
     }
 
     func setPaused(_ paused: Bool) {

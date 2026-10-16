@@ -269,7 +269,16 @@ final class RecordingSession: ObservableObject {
         // 顺带收掉实时字幕：会话结束后引擎再持有滑窗与模型上下文纯属浪费。
         // 放在这里而不是只交给界面，是因为会话也可能因失败/磁盘告警而自行结束，
         // 那种路径下界面不一定有机会做清理。
+        //
+        // 这一句同时承担**把实时稿落盘**（见 LiveTranscriber.persistLiveTranscript）——
+        // 用户的预期是"结束时会自动保留识别内容"。
         LiveTranscriber.shared.stop()
+
+        // 实时翻译同样在这里收尾，理由与上一条完全相同：它顺带承担
+        // **把实时译文落盘**（见 TranslationService.persistLiveTranslations）。
+        // 若只由录音页的 onChange 触发，会话自行结束的那条路径就会把当场的双语对照丢掉。
+        // 界面侧那次调用在这条路径下会退化成空操作（configuration 已为 nil），不会重复落盘。
+        TranslationService.shared.stopLive()
 
         setState(.idle, reason: "会话已结束")
 

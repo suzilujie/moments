@@ -1688,3 +1688,58 @@
 ■ CI 与 ipa
   改完即停止，**未提交、未推送**（按仓库约定：提交与构建都须先经用户确认）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-09-24] 一次真实的 CI 失败与修复（009c477）+ 一条关于「零 lint」的教训
+--------------------------------------------------------------------------------
+
+■ 失败
+  165e0d7 → **failure**，2 条失败级注解：
+    Sources/Store/AppSettings.swift:225
+    variable self.liveTranslationTargetLanguage used before being initialized
+    Process completed with exit code 65
+
+  第一版把默认值写成链式表达式，同时踩了两个因素：
+    1) 在 init 里读了**带 didSet 的属性** learningLanguage
+    2) 又叠了多行 ?? 长链
+  编译器在 definite-initialization 检查里认为 self 被提前使用。
+
+■ 修法
+  拆成局部变量、只赋值一次（形状与本文件里**早已存在且编译通过**的写法一致，
+  即 captureSource / defaultSourceLanguage 那两处）：
+    let storedLearningLanguage = defaults.string(forKey: Keys.learningLang) ?? "en"
+    learningLanguage = storedLearningLanguage
+    ...
+    let liveTargetFallback = TranslationLanguageCatalog.identifier(forWhisperCode: storedLearningLanguage) ?? ""
+    liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget) ?? liveTargetFallback
+
+■ ★ 一条必须记下的教训：「零 lint」不等于「能编译」
+  我此前多轮都用「零 lint」作为收尾依据，而**本机 linter 对这个硬错误一个字都没报**。
+  结论：Swift 的**语言语义**错误（DI 检查、类型推断、属性包装器规则）本机查不出来，
+  **只有 CI 才是真检查**。
+  以后表述要准确 —— 说「零 lint」而不是「没问题」；能不能编译**一律以 CI 为准**。
+  这一条也解释了为什么每次都要等 CI 通过才让用户装包：这次它真的起作用了（若当时
+  把「提交了」当成「能装」，用户会装到一个编不过的包）。
+
+■ 另一件小事：提交信息第四次被 shell 解析坏
+  症状：git commit 根本没执行，push 报 Everything up-to-date，
+  错误却是 `fatal: /: '/' is outside repository`（PowerShell 把参数切碎了）。
+  前几次分别栽在双引号与单引号上。
+  这次改用**写文件 + git commit -F**，彻底不受 quoting 影响 ——
+  此后提交信息一律走文件，不再内联。
+
+■ 结果
+  009c477 → **success**｜失败级注解 0｜run 35985411828
+  ipa https://github.com/suzilujie/moments/actions/runs/35985411828/artifacts/10801558065
+  Moments-unsigned-ipa 41.37 MB
+
+■ 装包后要看的三件（前两件是**未知项的真机答案**）
+  1) **开始录音 → 说第一句 → 字幕下方出现什么**
+     · 出现「缺少「英语」语言包…」→ 状态提示生效（按提示去准备，或等系统弹窗）
+     · 直接出现译文 → 语言包已就绪，链路通了
+     · 什么都没有 → 大概率还在"等识别语言锁定"（把识别语言设成中文即可立刻开始）
+  2) **录音中系统翻译能否工作**（P25）—— 这是整条链路的前提
+  3) **锁屏 / 后台还能不能翻** —— 若不能，实时翻译就只是**前台**功能，要如实写进文档
+
+※ 注意：上一版（165e0d7）是**编不过的**，从未交付；"默认开启 + 状态提示"实际在 009c477。
+================================================================================

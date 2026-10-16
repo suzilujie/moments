@@ -24,6 +24,9 @@ struct RecordView: View {
     /// 实时翻译（逐句翻）。与实时字幕是两件事：字幕是本机识别，翻译走系统翻译框架。
     @ObservedObject private var translation = TranslationService.shared
     @State private var showingSettings = false
+    /// 字幕区是否"贴在底部"。用户主动往上翻看历史时不自动滚 ——
+    /// 否则新句子会把他正在看的内容拽走（那会变成新的烦人点）。
+    @State private var isSubtitlePinnedToBottom = true
     /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
     @State private var liveHint: String?
     /// 实时翻译语言包的可用性。
@@ -35,15 +38,32 @@ struct RecordView: View {
         NavigationStack {
             List {
                 statusSection
+                // 刚停下的那一次录音留下了什么（时长 / 识别 / 译文 + 进详情的入口）。
+                // 放在最靠上：按下停止之后用户第一个想问的就是"东西存哪了"。
+                savedSection
                 // 正在自动准备模型时也要显示字幕区：用户需要知道"还在准备什么"，
                 // 而不是打开 App 看到一片空白、以为功能坏了
                 if session.snapshot.state.isActive || isPreparingModel { subtitleSection }
                 metricsSection
                 if session.snapshot.totalGapMs > 0 { gapSection }
                 if let error = session.snapshot.lastError { errorSection(error) }
-                controlSection
             }
+            // 主按钮常驻底部，不随内容滚动（理由见 controlBar）
+            .safeAreaInset(edge: .bottom) { controlBar }
             .navigationTitle("时刻")
+            .navigationDestination(for: String.self) { sessionId in
+                // 会话详情按需加载清单（放在这里而不是算进 body：
+                // 在 body 里读磁盘会让每一次刷新都解一遍 manifest.json）
+                if let manifest = RecordingLibrary.shared.loadManifest(sessionId: sessionId) {
+                    SessionDetailView(manifest: manifest)
+                } else {
+                    ContentUnavailableView(
+                        "找不到这次录音",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("会话 \(sessionId) 的清单不存在，可能已被清理。")
+                    )
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -188,20 +208,66 @@ struct RecordView: View {
         }
     }
 
+    // MARK: - 已保存（停止之后）
+
+    /// 刚结束的那一次录音留下了什么。
+    ///
+    /// ## 为什么必须专门说一句"已保存"
+    /// 原先停止录音后页面直接回到空闲态，**没有任何"录到了什么、存在哪"的反馈**，
+    /// 用户只知道在录、不知道录完在哪看（音频、识别文字、译文三件产物一件都没提）。
+    /// 这里把三件产物一次说清，并给出直达详情页的入口。
+    ///
+    /// 只在"有过一次录音"时出现：`sessionId` 在开始录音时写入、直到下次开始才重置，
+    /// 因此它可以当"上一次录音"的标识用。
+    @ViewBuilder
+    private var savedSection: some View {
+        if let sessionId = session.snapshot.sessionId,
+           !session.snapshot.state.isActive,
+           session.snapshot.recordedMs > 0 {
+            Section {
+                row("录音时长", session.snapshot.recordedTimeText)
+                row("音频分片", "\(session.snapshot.segmentCount) 个")
+                row("实时识别", live.lastSessionSegmentCount > 0
+                    ? "\(live.lastSessionSegmentCount) 句 · 已保存"
+                    : "无（未开启或未出字）")
+                row("实时译文", translation.lastSessionTranslatedCount > 0
+                    ? "\(translation.lastSessionTranslatedCount) 句 · 已保存"
+                    : "无（未开启或未出译文）")
+
+                NavigationLink(value: sessionId) {
+                    Label("查看这次记录", systemImage: "list.bullet.rectangle")
+                }
+            } header: {
+                Text("已保存")
+            } footer: {
+                Text("音频分片、实时识别稿、实时译文都已写进这次会话的目录，可在上面进入查看。"
+                    + "想要更准确的文字，可在详情页点「转写为文字」，用终稿模型对同一段音频重跑一次"
+                    + "（两稿分文件保存、互不覆盖）。")
+                    .font(.footnote)
+            }
+        }
+    }
+
     // MARK: - 控制
 
-    private var controlSection: some View {
-        Section {
+    /// 主操作按钮：**常驻屏幕底部**，不随内容滚动。
+    ///
+    /// 原先它在 `List` 的最后一个 Section 里 —— 实时看字幕时要一路滚到底才够得着停止，
+    /// 单手持机时这是个真实的障碍：录音页最该"一秒可达"的就是这个按钮。
+    /// 用 `safeAreaInset(edge: .bottom)` 而不是覆盖层：列表会自动为它让出底部空间，
+    /// 最后一行不会被挡住。
+    private var controlBar: some View {
+        VStack(spacing: 6) {
             if session.snapshot.state.isActive {
                 Button(role: .destructive) {
                     session.stop()
                 } label: {
-                    HStack {
-                        Spacer()
-                        Text("停止录音").bold()
-                        Spacer()
-                    }
+                    Label("停止录音", systemImage: "stop.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(session.snapshot.state == .stopping || session.snapshot.state == .finalizing)
             } else {
                 Button {
@@ -212,16 +278,24 @@ struct RecordView: View {
                         startLiveTranscriptionIfPossible()
                     }
                 } label: {
-                    HStack {
-                        Spacer()
-                        Text("开始录音").bold()
-                        Spacer()
-                    }
+                    Label("开始录音", systemImage: "mic.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             }
-        } footer: {
+
             Text("当前模式：\(settings.captureSource.title)｜音频会话：\(settings.sessionMode.title)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        // 让按钮浮在内容之上、而不是和内容混在一起：`.bar` 材质随背景自动取色，
+        // 深色模式下也不会出现"按钮背后透出文字"
+        .background(.bar)
     }
 
     // MARK: - 实时字幕
@@ -252,36 +326,7 @@ struct RecordView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(live.segments.suffix(12)) { segment in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(segment.timeText)
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                            if segment.isProvisional {
-                                Text("识别中")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Color.orange.opacity(0.18), in: Capsule())
-                                    .foregroundStyle(.orange)
-                            }
-                            Spacer()
-                        }
-                        Text(segment.text)
-                            .font(.body)
-                            .foregroundStyle(segment.isProvisional ? .secondary : .primary)
-                        // 实时译文贴在原文下方。**没有译文就不显示任何占位** ——
-                        // 占位符会让"还没翻到"看起来像"翻译坏了"。
-                        if let translated = translation.liveTranslations[segment.id] {
-                            Text(translated)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
+                liveSubtitleList
 
                 // 实时翻译的状态**贴在源语下方**（用户明确要求的位置）。
                 // 理由：用户正在看的就是字幕，状态必须出现在同一个视野里 ——
@@ -306,6 +351,83 @@ struct RecordView: View {
                 + "「实时翻译」开启后，每句的译文会显示在原文下方（双行）。")
                 .font(.footnote)
         }
+    }
+
+    /// 实时字幕列表：**自带滚动、自动吸底**。
+    ///
+    /// 两个问题一起解决：
+    ///   · 原先只显示最后 12 句、且不能滚 —— 想回看上一句看不到；
+    ///   · 新句子出现在可视区之外，用户必须手动追着滚 ——
+    ///     而"实时字幕要手动追着滚"等于看不了。
+    ///
+    /// 吸底策略是"**只在你本来就在底部时才自动滚**"：用户主动往上翻看历史时，
+    /// 新句子不该把他拽回底部。判据用 `onScrollGeometryChange`（iOS 18 起可用），
+    /// 阈值给 40 点余量 —— 手指离开后还有惯性在滚，判得太紧会在临界处抖。
+    private var liveSubtitleList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(live.segments) { segment in
+                        liveSegmentRow(segment)
+                            .id(segment.id)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
+            }
+            .frame(height: subtitleAreaHeight)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.contentOffset.y
+                    - geometry.containerSize.height < 40
+            } action: { _, atBottom in
+                isSubtitlePinnedToBottom = atBottom
+            }
+            .onChange(of: live.segments.count) {
+                guard isSubtitlePinnedToBottom, let last = live.segments.last else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    /// 字幕区的固定高度。
+    /// 固定而不是自适应：自适应会让新句子不断把整页顶动（按钮跟着跑），
+    /// 而"底部按钮固定 + 字幕区自己滚"才是录音页该有的形态。
+    private var subtitleAreaHeight: CGFloat { 280 }
+
+    /// 一句实时字幕（原文 + 紧贴其下的译文）。
+    private func liveSegmentRow(_ segment: TranscriptSegment) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(segment.timeText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                if segment.isProvisional {
+                    Text("识别中")
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.18), in: Capsule())
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+            }
+            Text(segment.text)
+                .font(.body)
+                .foregroundStyle(segment.isProvisional ? .secondary : .primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // 实时译文贴在原文下方。**没有译文就不显示任何占位** ——
+            // 占位符会让"还没翻到"看起来像"翻译坏了"。
+            if let translated = translation.liveTranslations[segment.id] {
+                Text(translated)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     /// 启动实时字幕（用户已开启且模型已下载时）。
@@ -335,8 +457,17 @@ struct RecordView: View {
             }
             return
         }
+        // 会话已建立（上面已确认 state.isActive），因此 sessionId 必然存在；
+        // 取不到就说明状态机与本页不同步 —— 此时宁可不启动字幕，
+        // 也不要启动一个"识别结果不知道存到哪一次录音"的字幕。
+        guard let sessionId = session.snapshot.sessionId else {
+            liveHint = "会话 id 尚未就绪，实时字幕未启动。"
+            return
+        }
         liveHint = nil
         live.start(
+            sessionId: sessionId,
+            modelId: settings.realtimeModelId,
             modelURL: modelURL,
             language: settings.transcriptionLanguage,
             denoiseEnabled: settings.realtimeDenoiseEnabled
@@ -390,9 +521,14 @@ struct RecordView: View {
     private func restartLiveTranscription(language: String) {
         settings.transcriptionLanguage = language
         guard live.isActive,
+              let sessionId = session.snapshot.sessionId,
               let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId)
         else { return }
+        // 传同一个 sessionId：引擎据此知道"这是同一场录音的重启"，
+        // 于是**不清空留档累计** —— 切识别语言不该把已识别的内容从落盘里抹掉。
         live.start(
+            sessionId: sessionId,
+            modelId: settings.realtimeModelId,
             modelURL: modelURL,
             language: language,
             denoiseEnabled: settings.realtimeDenoiseEnabled
@@ -549,12 +685,18 @@ struct RecordView: View {
               let source = TranslationLanguageCatalog.identifier(forWhisperCode: sourceCode)
         else { return }
 
+        // 实时译文要落盘（见 TranslationService.persistLiveTranslations），
+        // 而它需要知道"这是哪一次录音的译文"
+        guard let sessionId = session.snapshot.sessionId else { return }
+
         // 语言对变了必须重启：不重启就会把新语言的句子按旧语言的假设去翻。
         //（自动判定锁定后源语言会变化，那是正常路径，不是异常。）
+        // 注意 stopLive() 会**先把已经翻好的译文落盘**再清内存，
+        // 因此换目标语言不会把上一门语言的译文丢掉。
         if let running = translation.livePair, running.source != source || running.target != target {
             translation.stopLive()
         }
-        translation.startLive(source: source, target: target)
+        translation.startLive(source: source, target: target, sessionId: sessionId)
         // 追上已经出过的句子
         translation.enqueueLive(live.segments)
     }

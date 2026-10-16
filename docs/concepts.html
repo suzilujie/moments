@@ -689,6 +689,12 @@ li{margin:6px 0}
 <td>M5 实现；<span class="ok">已落地</span>（schema v1 → v2 迁移）。满足"能在原文与译文中搜索"，比建两套 FTS 简单得多。命中行<b>必须标出"某语言译文"</b>，否则用户会以为自己录音里真的说了那句译文</td>
 <td>中文全文检索、来源标注</td>
 </tr>
+<tr>
+<td><b>实时稿落盘</b><br>Live Pass Persistence</td>
+<td>录音过程中生成的实时识别稿，在<b>停止录音时</b>写进会话目录（<code>transcript-live.json</code>，<code>pass: .live</code>）</td>
+<td>2026-10-16 补齐；<span class="ok">已落地</span>。<b>此前这是一个功能缺口</b>：实时稿只存在于内存，停止时被清空，用户停止后回详情页看到的是"还没有文字稿，请先点「转写为文字」"——想拿回刚说过的话必须先花一次终稿模型的算力，而用户的预期是"结束时会自动保留"</td>
+<td>两遍转写（实时稿 / 终稿）、显示与留档分离</td>
+</tr>
 </tbody>
 </table>
 
@@ -774,6 +780,12 @@ li{margin:6px 0}
 <td>用户手改过的译文，永不被后续自动翻译覆盖</td>
 <td>M5 实现；<span class="ok">已落地</span>。重跑一次翻译就把用户手改的成果抹掉，是最令人恼火的一类 bug。合并时遇到"已人工校正"的条目直接跳过并计数上报</td>
 <td>按需翻译与缓存、译文存储</td>
+</tr>
+<tr>
+<td><b>实时译文落盘</b><br>Live Translation Persistence</td>
+<td>录音中逐句翻出的译文，在<b>停止录音时</b>写进 <code>translations.json</code> 的 <code>pass: .live</code> 分区</td>
+<td>2026-10-16 补齐；<span class="ok">已落地</span>。原先实时译文只在内存里、停止即清空 —— 用户当场看到的双语对照不留任何痕迹，事后要看必须再跑一次批量翻译（要语言包、要时间）。落盘走批量翻译同一条路径（<code>TranslationStore.merge</code>），因此自动继承 <code>pass</code> 分区与"人工校正优先"两项保证</td>
+<td>实时翻译、人工校正优先、可重建索引 vs 用户资产</td>
 </tr>
 </tbody>
 </table>
@@ -1061,6 +1073,12 @@ li{margin:6px 0}
 <td>2026-09-24 选定并<span class="ok">已接入</span>（资源目录 + <code>project.yml</code> 的 <code>ASSETCATALOG_COMPILER_APPICON_NAME</code> + <code>Info.plist</code> 的 <code>CFBundleIconName</code>）。Apple 官方路径，只放一张 1024、其余尺寸由 Xcode 生成；<b>配套的三条打包后断言已落地</b>（<code>Assets.car</code> 存在 / <code>CFBundleIconName</code> 正确 / car 内确有 <code>AppIcon</code> 条目）—— 因为 <code>Assets.car</code> 里缺图标时构建不报错，只会静默地没有图标</td>
 <td>资源随包内置 + 打包后断言</td>
 </tr>
+<tr>
+<td><b>显示与留档分离</b><br>Display vs Archive Accumulation</td>
+<td>引擎侧维护两份数据：<b>界面显示</b>的那一份随引擎重启而重来；<b>会话累计</b>的那一份按 <code>id</code> 去重累加、只服务落盘留档</td>
+<td>2026-10-16 由"切识别语言会丢内容"这一处暴露后确立；<span class="ok">已落地</span>。录音中切换识别语言会重启实时字幕引擎，若留档也按"当前这次运行"写，<b>切一次语言就等于把之前识别的内容从留档里抹掉</b>。译文侧同理：换目标语言时先把已翻好的译文落盘、再清内存。<b>可复用的判据：凡是"界面状态在会话中途会被重置"的地方，都要问一句"留档用的是哪一份"</b></td>
+<td>实时稿落盘、实时译文落盘、语言锁定与可改</td>
+</tr>
 </tbody>
 </table>
 
@@ -1144,6 +1162,7 @@ li{margin:6px 0}
 <tr><td>P28</td><td><b>M2–M6 全部功能的真机验收</b>（逐项判据见 <code>真机验收清单.html</code>）</td><td class="no">待验收（CI 只证明"能编译、能链接、资源已打包"，不证明"功能可用"）</td><td>M2–M6</td></tr>
 <tr><td>P29</td><td><b>App 图标是否接入工程</b>：<b>已接入</b> —— 手稿抠图正立版（纯色填充）已拷入 <code>Resources/Assets.xcassets/AppIcon.appiconset/</code>，另含 <code>project.yml</code> 的 <code>ASSETCATALOG_COMPILER_APPICON_NAME</code>、<code>Info.plist</code> 的 <code>CFBundleIconName</code>、CI 三条图标断言，共四处改动</td><td class="ok">已完成（2026-09-24）</td><td>——</td></tr>
 <tr><td>P30</td><td><b>换一张更高分辨率的手稿照片</b>：当前素材 810 × 1080、标记本体约 261 × 206 像素，放到图标尺寸需放大 2.2 倍，边缘锐度已到素材上限</td><td class="warn">待提供（提高边缘锐度的唯一有效途径）</td><td>下次迭代图标时</td></tr>
+<tr><td>P31</td><td><b>实时稿与实时译文在"会话被系统强杀"这一路径上会丢失</b>：两者都是停止录音时一次性落盘（理由见 P32/B 段记录：避免 8 小时会话里数千次"读-改-写"整份 JSON）。音频不受影响 —— 它一直是分片实时写盘的</td><td class="warn">待评估（需周期性落盘，属增强；先看真机是否真的遇到）</td><td>下次迭代录音页时</td></tr>
 </tbody>
 </table>
 

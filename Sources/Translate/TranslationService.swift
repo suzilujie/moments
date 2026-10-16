@@ -177,9 +177,16 @@ final class TranslationService: ObservableObject {
     @Published private(set) var liveStage: TranslationStage = .idle
     @Published private(set) var liveMessage: String?
     @Published private(set) var liveTranslatedCount = 0
+    /// 上一场会话一共翻了多少句。
+    /// 与 `LiveTranscriber.lastSessionSegmentCount` 同理：`liveTranslatedCount`
+    /// 在停止时会被清零，界面要在停止之后显示"已保存 N 句译文"就得单独留一份。
+    @Published private(set) var lastSessionTranslatedCount = 0
 
     private var liveSource: String?
     private var liveTarget: String?
+    /// 本次实时翻译所属的会话 id（停止时把实时译文落盘用）。
+    /// 与 `LiveTranscriber` 同理：翻译层不知道自己在给哪一次录音翻，必须由界面传入。
+    private var liveSessionId: String?
     /// 待翻片段。
     ///
     /// **必须按 id 去重**：界面每出一句都会把整份字幕列表交上来（这样界面侧不用
@@ -198,7 +205,8 @@ final class TranslationService: ObservableObject {
     @Published private(set) var prepareMessage: String?
 
     /// 开始一场实时翻译会话（录音开始时调）。
-    func startLive(source: String, target: String) {
+    /// - Parameter sessionId: 本次录音的会话 id。停止时据此把实时译文落盘。
+    func startLive(source: String, target: String, sessionId: String) {
         guard !source.isEmpty, !target.isEmpty else { return }
         guard source != target else {
             liveMessage = "源语言与目标语言相同（\(TranslationLanguageCatalog.name(for: target))），实时翻译未启动。"
@@ -209,6 +217,7 @@ final class TranslationService: ObservableObject {
 
         liveSource = source
         liveTarget = target
+        liveSessionId = sessionId
         resetLiveBuffers()
         liveStage = .preparing
         liveConfiguration = TranslationSession.Configuration(
@@ -220,13 +229,54 @@ final class TranslationService: ObservableObject {
 
     func stopLive() {
         guard liveConfiguration != nil else { return }
+        // **先落盘、后清内存**，顺序不能反：`resetLiveBuffers()` 会把
+        // `liveTranslations` 清空，而用户当场看到的双语对照就只剩这一份。
+        persistLiveTranslations()
         let count = liveTranslatedCount
+        // 留一份给界面：`liveTranslatedCount` 紧接着会被清零，
+        // 而界面要在停止之后显示"已保存 N 句译文"
+        lastSessionTranslatedCount = count
         liveConfiguration = nil
         liveSource = nil
         liveTarget = nil
+        liveSessionId = nil
         resetLiveBuffers()
         liveStage = .idle
         Log.shared.info(.translate, "实时翻译已停止｜本次共翻 \(count) 句")
+    }
+
+    /// 把本场实时翻译得到的译文落盘（`translations.json` 里的 `pass: .live` 一份）。
+    ///
+    /// ## 为什么必须有这一步（与实时稿同一类缺口）
+    /// 在此之前实时译文只在内存里：`stopLive()` 一清 `liveTranslations`，
+    /// 用户刚才看到的双语对照就没有任何地方留存 —— 事后想在详情页看到译文，
+    /// 必须再跑一次批量翻译（要么语言包就绪、要么等它下载，还要花时间）。
+    /// 用户的预期是"结束时会自动保留翻译的内容"。
+    ///
+    /// 走 `TranslationStore.merge`（与批量翻译同一条路径、同一个文件），因此自动获得
+    /// 两项既有保证：`pass` 分区（不覆盖终稿译文）、`editedByUser`（不覆盖人工修正）。
+    ///
+    /// - Note: `merge` 内部在调用线程上读一次 JSON（几百 KB 量级），
+    ///   随后异步写盘 —— 这在"停止录音"这一刻是可接受的（本来就在做落盘收尾）。
+    private func persistLiveTranslations() {
+        guard let sessionId = liveSessionId,
+              let target = liveTarget,
+              !liveTranslations.isEmpty
+        else { return }
+
+        let result = TranslationStore.shared.merge(
+            sessionId: sessionId,
+            targetLang: target,
+            pass: .live,
+            translations: liveTranslations,
+            engine: Self.engineIdentifier,
+            engineVersion: Self.engineVersion
+        )
+        Log.shared.info(
+            .storage,
+            "实时译文已落盘｜\(sessionId)｜\(target)｜新增或更新 \(result.updated) 条"
+                + (result.keptManual > 0 ? "｜保留人工修正 \(result.keptManual) 条" : "")
+        )
     }
 
     /// 清掉一次会话内的临时状态。**开始与停止都要调**。
