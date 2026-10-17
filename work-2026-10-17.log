@@ -1073,3 +1073,26 @@
   · 仅 .github/workflows/ios-build.yml；不动 Swift/C++ 代码、project.yml。
   · 顺带缩短编译时间（不再编 tools）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十次] 修复：llama.cpp 编译失败（app/ 的 build-info.h 缺失）
+--------------------------------------------------------------------------------
+
+■ 现象
+  加 LLAMA_BUILD_TOOLS=OFF 后 CI run #64（39023175679）仍失败。注解显示 app/ 目录
+  （llama-cli 主程序）仍在编译，app/llama.cpp:1 报 fatal error: 'build-info.h' file not found
+  —— 该头是构建时生成的 git 版本信息，关掉部分组件后生成步骤断裂。
+
+■ 根因
+  只关了 examples/tests/server/tools，但 app/（llama-cli 可执行文件）不受这些开关控制，
+  仍被连带编译；其依赖的 build-info.h（构建时生成）未产出，导致编译失败。
+
+■ 修复（3 处，仅 CI 脚本）
+  1) build 命令改为 --target llama：只编静态库 target（自动带 ggml 依赖），
+     彻底绕开 app/tools/examples 等可执行文件。
+  2) configure 追加 -DLLAMA_BUILD_APP=OFF（尽量跳过 app 目录，若该 option 不存在则无害）。
+  3) LLAMA_BUMP 2 → 3（清缓存重编）。
+
+■ 影响范围
+  · 仅 .github/workflows/ios-build.yml；不动 Swift/C++ 代码、project.yml。
+================================================================================

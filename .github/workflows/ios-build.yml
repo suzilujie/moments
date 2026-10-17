@@ -37,7 +37,7 @@ jobs:
       # sherpa-onnx 依赖的 onnxruntime iOS 静态库版本（官方脚本里的默认值）
       ORT_VERSION: 1.28.2
       # llama.cpp 薄封装版本号（POC 手动 bump）：改 LlamaBridge 的 C API 时 +1 使缓存失效
-      LLAMA_BUMP: "2"
+      LLAMA_BUMP: "3"
 
     steps:
       - name: Checkout
@@ -252,13 +252,14 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_APP=OFF \
             -DGGML_METAL=OFF \
             -DGGML_NATIVE=OFF \
             > "$LOGS/01-cmake-configure.log" 2>&1 || emit_fail "01-cmake-configure"
           echo "配置完成"
 
           echo "=== 2/3 编译 ==="
-          cmake --build build/os64 -j 4 > "$LOGS/02-cmake-build.log" 2>&1 || emit_fail "02-cmake-build"
+          cmake --build build/os64 --target llama -j 4 > "$LOGS/02-cmake-build.log" 2>&1 || emit_fail "02-cmake-build"
           echo "编译完成"
 
           echo "=== 3/3 合并静态库 ==="
