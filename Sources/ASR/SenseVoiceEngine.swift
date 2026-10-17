@@ -145,6 +145,17 @@ final class SenseVoiceEngine {
             .map { String(cString: $0) }
             .flatMap { $0.isEmpty ? nil : $0 }
 
+        // 归一化：sherpa-onnx 的 lang 字段在部分版本/模型下直接给出**token 文本**
+        //（如 "<|yue|>"），而不是干净的 "yue"。不清洗会让语言锁定拿到无效值，
+        // 后续翻译源语言映射失败、翻译静默不启动
+        //（真机日志证据：实时字幕检测语言｜<|yue|>，见 work-2026-10-17.log）。
+        if let raw = detectedLanguage {
+            detectedLanguage = raw
+                .replacingOccurrences(of: "<|", with: "")
+                .replacingOccurrences(of: "|>", with: "")
+                .trimmingCharacters(in: .whitespaces)
+        }
+
         // 事件解析（双保险）：
         // 1) 优先读 `event` 字段 —— 它是 sherpa-onnx 直接给出的「识别事件标签」，
         //    SenseVoice 把 <|MUSIC|> / <|BGM|> 等事件 token 解析到这个字段；

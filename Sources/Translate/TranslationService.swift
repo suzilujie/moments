@@ -44,6 +44,10 @@ enum TranslationLanguageCatalog {
     static func identifier(forWhisperCode code: String) -> String? {
         switch code {
         case "zh": return "zh-Hans"
+        // 粤语（yue）不在系统翻译目录里，但书面语接近中文：按中文简体处理。
+        // 否则 SenseVoice 把普通话判成粤语时，auto 模式的翻译会直接不启动
+        //（真机日志：实时字幕检测语言｜<|yue|>）。
+        case "yue": return "zh-Hans"
         case "zh-Hans", "zh-Hant": return code
         default: return all.contains { $0.code == code } ? code : nil
         }
