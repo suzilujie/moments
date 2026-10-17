@@ -803,7 +803,14 @@ struct RecordView: View {
             livePackStatus = nil
             return
         }
-        livePackStatus = await translation.availability(from: source, to: target)
+        let status = await translation.availability(from: source, to: target)
+        livePackStatus = status
+        // 查一次就记一次：它是"翻译起不来"最常见的原因（缺包 / 语言对不支持），
+        // 而这条查询原来完全不留痕，只能靠界面上那行小字去猜。
+        Log.shared.info(
+            .translate,
+            "实时翻译语言包状态｜\(source) → \(target)｜\(TranslationService.describe(status))"
+        )
     }
 
     /// 启动 / 停止实时翻译。
@@ -816,21 +823,44 @@ struct RecordView: View {
     private func syncLiveTranslation() {
         let target = settings.liveTranslationTargetLanguage
         guard !target.isEmpty else {
+            // 目标语言为空 = 用户关掉了实时翻译，属正常配置，不记录
             translation.stopLive()
             return
         }
-        guard session.snapshot.state.isActive else { return }
+        guard session.snapshot.state.isActive else {
+            Log.shared.info(
+                .translate,
+                "实时翻译暂不启动｜会话未在进行中（状态 \(session.snapshot.state.rawValue)）"
+            )
+            return
+        }
 
         let sourceCode = live.pinnedLanguage.isEmpty
             ? settings.transcriptionLanguage
             : live.pinnedLanguage
-        guard sourceCode != "auto",
-              let source = TranslationLanguageCatalog.identifier(forWhisperCode: sourceCode)
-        else { return }
+        // 每个 guard 都必须留痕：真机上"翻译不出来"最常见的原因就卡在这里
+        //（源语言还是 auto，或映射不到可翻译标识符），而原来全是静默 return。
+        guard sourceCode != "auto" else {
+            Log.shared.info(
+                .translate,
+                "实时翻译暂不启动｜等待识别语言锁定（当前 auto）｜目标 \(target)"
+            )
+            return
+        }
+        guard let source = TranslationLanguageCatalog.identifier(forWhisperCode: sourceCode) else {
+            Log.shared.warn(
+                .translate,
+                "实时翻译未启动｜识别语言「\(sourceCode)」无法映射到系统翻译标识符｜目标 \(target)"
+            )
+            return
+        }
 
         // 实时译文要落盘（见 TranslationService.persistLiveTranslations），
         // 而它需要知道"这是哪一次录音的译文"
-        guard let sessionId = session.snapshot.sessionId else { return }
+        guard let sessionId = session.snapshot.sessionId else {
+            Log.shared.warn(.translate, "实时翻译未启动｜会话 id 尚未就绪｜\(source) → \(target)")
+            return
+        }
 
         // 语言对变了必须重启：不重启就会把新语言的句子按旧语言的假设去翻。
         //（自动判定锁定后源语言会变化，那是正常路径，不是异常。）

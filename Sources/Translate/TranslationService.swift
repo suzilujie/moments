@@ -197,6 +197,8 @@ final class TranslationService: ObservableObject {
     /// 自己维护"哪些是新的"），不去重就会把同一句反复提交 —— 既慢又费。
     private var livePending: [TranscriptSegment] = []
     private var liveSubmittedIds: Set<String> = []
+    /// 本场累计入队句数（诊断用：区分"没有句子进来"与"句子进来了但没翻"）。
+    private var liveEnqueuedCount = 0
 
     /// 语言包准备（设置页用）：只 prepare、不翻任何内容。
     ///
@@ -211,13 +213,32 @@ final class TranslationService: ObservableObject {
     /// 开始一场实时翻译会话（录音开始时调）。
     /// - Parameter sessionId: 本次录音的会话 id。停止时据此把实时译文落盘。
     func startLive(source: String, target: String, sessionId: String) {
-        guard !source.isEmpty, !target.isEmpty else { return }
+        // 三个 guard 原来全是静默 return —— 真机表现是"实时翻译又出不来了"，
+        // 而日志里连一条线索都没有。凡是"没启动"的分支都必须留下原因。
+        guard !source.isEmpty, !target.isEmpty else {
+            Log.shared.warn(
+                .translate,
+                "实时翻译未启动｜语言为空｜source='\(source)' target='\(target)'｜会话 \(sessionId)"
+            )
+            return
+        }
         guard source != target else {
             liveMessage = "源语言与目标语言相同（\(TranslationLanguageCatalog.name(for: target))），实时翻译未启动。"
+            Log.shared.warn(
+                .translate,
+                "实时翻译未启动｜源语言与目标语言相同（\(source)）｜会话 \(sessionId)"
+            )
             return
         }
         // 已在跑就不重启：重启会把已翻好的句子清空，屏幕上会出现"译文突然消失"
-        guard liveConfiguration == nil else { return }
+        guard liveConfiguration == nil else {
+            Log.shared.info(
+                .translate,
+                "实时翻译已在运行，本次不重启｜现有 \(liveSource ?? "-") → \(liveTarget ?? "-")"
+                    + "｜请求 \(source) → \(target)"
+            )
+            return
+        }
 
         liveSource = source
         liveTarget = target
@@ -232,11 +253,18 @@ final class TranslationService: ObservableObject {
     }
 
     func stopLive() {
-        guard liveConfiguration != nil else { return }
+        guard liveConfiguration != nil else {
+            Log.shared.info(.translate, "停止实时翻译被忽略｜当前没有运行中的配置")
+            return
+        }
+        // 停在 .preparing 意味着「任务触发了、但语言包一直没准备完」——
+        // 真机上这表现为"翻译就是不出现"，必须单独标出来，否则只能看到"共翻 0 句"。
+        let stuckPreparing = liveStage == .preparing
         // **先落盘、后清内存**，顺序不能反：`resetLiveBuffers()` 会把
         // `liveTranslations` 清空，而用户当场看到的双语对照就只剩这一份。
         persistLiveTranslations()
         let count = liveTranslatedCount
+        let enqueued = liveEnqueuedCount
         // 留一份给界面：`liveTranslatedCount` 紧接着会被清零，
         // 而界面要在停止之后显示"已保存 N 句译文"
         lastSessionTranslatedCount = count
@@ -246,7 +274,17 @@ final class TranslationService: ObservableObject {
         liveSessionId = nil
         resetLiveBuffers()
         liveStage = .idle
-        Log.shared.info(.translate, "实时翻译已停止｜本次共翻 \(count) 句")
+        Log.shared.info(
+            .translate,
+            "实时翻译已停止｜本次共翻 \(count) 句｜累计入队 \(enqueued) 句"
+        )
+        if stuckPreparing {
+            Log.shared.warn(
+                .translate,
+                "实时翻译始终停在「准备语言包」阶段｜一场下来一句未翻｜"
+                    + "原因通常是语言包未安装且系统未完成下载，或 translationTask 未真正开始"
+            )
+        }
     }
 
     /// 把本场实时翻译得到的译文落盘（`translations.json` 里的 `pass: .live` 一份）。
@@ -301,12 +339,17 @@ final class TranslationService: ObservableObject {
         liveSubmittedIds.removeAll()
         liveTranslations.removeAll()
         liveTranslatedCount = 0
+        liveEnqueuedCount = 0
         liveMessage = nil
     }
 
     /// 把界面上的实时字幕交给翻译。传整份列表即可，内部按 id 去重。
     func enqueueLive(_ segments: [TranscriptSegment]) {
-        guard liveConfiguration != nil else { return }
+        guard liveConfiguration != nil else {
+            // 常见且正常：识别语言尚未锁定（自动判定）时翻译还没配置，
+            // 这段时间产生的句子由 syncLiveTranslation 之后的"追上已出过的句子"补交。
+            return
+        }
         for segment in segments {
             // 音乐标注段不是真实语音内容，不送翻译（id 前缀见 TranscriptSegment.musicMarkerIDPrefix）。
             guard !segment.isMusicMarker else { continue }
@@ -322,6 +365,7 @@ final class TranslationService: ObservableObject {
             guard liveTranslations[segment.id] == nil else { continue }
             liveSubmittedIds.insert(segment.id)
             livePending.append(segment)
+            liveEnqueuedCount += 1
         }
     }
 
@@ -345,8 +389,21 @@ final class TranslationService: ObservableObject {
     /// **它会一直跑到 configuration 被置为 nil**（即 `stopLive` 或离开录音页）——
     /// 因为实时翻译不是"一次任务"，而是"一场会话"：句子是一句一句来的。
     func runLive(with session: TranslationSession) async {
-        guard let source = liveSource, let target = liveTarget else { return }
+        // 这条日志是"translationTask 到底有没有被触发"的唯一证据。
+        // 真机出现过：日志里有「准备启动」却始终没有「已启动」，也没有任何失败记录 ——
+        // 说明要么修饰器没触发、要么 prepareTranslation 永久挂起，两者处置完全不同。
+        Log.shared.info(.translate, "实时翻译任务已触发（translationTask 回调进入）")
 
+        guard let source = liveSource, let target = liveTarget else {
+            Log.shared.warn(
+                .translate,
+                "实时翻译任务退出｜语言对为空｜source=\(liveSource ?? "nil") target=\(liveTarget ?? "nil")"
+            )
+            return
+        }
+
+        let prepareStartedAt = Date()
+        Log.shared.info(.translate, "实时翻译开始准备语言包｜\(source) → \(target)")
         do {
             try await session.prepareTranslation()
         } catch {
@@ -355,13 +412,27 @@ final class TranslationService: ObservableObject {
                 + "可在右上角齿轮（设置）→「语言」区先准备语言包。"
             Log.shared.warn(
                 .translate,
-                "实时翻译准备语言包失败｜\(source) → \(target)｜\(error.localizedDescription)"
+                "实时翻译准备语言包失败｜\(source) → \(target)"
+                    + "｜耗时 \(Int(Date().timeIntervalSince(prepareStartedAt) * 1000))ms"
+                    + "｜\(error.diagnosticText)"
             )
+            return
+        }
+        let prepareMs = Int(Date().timeIntervalSince(prepareStartedAt) * 1000)
+
+        // 准备期间可能已经被 stopLive 置空（用户秒停、或切换语言）。
+        // 这种情况必须记下来：否则"明明已启动却没有译文"看起来像翻译坏了。
+        guard liveConfiguration != nil else {
+            Log.shared.warn(
+                .translate,
+                "实时翻译已取消｜语言包准备完成时配置已被清空｜\(source) → \(target)｜准备耗时 \(prepareMs)ms"
+            )
+            liveStage = .idle
             return
         }
 
         liveStage = .translating
-        Log.shared.info(.translate, "实时翻译已启动｜\(source) → \(target)")
+        Log.shared.info(.translate, "实时翻译已启动｜\(source) → \(target)｜语言包准备耗时 \(prepareMs)ms")
 
         // 用轮询而不是等回调：字幕是**别人推给我们的**（录音页每出一句就入队一次），
         // 而 session 只在 configuration 变化时拿到一次，没有"又来了一句"的通知可用。
@@ -375,6 +446,14 @@ final class TranslationService: ObservableObject {
             await translateLiveBatch(batch, with: session)
         }
 
+        // 退出原因必须记下来：取消与"被置空"是两种完全不同的情况，
+        // 前者多半是离开页面，后者是 stopLive（正常停止）。
+        let exitReason = Task.isCancelled ? "任务被取消" : "configuration 被置空"
+        Log.shared.info(
+            .translate,
+            "实时翻译循环结束｜原因 \(exitReason)｜累计入队 \(liveEnqueuedCount) 句"
+                + "｜累计翻 \(liveTranslatedCount) 句"
+        )
         liveStage = .idle
     }
 
@@ -385,6 +464,7 @@ final class TranslationService: ObservableObject {
             // 优先用纠正后的文本翻译（形态 A）；纠正关闭时 `correctedText` 为 nil，回退原文。
             TranslationSession.Request(sourceText: $0.correctedText ?? $0.text, clientIdentifier: $0.id)
         }
+        let startedAt = Date()
         do {
             let responses = try await session.translations(from: requests)
             var map: [String: String] = [:]
@@ -392,13 +472,28 @@ final class TranslationService: ObservableObject {
                 guard let id = response.clientIdentifier else { continue }
                 map[id] = response.targetText
             }
-            guard !map.isEmpty else { return }
+            guard !map.isEmpty else {
+                // 系统返回了但一条都对不上 id：这是"翻译了却没显示"的直接证据。
+                Log.shared.warn(
+                    .translate,
+                    "实时翻译一批返回空结果｜提交 \(batch.count) 句｜返回 \(responses.count) 条"
+                        + "｜耗时 \(Int(Date().timeIntervalSince(startedAt) * 1000))ms"
+                )
+                return
+            }
             liveTranslations.merge(map) { _, new in new }
             liveTranslatedCount += map.count
+            Log.shared.info(
+                .translate,
+                "实时翻译一批完成｜\(map.count) 句｜耗时 \(Int(Date().timeIntervalSince(startedAt) * 1000))ms"
+                    + "｜累计 \(liveTranslatedCount) 句"
+            )
         } catch {
             Log.shared.warn(
                 .translate,
-                "实时翻译一批失败｜\(batch.count) 句｜\(error.localizedDescription)"
+                "实时翻译一批失败｜\(batch.count) 句"
+                    + "｜耗时 \(Int(Date().timeIntervalSince(startedAt) * 1000))ms"
+                    + "｜\(error.diagnosticText)"
             )
         }
     }

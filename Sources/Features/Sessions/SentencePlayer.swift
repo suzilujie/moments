@@ -48,6 +48,12 @@ final class SentencePlayer: ObservableObject {
 
         guard let manifest = RecordingLibrary.shared.loadManifest(sessionId: sessionId) else {
             lastError = "找不到这次录音的记录"
+            // 三条失败分支原来只设 lastError，日志里一条都没有 ——
+            // 事后无法区分"清单丢了""清单里没有这一段""文件被保留期清理了"。
+            Log.shared.warn(
+                .storage,
+                "点句回听失败｜会话清单缺失｜会话 \(sessionId)｜目标 \(startMs)~\(endMs)ms"
+            )
             return
         }
         // 定位分片：优先找**包含起点**的那一片；找不到就退到起点之前最近的一片
@@ -55,6 +61,11 @@ final class SentencePlayer: ObservableObject {
             ?? manifest.segments.last { $0.startMs <= startMs }
         guard let entry else {
             lastError = "该句所在的分片已不存在"
+            Log.shared.warn(
+                .storage,
+                "点句回听失败｜清单内没有覆盖该时刻的分片｜会话 \(sessionId)"
+                    + "｜目标 \(startMs)~\(endMs)ms｜清单共 \(manifest.segments.count) 片"
+            )
             return
         }
 
@@ -62,6 +73,11 @@ final class SentencePlayer: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else {
             // 明确说出原因：音频会按保留期被清理，这不是 bug 而是预期行为
             lastError = "音频文件已被清理（文字与记录仍在）"
+            Log.shared.warn(
+                .storage,
+                "点句回听失败｜音频文件不存在（可能已过保留期）｜会话 \(sessionId)"
+                    + "｜分片 \(entry.fileName)｜目标 \(startMs)~\(endMs)ms"
+            )
             return
         }
 
