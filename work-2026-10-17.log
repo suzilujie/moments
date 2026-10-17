@@ -1050,3 +1050,26 @@
   · commit/push 触发 CI（等用户确认）；CI 通过后真机：下载模型 → 跑纠错 → 读延迟/内存，
     对照判据（≤1s / ≤800MB）决定 CPU-only 是否可接受、是否升级 Metal。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十九次] 修复：llama.cpp 编译失败（tools 工具 iOS 链接失败）
+--------------------------------------------------------------------------------
+
+■ 现象
+  commit 0c889b1 推送后 CI run #63（39022441571）在「Build llama.cpp static lib」失败。
+  注解显示编译到 83% 时正在链接 tools/ 下的命令行可执行文件（llama-gguf-split），
+  iOS 平台链接这类可执行文件失败。静态库（llama / ggml / llama-common）实际已编译成功。
+
+■ 根因
+  llama.cpp 的 tools/（llama-bench / imatrix / gguf-split / quantize 等命令行工具）
+  独立于 examples/tests/server，需单独 -DLLAMA_BUILD_TOOLS=OFF 关闭；首版漏了这个开关，
+  导致 tools 也被编译并在 iOS 上链接失败。
+
+■ 修复（2 处，仅 CI 脚本）
+  1) cmake 命令追加 -DLLAMA_BUILD_TOOLS=OFF（跳过 tools，只编静态库）。
+  2) LLAMA_BUMP 1 → 2（清缓存，干净重编）。
+
+■ 影响范围
+  · 仅 .github/workflows/ios-build.yml；不动 Swift/C++ 代码、project.yml。
+  · 顺带缩短编译时间（不再编 tools）。
+================================================================================
