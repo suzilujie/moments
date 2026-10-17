@@ -55,6 +55,24 @@ final class CapturePipeline {
 
     /// 最近一次消费耗时（供界面判断落盘是否吃紧）。
     private(set) var lastTickCostMs = 0
+
+    // MARK: - 失败统计与心跳（只在 queue 上访问）
+
+    /// 落盘失败累计次数（整场会话）。
+    private(set) var appendFailureTotal = 0
+    /// 距离上一条失败明细之后又失败了几次（用于"近 N 秒失败 M 次"）。
+    private var appendFailureSinceLog = 0
+    /// 上一条失败明细的时间。失败可能每 100ms 复现一次，不节流会刷爆日志。
+    private var lastFailureLogAt = Date.distantPast
+    /// 失败明细的最小间隔。
+    private let failureLogInterval: TimeInterval = 10
+    /// 是否处于"失败中"状态，用于在恢复时补一条恢复日志。
+    private var isFailing = false
+
+    /// 上一条心跳日志的时间。
+    private var lastHeartbeatAt = Date()
+    /// 心跳间隔：没有日志 ≠ 一切正常，所以要定期自证"消费线程还活着"。
+    private let heartbeatInterval: TimeInterval = 60
     /// 累计转出的 16 kHz 帧数。
     private(set) var totalConvertedFrames = 0
     /// 累计收尾的分片数。
@@ -130,15 +148,41 @@ final class CapturePipeline {
             if self.needsConversion, let converter = self.converter {
                 let tail = converter.flush()
                 if !tail.isEmpty, let writer = self.writer {
-                    if let segment = try? writer.append(tail) {
-                        finished.append(contentsOf: segment)
+                    // 这里原来是 try?：收尾阶段的失败会被彻底吞掉，
+                    // 结果就是"最后一段音频没了，日志里一条都没有"。必须显式记录。
+                    do {
+                        finished.append(contentsOf: try writer.append(tail))
+                    } catch {
+                        Log.shared.error(
+                            .storage,
+                            "收尾残留写入失败｜\(tail.count) 帧｜\(error.diagnosticText)"
+                        )
                     }
                 }
             }
 
             // 4) 收尾最后一片（不足 60 秒的那片，最容易漏掉）
-            if let writer = self.writer, let last = try? writer.close() {
-                finished.append(last)
+            if let writer = self.writer {
+                do {
+                    if let last = try writer.close() {
+                        finished.append(last)
+                    }
+                } catch {
+                    Log.shared.error(
+                        .storage,
+                        "最后一片收尾失败｜分片序号 \(writer.nextSeq)｜\(error.diagnosticText)"
+                    )
+                }
+
+                let stats = "失败统计 创建 \(writer.failedOpenCount)"
+                    + " / 写入 \(writer.failedWriteCount)"
+                    + " / 收尾 \(writer.failedFinalizeCount)"
+                    + "｜断口 \(writer.skippedMs)ms"
+                if self.appendFailureTotal > 0 || writer.failedFinalizeCount > 0 {
+                    Log.shared.warn(.capture, "落盘失败汇总｜\(stats)｜管线侧累计 \(self.appendFailureTotal) 次")
+                } else {
+                    Log.shared.info(.capture, "落盘失败汇总｜\(stats)")
+                }
             }
             self.writer = nil
 
@@ -147,6 +191,7 @@ final class CapturePipeline {
                 "消费管线已停止｜累计转出 \(self.totalConvertedFrames) 帧"
                     + "｜分片 \(self.totalSegments) 个｜本次收尾 \(finished.count) 个"
                     + "｜环形缓冲丢弃 \(self.ringBuffer.droppedSamples) 帧"
+                    + "｜落盘失败 \(self.appendFailureTotal) 次"
             )
             completion(finished)
         }
@@ -168,8 +213,17 @@ final class CapturePipeline {
     func finalizeSegmentNow() -> [SegmentWriter.FinishedSegment] {
         queue.sync {
             guard let writer else { return [] }
-            guard let segment = try? writer.finalizeCurrent() else { return [] }
-            return [segment]
+            // 原来是 try?：这里失败会静默返回空数组，外部完全看不出"该收尾却没收到"。
+            do {
+                guard let segment = try writer.finalizeCurrent() else { return [] }
+                return [segment]
+            } catch {
+                Log.shared.error(
+                    .storage,
+                    "立即收尾失败｜分片序号 \(writer.nextSeq)｜\(error.diagnosticText)"
+                )
+                return []
+            }
         }
     }
 
@@ -182,8 +236,17 @@ final class CapturePipeline {
         queue.sync {
             var finished: [SegmentWriter.FinishedSegment] = []
             drainOnce(into: &finished)
-            if let writer, let segment = try? writer.finalizeCurrent() {
-                finished.append(segment)
+            if let writer {
+                do {
+                    if let segment = try writer.finalizeCurrent() {
+                        finished.append(segment)
+                    }
+                } catch {
+                    Log.shared.error(
+                        .storage,
+                        "中断收尾失败｜分片序号 \(writer.nextSeq)｜\(error.diagnosticText)"
+                    )
+                }
             }
             return finished
         }
@@ -225,6 +288,7 @@ final class CapturePipeline {
             if !finished.isEmpty {
                 self.onSegments?(finished)
             }
+            self.logHeartbeatIfNeeded()
         }
         timer = source
         source.resume()
@@ -271,13 +335,11 @@ final class CapturePipeline {
             finished.append(contentsOf: segments)
             totalConvertedFrames += samples.count
             totalSegments += segments.count
+            noteAppendSuccess()
         } catch {
             // 落盘失败属严重问题：音频在环形缓冲里，不写就会溢出丢弃。
             // 这里只记录并继续，避免因一次失败把整条链路拖垮。
-            Log.shared.error(
-                .storage,
-                "分片写入失败｜\(error.localizedDescription)｜环形缓冲剩余 \(ringBuffer.availableToRead) 帧"
-            )
+            noteAppendFailure(error, samples: samples.count)
         }
 
         lastTickCostMs = Int(Date().timeIntervalSince(started) * 1000)
@@ -289,6 +351,73 @@ final class CapturePipeline {
                 "单次消费耗时 \(lastTickCostMs)ms 已超过消费间隔 \(tickIntervalMs)ms，落盘可能跟不上采集"
             )
         }
+    }
+
+    // MARK: - 失败与心跳日志
+
+    /// 记录一次落盘失败。
+    ///
+    /// ## 为什么要节流
+    /// 定时器每 100ms 消费一次。若失败是持续性的（例如分片目录被删、磁盘满），
+    /// 每秒会刷 10 条同构错误 —— 一小时的日志就有 36000 条，
+    /// **真正有用的其他错误会被彻底淹没**，而且落盘写日志本身也在消耗空间。
+    /// 因此：明细最多每 10 秒一条，其余只累计计数；计数会随下一条明细与心跳一起输出。
+    private func noteAppendFailure(_ error: Error, samples: Int) {
+        appendFailureTotal += 1
+        appendFailureSinceLog += 1
+        isFailing = true
+
+        let now = Date()
+        guard now.timeIntervalSince(lastFailureLogAt) >= failureLogInterval else { return }
+        lastFailureLogAt = now
+
+        Log.shared.error(
+            .storage,
+            "分片写入失败｜\(error.diagnosticText)"
+                + "｜本批 \(samples) 帧"
+                + "｜近 \(Int(failureLogInterval)) 秒失败 \(appendFailureSinceLog) 次"
+                + "｜累计失败 \(appendFailureTotal) 次"
+                + "｜环形缓冲剩余 \(ringBuffer.availableToRead) 帧"
+                + "｜丢弃 \(ringBuffer.droppedSamples) 帧"
+                + "｜已转出 \(totalConvertedFrames) 帧｜分片 \(totalSegments) 个"
+        )
+        appendFailureSinceLog = 0
+    }
+
+    /// 记录一次成功（只在"刚从失败中恢复"时输出一条，避免每 100ms 一行正常日志）。
+    private func noteAppendSuccess() {
+        guard isFailing else { return }
+        isFailing = false
+        Log.shared.info(
+            .storage,
+            "分片写入恢复｜期间累计失败 \(appendFailureTotal) 次"
+                + "｜已转出 \(totalConvertedFrames) 帧｜分片 \(totalSegments) 个"
+                + "｜环形缓冲剩余 \(ringBuffer.availableToRead) 帧"
+        )
+        appendFailureSinceLog = 0
+    }
+
+    /// 每分钟一条落盘心跳。
+    ///
+    /// 为什么必须有：本项目最需要诊断的故障是"锁屏后停止录音"——那种情况下
+    /// **没有任何错误日志**，只有"日志不再增长"这一条线索。有了心跳，就能一眼看出
+    /// 消费线程是停在哪个时刻、当时环形缓冲里积压了多少帧。
+    private func logHeartbeatIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastHeartbeatAt) >= heartbeatInterval else { return }
+        lastHeartbeatAt = now
+
+        let segmentFrames = writer?.currentSegmentFrames ?? 0
+        let nextSeq = writer?.nextSeq ?? 0
+        Log.shared.info(
+            .storage,
+            "落盘心跳｜分片 \(totalSegments) 个（当前 seq=\(nextSeq)，已写 \(segmentFrames) 帧）"
+                + "｜已转出 \(totalConvertedFrames) 帧"
+                + "｜环形缓冲待消费 \(ringBuffer.availableToRead) 帧"
+                + "｜累计丢弃 \(ringBuffer.droppedSamples) 帧"
+                + "｜本次消费 \(lastTickCostMs)ms"
+                + "｜失败累计 \(appendFailureTotal) 次"
+        )
     }
 
     // MARK: - 电平

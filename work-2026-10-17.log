@@ -1343,3 +1343,96 @@
 ■ 验证
   · read_lints：AppSettings.swift 0 诊断。编译以 CI 为准。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十八次] CI 构建成功（run #68）
+--------------------------------------------------------------------------------
+
+■ 结果
+  commit 6625653 推送后 ios-build run #68（39038021705）构建 success，
+  job "Build unsigned ipa" 耗时约 2 分 7 秒；sherpa-onnx / llama.cpp 静态库缓存命中
+  （对应两步 skipped）。生成 unsigned ipa：Moments-unsigned-ipa，13,038,390 字节
+  ≈ 12.4 MB，保留至 2026-11-16。
+
+■ ipa 下载（需登录 GitHub）
+  https://github.com/suzilujie/moments/actions/runs/39038021705/artifacts/12102629002
+
+■ 本次提交包含
+  · 设置升底部 Tab、自检降弹层（6 文件）
+  · LLM 纠错默认关闭（AppSettings 默认值 true→false）
+
+■ 待真机
+  · 底部 Tab：录音 / 设置
+  · 右上角听诊器图标 → 自检弹层（可关闭）
+  · 默认不再走 LLM 纠错，实时字幕 + 实时翻译正常；如需纠错，设置页手动开启 + 下载模型
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十九次] 落盘可观测性改造：「分片写入失败」定位能力补全
+--------------------------------------------------------------------------------
+
+■ 起因
+  真机日志里出现 `[ERROR] [storage] 分片写入失败｜…`，但这条文案只有一个捕获点，
+  且只输出 `error.localizedDescription` —— AVFoundation 的错误在这一字段上
+  通常只有一句「操作无法完成」，domain / OSStatus / 底层错误全部丢失，
+  事后无法区分「磁盘满 / 权限不足 / 编码器状态异常 / 目录被删」。用户拍板：
+  按方案改 + 多写点日志。
+
+■ 一、诊断工具（Sources/Support/Log.swift）
+  新增 `extension Error { var diagnosticText: String }`：
+  · 输出 `domain#code`；若 domain 为 NSOSStatusErrorDomain，再用四字符码展开
+    （如 -50 → 'param'），便于对照 AudioToolbox 常量；
+  · 追加 localizedDescription（非空时）；
+  · 递归展开一层 NSUnderlyingErrorKey，NSCocoaError 的真实原因常藏在这里。
+  辅助函数 `fourCharCode(_:)` 为文件私有，非 ASCII 时回退十进制。
+
+■ 二、SegmentWriter（Sources/Capture/SegmentWriter.swift）
+  1) 新增失败计数：failedOpenCount / failedWriteCount / failedFinalizeCount，
+     以及只读进度 `currentSegmentFrames` / `nextSeq`（供心跳与停止汇总）。
+  2) `openNewSegment()`：AVAudioFile 创建包 do/catch，失败打「分片创建失败」
+     （含 seq、采样率、码率、临时文件名、次数、诊断文本）后原样抛出；
+     成功打「分片开始」（seq + 起始帧 + 临时文件名），约 1 行/分钟。
+  3) `writeChunk()`：`file.write` 包 do/catch，失败打「单批写入失败」
+     （含本批帧数、该分片内已写帧数、次数、诊断文本）；缓冲不可用分支同样计数。
+  4) `finalizeCurrent()` 关键修复 —— 原名顺序是「先 `file = nil` + `tempURL = nil`，
+     再 moveItem」，moveItem 抛错时写入器已丢失临时文件路径，`seq` 未递增，
+     下一轮 `openNewSegment()` 用同名 `%06d.partial.m4a` 覆盖 → 该片音频静默丢失。
+     改为：
+       · `tempURL` 保留到 moveItem 成功后才置空；
+       · moveItem 失败时先把临时文件抢救为 `%06d.recovered.m4a`（保住数据），
+         失败则保留原临时文件不再触碰；
+       · 无论抢救是否成功都收敛状态（时间轴前移、framesInCurrentSegment 归零、
+         seq 递增），返回 nil 而不抛出 —— 抛出会让本 tick 剩余样本一并丢失；
+       · 打「分片收尾失败」ERROR（帧数、KB、次数、抢救结果、诊断文本）。
+  5) 空分片分支补「空分片丢弃」WARN（原来完全静默）。
+  6) `close()` 汇总补「断口 skippedMs + 三类失败计数」，有失败时降为 WARN。
+
+■ 三、CapturePipeline（Sources/Capture/CapturePipeline.swift）
+  1) 失败节流：失败可能每 100ms 复现一次，原来每 tick 一行会把日志刷爆
+     （1 小时可达 36000 行）并淹没其他错误。现在明细最多每 10 秒一条，
+     行内带「近 10s 失败 N 次 / 累计失败 N 次 / 缓冲剩余 / 已丢弃 / 已转出 / 分片数」。
+  2) 恢复日志：从失败态恢复时补一条 INFO「分片写入恢复」，带期间累计失败次数。
+  3) 落盘心跳：每 60 秒一条 INFO「落盘心跳」，含分片数、当前 seq 与已写帧、
+     已转出帧、缓冲待消费帧、累计丢弃帧、本次消费耗时、失败累计。
+     目的：锁屏停录这类「完全没有错误日志」的故障，靠日志停止增长来定位，
+     有心跳才能看出停在哪一刻、当时积压多少。
+  4) 吞错修复（原来全是 `try?`，失败零日志）：
+     · `stop()` 收尾残留 append → 「收尾残留写入失败」ERROR；
+     · `stop()` 最后一片 close → 「最后一片收尾失败」ERROR；
+     · `finalizeSegmentNow()` → 「立即收尾失败」ERROR；
+     · `beginOutage()` → 「中断收尾失败」ERROR。
+  5) `stop()` 增「落盘失败汇总」（三类计数 + 断口 + 管线侧累计），
+     停止日志补「落盘失败 N 次」。
+
+■ 四、影响范围与风险
+  · 生产逻辑唯一行为变化：finalizeCurrent 的 moveItem 失败不再抛出，而是抢救后返回 nil。
+    调用方（drainOnce / close / beginOutage / finalizeSegmentNow）均兼容 nil 返回值。
+  · 日志量增加：约 +2 行/分钟（分片开始、收尾各 1 行，心跳 1 行）；失败时由
+    「10 行/秒」压到「1 行/10 秒」，总日志量相比故障期是大幅下降。
+  · 未改动：时间轴口径、分片命名、编码参数、清单模型、UI。
+
+■ 五、验证
+  · read_lints：3 文件 0 诊断。
+  · 编译以 CI 为准（本机无 Xcode）。尚未在真机复现该错误，故根因未确认 ——
+    需下一次真机日志用新字段（domain#code / OSStatus / 底层）判定。
+================================================================================

@@ -154,3 +154,42 @@ extension LogCategory {
     func warn(_ message: String) { Log.shared.warn(self, message) }
     func error(_ message: String) { Log.shared.error(self, message) }
 }
+
+/// 把 OSStatus 数值转成四字符码（如 `-50` → `'param'`），便于对照 AudioToolbox 常量。
+private func fourCharCode(_ value: Int32) -> String {
+    let bytes = [
+        UInt8(truncatingIfNeeded: value >> 24),
+        UInt8(truncatingIfNeeded: value >> 16),
+        UInt8(truncatingIfNeeded: value >> 8),
+        UInt8(truncatingIfNeeded: value)
+    ]
+    guard bytes.allSatisfy({ $0 >= 32 && $0 < 127 }) else { return "\(value)" }
+    return String(bytes: bytes, encoding: .ascii).map { "'\($0)'" } ?? "\(value)"
+}
+
+extension Error {
+    /// 诊断文本：把 NSError 的 domain / code / OSStatus 四字符码 / 底层错误全部展开。
+    ///
+    /// ## 为什么不能只用 localizedDescription
+    /// AVFoundation 抛出的错误常常只有一句「操作无法完成」，真正的判据（OSStatus 码、
+    /// 底层 NSCocoaError）全在 `userInfo` 里。日志里丢掉这两个字段，事后就再也分不清
+    /// 是磁盘满、权限不足，还是编码器状态错误 —— 只能反复复现，成本极高。
+    var diagnosticText: String {
+        let ns = self as NSError
+        var parts: [String] = ["\(ns.domain)#\(ns.code)"]
+
+        if ns.domain == NSOSStatusErrorDomain {
+            parts.append("OSStatus \(fourCharCode(Int32(truncatingIfNeeded: ns.code)))")
+        }
+
+        let description = ns.localizedDescription
+        if !description.isEmpty {
+            parts.append(description)
+        }
+
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("底层 \(underlying.domain)#\(underlying.code)")
+        }
+        return parts.joined(separator: "｜")
+    }
+}

@@ -108,6 +108,10 @@ final class SegmentWriter {
             file = nil
             try? FileManager.default.removeItem(at: tempURL)
             self.tempURL = nil
+            Log.shared.warn(
+                .storage,
+                "空分片丢弃｜seq=\(seq)｜\(tempURL.lastPathComponent)（未写入任何样本）"
+            )
             return nil
         }
 
@@ -119,17 +123,59 @@ final class SegmentWriter {
         // 因此这里刻意**不**把它绑定到局部变量（`guard let file` 会延长其生命周期，
         // 导致 self.file = nil 之后对象仍然存活，重命名出去的就是未收尾的文件）。
         file = nil
-        self.tempURL = nil
 
         let attributes = try? FileManager.default.attributesOfItem(atPath: tempURL.path)
         let byteCount = (attributes?[.size] as? NSNumber)?.intValue ?? 0
 
         let finalName = String(format: "%06d.m4a", seq)
         let finalURL = sessionDirectory.appendingPathComponent(finalName)
-        if FileManager.default.fileExists(atPath: finalURL.path) {
-            try? FileManager.default.removeItem(at: finalURL)
+
+        do {
+            if FileManager.default.fileExists(atPath: finalURL.path) {
+                try? FileManager.default.removeItem(at: finalURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: finalURL)
+        } catch {
+            failedFinalizeCount += 1
+            // ══ 收尾失败的两个陷阱 ══
+            // 1. 此时 AVAudioFile 已释放（上面 file = nil），音频只在临时文件里；
+            //    若把 tempURL 直接置空，下一次 openNewSegment() 会用**同名**临时文件把
+            //    它覆盖掉 —— 这片音频就彻底没了，日志里却只有一行错误。
+            // 2. 若在这里直接 throw 出去，调用方的 catch 只记一行日志，而内部状态
+            //    （framesInCurrentSegment / seq）没收敛，后续分片的时间轴会整体错位。
+            // 因此这里先把临时文件抢救成 recovered 名字保住数据，再把状态收敛后返回 nil。
+            let recoveredURL = sessionDirectory
+                .appendingPathComponent(String(format: "%06d.recovered.m4a", seq))
+            let recoverNote: String
+            do {
+                if FileManager.default.fileExists(atPath: recoveredURL.path) {
+                    try? FileManager.default.removeItem(at: recoveredURL)
+                }
+                try FileManager.default.moveItem(at: tempURL, to: recoveredURL)
+                recoverNote = "已抢救为 \(recoveredURL.lastPathComponent)"
+            } catch let recoverError {
+                recoverNote = "抢救失败（\(recoverError.diagnosticText)）"
+                    + "，临时文件保留为 \(tempURL.lastPathComponent)"
+            }
+
+            Log.shared.error(
+                .storage,
+                "分片收尾失败｜seq=\(seq)｜\(sampleCount) 帧｜\(byteCount / 1024) KB"
+                    + "｜第 \(failedFinalizeCount) 次"
+                    + "｜\(recoverNote)"
+                    + "｜原因 \(error.diagnosticText)"
+            )
+
+            // 状态收敛：时间轴照常前移（音频确实存在，只是未进清单），
+            // 分片序号推进，避免下一片复用同一个文件名。
+            framesBeforeCurrentSegment += sampleCount
+            framesInCurrentSegment = 0
+            self.tempURL = nil
+            seq += 1
+            return nil
         }
-        try FileManager.default.moveItem(at: tempURL, to: finalURL)
+
+        self.tempURL = nil
 
         let startMs = Int(Double(framesBeforeCurrentSegment) / sampleRate * 1000.0)
         let endMs = Int(Double(framesBeforeCurrentSegment + sampleCount) / sampleRate * 1000.0)
@@ -181,17 +227,44 @@ final class SegmentWriter {
     /// 累计因中断跳过的时间（即总断口时长，按样本率换算口径一致）。
     private(set) var skippedMs = 0
 
+    // MARK: - 失败计数（供心跳与停止汇总，不参与业务判断）
+
+    /// 单批写入失败次数（`AVAudioFile.write` 抛错）。
+    private(set) var failedWriteCount = 0
+    /// 分片收尾（临时文件改名）失败次数。
+    private(set) var failedFinalizeCount = 0
+    /// 分片创建失败次数。
+    private(set) var failedOpenCount = 0
+
+    /// 当前分片已写入的帧数（供心跳日志显示进度，只读）。
+    var currentSegmentFrames: Int { framesInCurrentSegment }
+    /// 下一个待用分片序号（供心跳日志显示进度，只读）。
+    var nextSeq: Int { seq }
+
     /// 关闭写入器（会话结束）。返回最后一次收尾的分片。
     @discardableResult
     func close() throws -> FinishedSegment? {
         guard !isClosed else { return nil }
         let last = try finalizeCurrent()
         isClosed = true
-        Log.shared.info(
-            .storage,
-            "写入器已关闭｜会话 \(sessionId)｜分片数 \(seq)｜累计样本 \(totalFrames)"
-                + "｜对应时长 \(Int(Double(totalFrames) / sampleRate * 1000))ms"
-        )
+        let detail = "失败统计 创建 \(failedOpenCount) / 写入 \(failedWriteCount)"
+            + " / 收尾 \(failedFinalizeCount)"
+        if failedOpenCount + failedWriteCount + failedFinalizeCount > 0 {
+            // 有失败就用 WARN：否则"分片数"对不上用户看到的时长，却看不出哪里丢了
+            Log.shared.warn(
+                .storage,
+                "写入器已关闭（有失败）｜会话 \(sessionId)｜分片数 \(seq)｜累计样本 \(totalFrames)"
+                    + "｜对应时长 \(Int(Double(totalFrames) / sampleRate * 1000))ms"
+                    + "｜断口 \(skippedMs)ms｜\(detail)"
+            )
+        } else {
+            Log.shared.info(
+                .storage,
+                "写入器已关闭｜会话 \(sessionId)｜分片数 \(seq)｜累计样本 \(totalFrames)"
+                    + "｜对应时长 \(Int(Double(totalFrames) / sampleRate * 1000))ms"
+                    + "｜断口 \(skippedMs)ms｜\(detail)"
+            )
+        }
         return last
     }
 
@@ -210,14 +283,33 @@ final class SegmentWriter {
             AVEncoderBitRateKey: bitRate
         ]
 
-        file = try AVAudioFile(
-            forWriting: temp,
-            settings: settings,
-            commonFormat: .pcmFormatFloat32,
-            interleaved: false
-        )
+        do {
+            file = try AVAudioFile(
+                forWriting: temp,
+                settings: settings,
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
+        } catch {
+            // 创建失败若只在调用方打一行"分片写入失败"，就分不清是"打不开文件"还是"写不进去"。
+            // 这两者的处置完全不同：打不开多半是目录/权限/磁盘，写不进多半是编码器或空间。
+            failedOpenCount += 1
+            Log.shared.error(
+                .storage,
+                "分片创建失败｜seq=\(seq)｜\(Int(sampleRate))Hz/\(bitRate / 1000)kbps"
+                    + "｜临时文件 \(temp.lastPathComponent)｜第 \(failedOpenCount) 次"
+                    + "｜\(error.diagnosticText)"
+            )
+            throw error
+        }
         tempURL = temp
         framesInCurrentSegment = 0
+
+        Log.shared.info(
+            .storage,
+            "分片开始｜seq=\(seq)｜\(framesBeforeCurrentSegment) 帧处"
+                + "｜临时文件 \(temp.lastPathComponent)"
+        )
     }
 
     private func writeChunk(_ samples: [Float]) throws {
@@ -229,6 +321,13 @@ final class SegmentWriter {
             writeBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(capacity))
         }
         guard let buffer = writeBuffer, let channel = buffer.floatChannelData?[0] else {
+            failedWriteCount += 1
+            Log.shared.error(
+                .storage,
+                "写入缓冲不可用｜seq=\(seq)｜本批 \(samples.count) 帧"
+                    + "｜格式 \(format.sampleRate)Hz/\(format.channelCount)ch"
+                    + "｜第 \(failedWriteCount) 次"
+            )
             throw CaptureError.recordingFailed("无法准备写入缓冲")
         }
 
@@ -239,7 +338,21 @@ final class SegmentWriter {
             }
         }
 
-        try file.write(from: buffer)
+        do {
+            try file.write(from: buffer)
+        } catch {
+            // 记下失败发生在分片的哪个位置：开头就失败通常是文件/权限问题，
+            // 写到中段才失败通常是磁盘满或编码器状态异常 —— 判据完全不同。
+            failedWriteCount += 1
+            Log.shared.error(
+                .storage,
+                "单批写入失败｜seq=\(seq)｜本批 \(samples.count) 帧"
+                    + "｜该分片内已写 \(framesInCurrentSegment) 帧"
+                    + "｜第 \(failedWriteCount) 次"
+                    + "｜\(error.diagnosticText)"
+            )
+            throw error
+        }
 
         framesInCurrentSegment += samples.count
         totalFrames += samples.count
