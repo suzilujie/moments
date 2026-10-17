@@ -42,7 +42,7 @@ struct RecordView: View {
 
     // MARK: - 界面状态
 
-    @State private var showingSettings = false
+    @State private var showingSelfCheck = false
     @State private var showingDiagnostics = false
     /// 字幕区是否"贴在底部"。用户主动往上翻看历史时不自动滚 ——
     /// 否则新句子会把他正在看的内容拽走（那会变成新的烦人点）。
@@ -87,8 +87,8 @@ struct RecordView: View {
                 }
             }
             .toolbar { toolbarContent }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
+            .sheet(isPresented: $showingSelfCheck) {
+                RootView()
             }
             .sheet(isPresented: $showingDiagnostics) {
                 diagnosticsSheet
@@ -532,11 +532,11 @@ struct RecordView: View {
         } else {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showingSettings = true
+                    showingSelfCheck = true
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "stethoscope")
                 }
-                .accessibilityLabel("设置")
+                .accessibilityLabel("自检")
             }
         }
     }

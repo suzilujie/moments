@@ -5,8 +5,8 @@ import SwiftUI
 /// 两个标签页的分工：
 ///   · **录音**：这个 App 的主体，一键开始 / 停止，实时字幕、实时翻译、录音健康度。
 ///     历史录音与全局检索也在这一页里（右上角「历史」按钮），不再单独占一个 Tab
-///   · **自检**：M0 建立的能力验证页。它没有因为有了正式界面就被删掉 ——
-///     后续每加一层都会在这里补上对应的验证项，
+///   · **设置**：采集参数、转写开关、模型下载、语言、导出等可配置项。
+///     自检页（M0 能力验证页）移到录音页 / 详情页右上角的弹层入口（见 RootView），
 ///     因为"关键状态必须在设备上直接可见"是本项目的排错基础（设计文档 4.14）。
 ///
 /// ## 2026-10-17 的两次收缩
@@ -26,8 +26,8 @@ struct MainTabView: View {
             RecordView()
                 .tabItem { Label("录音", systemImage: "mic.circle.fill") }
 
-            RootView()
-                .tabItem { Label("自检", systemImage: "stethoscope") }
+            SettingsView()
+                .tabItem { Label("设置", systemImage: "gearshape") }
         }
     }
 }

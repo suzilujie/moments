@@ -11,6 +11,10 @@ import Translation
 /// 做成可调之后，真机调试就不必每次改代码再重装。
 struct SettingsView: View {
 
+    /// 作为 sheet 弹出时（`OpenModelSettingsButton`「去下载模型」）需要「完成」按钮关闭；
+    /// 作为底部 Tab 时不需要（Tab 无关闭语义，此时 `dismiss` 也是 no-op）。
+    var showsCloseButton: Bool = false
+
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var models = ModelManager.shared
     @ObservedObject private var translation = TranslationService.shared
@@ -39,8 +43,10 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+                if showsCloseButton {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("完成") { dismiss() }
+                    }
                 }
             }
             .task { await refreshLivePackStatus() }

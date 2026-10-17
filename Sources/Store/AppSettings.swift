@@ -87,7 +87,8 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(realtimeDenoiseEnabled, forKey: Keys.realtimeDenoise) }
     }
 
-    /// LLM 纠错（识别 → 纠正 → 翻译 → 展示纠正文本）是否启用。默认**开**（2026-10-17 用户拍板）。
+    /// LLM 纠错（识别 → 纠正 → 翻译 → 展示纠正文本）是否启用。默认**关**（2026-10-17 用户定：
+    /// 0.5B 模型在 CPU 上偏慢，先聚焦「实时识别 + 实时翻译」主线，纠错作为可选增强按需开启）。
     ///
     /// ## 关闭 / 模型未下载时的降级
     /// 纠错是可选增强，不是核心链路的一环：开关关闭或纠错模型（Qwen2.5-0.5B）
@@ -199,8 +200,8 @@ final class AppSettings: ObservableObject {
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
         autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false
         realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
-        // LLM 纠错默认开（2026-10-17 用户拍板）；模型未下载时自动降级为原文直翻
-        llmCorrectionEnabled = defaults.object(forKey: Keys.llmCorrection) as? Bool ?? true
+        // LLM 纠错默认关（2026-10-17 用户定：CPU 上 0.5B 慢，先聚焦实时识别+翻译主线）
+        llmCorrectionEnabled = defaults.object(forKey: Keys.llmCorrection) as? Bool ?? false
         // 存成局部变量：下面的实时翻译默认值要用它，而**不能在 init 里直接读
         // learningLanguage 属性**（带 didSet 的属性被读会触发 definite-initialization
         // 检查，报 used before being initialized —— 见下方说明）

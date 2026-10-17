@@ -11,6 +11,8 @@ struct RootView: View {
 
     @StateObject private var model = SelfCheckModel()
     @State private var showingLogs = false
+    /// 自检页现在以 sheet 形式呈现（从录音页/详情页右上角弹层进入），需要显式关闭。
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -27,6 +29,9 @@ struct RootView: View {
             }
             .navigationTitle("自检")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("关闭") { dismiss() }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("日志") { showingLogs = true }
                 }

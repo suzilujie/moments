@@ -260,8 +260,8 @@ struct SessionDetailView: View {
     /// `ModelManager.isInstalled`，不观察的话，用户在设置里下载完成后
     /// 回来会发现提示还说"未下载" —— 又一处"设置没生效"。
     @ObservedObject private var models = ModelManager.shared
-    /// 本页自带的设置入口（理由见 toolbar 处的说明）
-    @State private var showingSettings = false
+    /// 本页自带的「自检」入口（与录音页右上角一致，弹出 RootView）。
+    @State private var showingSelfCheck = false
 
     private var sessionDirectory: URL {
         RecordingLibrary.shared.sessionDirectory(manifest.id)
@@ -278,21 +278,19 @@ struct SessionDetailView: View {
         }
         .navigationTitle(manifest.title)
         .navigationBarTitleDisplayMode(.inline)
-        // 本页**必须有**设置入口：模型未下载时的引导语指向"设置 → 模型"，
-        // 而设置入口只是录音页右上角一枚齿轮 —— 在会话详情页读到它时，
-        // 用户得自己想到"切回录音页、找右上角、点齿轮"这三步。
-        // 提示指向一个本页没有的东西，等于没有入口。
+        // 右上角放「自检」入口（与录音页一致）：自检是诊断页，从弹层打开。
+        // 「模型未下载」的引导已改指向底部「设置」Tab（设置现在是 Tab，本页不再放齿轮）。
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showingSettings = true
+                    showingSelfCheck = true
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "stethoscope")
                 }
             }
         }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
+        .sheet(isPresented: $showingSelfCheck) {
+            RootView()
         }
         .onAppear {
             initializePass()

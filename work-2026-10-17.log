@@ -1254,3 +1254,92 @@
   · read_lints：CorrectionService.swift / RecordView.swift 0 诊断。
   · 编译正确性仍以 CI 为准（本机无 Swift 编译器，前例 009c477）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十五次] CI 构建成功（run #67）
+--------------------------------------------------------------------------------
+
+■ 结果
+  commit 04cc79a 推送后 ios-build run #67（39032406831）构建 success，
+  生成 unsigned ipa（Moments-unsigned-ipa，13,038,661 字节 ≈ 12.4 MB，保留至 2026-11-16）。
+  ipa 体积与上次（run #66，13 MB）基本持平 —— llama.cpp CPU 静态库已在上轮并入，
+  本次纠错业务接入为纯 Swift 逻辑，未新增二进制体积。
+
+■ ipa 下载（需登录 GitHub）
+  https://github.com/suzilujie/moments/actions/runs/39032406831/artifacts/12100178949
+
+■ 待真机核验
+  · 纠错模型下载（Qwen2.5-0.5B，约 397 MB）
+  · 实时字幕先出原文、再变纠正文本（形态 A 跳动观感）
+  · 译文用纠正文本
+  · 详情页原文/纠正对照落盘
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十六次] 导航结构调整：设置升 Tab、自检降弹层
+--------------------------------------------------------------------------------
+
+■ 起因
+  用户反馈：设置页应该放底部 Tab，自检页应该放「现在设置在的地方」（右上角弹层）。
+  即把「设置」和「自检」的位置对调 —— 设置更常用放 Tab，自检是诊断页放弹层。
+
+■ 改动清单（6 个文件）
+  1) Sources/App/MainTabView.swift
+     Tab 2 从 RootView()（自检）换成 SettingsView()（设置），图标 stethoscope→gearshape；
+     文件头注释同步（自检→设置，自检移到弹层）。
+  2) Sources/Features/Settings/SettingsView.swift
+     加 `showsCloseButton: Bool = false` 参数：作为 sheet（OpenModelSettingsButton 弹出）
+     时传 true 显示「完成」按钮；作为 Tab 时无按钮。恢复 @Environment(\.dismiss)。
+  3) Sources/App/RootView.swift
+     加 @Environment(\.dismiss) + toolbar 左上角「关闭」按钮（sheet 需要显式关闭），
+     右上角「日志」按钮保留。
+  4) Sources/Features/Record/RecordView.swift
+     右上角齿轮（gearshape）→ 听诊器（stethoscope），accessibilityLabel 设置→自检；
+     sheet 内容 SettingsView() → RootView()；状态变量 showingSettings → showingSelfCheck。
+  5) Sources/Features/Sessions/SessionListView.swift（会话详情页）
+     右上角齿轮 → stethoscope，sheet 内容 SettingsView() → RootView()；
+     注释更新（设置已是 Tab，本页齿轮改为自检入口）。
+  6) Sources/Features/Settings/OpenModelSettingsButton.swift
+     sheet 传 SettingsView(showsCloseButton: true)；头注释更新（设置已是 Tab，
+     本按钮保留就地弹 sheet 而非跳 Tab，下载完关闭即回原页）。
+
+■ 关键决策
+  · OpenModelSettingsButton 保留「弹 sheet」而非「跳 Tab」：下载完关闭即回原页，
+    比切 Tab 再切回更顺；故 SettingsView 加 showsCloseButton 参数区分两种呈现。
+  · 详情页齿轮语义变化（模型下载引导 → 自检入口）：用户已确认接受。
+
+■ 影响范围
+  6 个文件，纯导航结构 + 注释，无数据/逻辑改动。设置页唯一新增能力是
+  showsCloseButton 参数（默认 false，向后兼容所有现有调用点）。
+
+■ 验证
+  · read_lints：6 个文件 0 诊断。编译以 CI 为准（本机无 Swift 编译器）。
+
+■ 待真机
+  · 底部 Tab 显示「录音 / 设置」；右上角 stethoscope 弹出「自检」且可关闭；
+    录音页「去下载模型」按钮弹出的设置 sheet 有「完成」按钮。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十七次] LLM 纠错默认关闭（回退实时识别+翻译主线）
+--------------------------------------------------------------------------------
+
+■ 起因
+  用户拍板：0.5B 在 CPU 上慢，先停用 LLM 纠错，聚焦「实时识别 + 实时翻译」主线。
+  「disable 就可以了」—— 代码保留（设置页仍可手动开启），只改默认值。
+
+■ 改动（Sources/Store/AppSettings.swift）
+  llmCorrectionEnabled 默认值 true → false，注释同步（默认关 + 原因）。
+  · 链路影响：isCorrectionActive = 开关 && 模型已装；默认关后该值为 false，
+    翻译走原文直翻（形态 A 的「等纠正」分支不会进入），实时链路退回
+    「识别 → 翻译 → 展示」两段，无 LLM 环节。
+
+■ 注意事项（UserDefaults 语义）
+  init 里赋值不触发 didSet、不写回 UserDefaults，因此：
+  · 若真机从未动过该开关 → 新 ipa 读到默认 false，纠错关。
+  · 若真机之前动过开关（存过 true）→ 默认值不生效，需在设置页手动关，
+    或删 App 重装让 UserDefaults 复位。
+
+■ 验证
+  · read_lints：AppSettings.swift 0 诊断。编译以 CI 为准。
+================================================================================
