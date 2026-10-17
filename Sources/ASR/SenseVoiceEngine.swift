@@ -79,10 +79,19 @@ final class SenseVoiceEngine {
         modelConfig.sense_voice = SherpaOnnxOfflineSenseVoiceModelConfig(
             model: UnsafePointer(modelString),
             language: UnsafePointer(languageString),
-            // use_itn=0：不启用逆文本归一化（ITN）。SenseVoice 的 ITN 会把数字/日期
-            // 归一化（如"一二三"→"123"），对留档更友好，但也可能引入转换错误；
-            // 对实时字幕非必需，先保守关闭，待真机验证后再决定是否开启。
-            use_itn: 0
+            // use_itn=1（2026-10-17 开启）：启用逆文本归一化（ITN）。
+            //
+            // ══ 为什么必须开 ══
+            // ITN 在 sherpa-onnx 里不只是"数字规范化"，它同时决定了模型前缀 token：
+            //   use_itn=1 → `<|withitn|>`：输出带标点（，。？），数字/日期按阿拉伯数字规范化
+            //   use_itn=0 → `<|woitn|>`  ：输出**完全没有标点**，数字保持中文写法
+            // 早先为"避免数字转换错误"关掉它，代价是所有字幕都没有标点 ——
+            // 既影响阅读，也让翻译质量下降（翻译模型依赖标点断句），
+            // 还让「短句合并」的句末标点判断（endsWithSentencePunctuation）永远失效。
+            //
+            // 已知副作用：中文数字串可能被规范化（"一百二十三"→"123"），
+            // 极少数量词场景可能误转；若真机再出现明显误转，再考虑做成设置项。
+            use_itn: 1
         )
         modelConfig.tokens = UnsafePointer(tokensString)
         modelConfig.num_threads = numThreads
