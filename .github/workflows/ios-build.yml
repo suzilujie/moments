@@ -549,6 +549,28 @@ jobs:
             fi
           fi
 
+          # ── 广播扩展（R23 探针）──
+          # 会议模式（系统内录）的 Broadcast Upload Extension 必须真的嵌进 PlugIns/。
+          # 否则 R23 探针页里的「系统内录」点了之后，系统录制列表里根本没有本 App 可选，
+          # 探针也就无从做起 —— 这类"编译通过但扩展没进包"的问题必须在这里拦住。
+          APPEX="verify/Payload/Moments.app/PlugIns/MomentsBroadcastExtension.appex"
+          if [ ! -d "$APPEX" ]; then
+            echo "::error::广播扩展未嵌入 PlugIns：$APPEX"
+            exit 1
+          fi
+          APPEX_PLIST="$APPEX/Info.plist"
+          if [ ! -f "$APPEX_PLIST" ]; then
+            echo "::error::广播扩展缺少 Info.plist"
+            exit 1
+          fi
+          EXT_POINT=$(/usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "$APPEX_PLIST" 2>/dev/null || true)
+          echo "NSExtensionPointIdentifier = $EXT_POINT"
+          if [ "$EXT_POINT" != "com.apple.broadcast-services-upload" ]; then
+            echo "::error::广播扩展的 NSExtensionPointIdentifier 应为 com.apple.broadcast-services-upload，实际为 '$EXT_POINT'"
+            exit 1
+          fi
+          echo "广播扩展已嵌入并校验通过 ($(stat -f%z "$APPEX/MomentsBroadcastExtension") bytes)"
+
           echo "verify passed"
 
       - name: Upload ipa artifact

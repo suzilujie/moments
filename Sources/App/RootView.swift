@@ -23,6 +23,7 @@ struct RootView: View {
                 eventSection
                 asrSection
                 logSection
+                probeSection
             }
             .navigationTitle("自检")
             .toolbar {
@@ -162,6 +163,21 @@ struct RootView: View {
                 Text(item.element)
                     .font(.caption)
                     .foregroundStyle(colorForSelfTestLine(item.element))
+            }
+        }
+    }
+
+    // MARK: - R23 探针（临时）
+
+    private var probeSection: some View {
+        Section("R23 探针（会议模式前置实测，临时）") {
+            note(
+                "验证「系统内录（广播）运行期间主 App 能否继续用麦克风」。"
+                    + "结论出来后删除本入口与 R23ProbeView，再决定 M8 会议模式是否动工。",
+                color: .secondary
+            )
+            NavigationLink("打开探针") {
+                R23ProbeView()
             }
         }
     }

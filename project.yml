@@ -28,8 +28,6 @@ settings:
 targets:
 
   # ---- 主 App ----
-  # 注：会议模式的 Broadcast Upload Extension 是 M8 的目标，
-  # 现在不建，避免过早引入一个无法验证的空扩展（见设计文档 13 章）。
   Moments:
     type: application
     platform: iOS
@@ -44,7 +42,17 @@ targets:
         buildPhase: resources
         excludes:
           - Info.plist
+          - "*.entitlements"
     dependencies:
+      # ═══ 广播扩展（R23 探针，临时）═══
+      # 会议模式（系统内录）的 Broadcast Upload Extension。当前仅用于 R23 探针：
+      # 验证"广播运行期间主 App 能否继续采麦克风"（互斥）与"扩展能拿到什么格式"。
+      # embed: true 让 Xcode 把 .appex 嵌入主 App 的 PlugIns/ 目录。
+      # 探针结束若不做会议模式，删除此依赖与 BroadcastExtension/ 目录即可。
+      - target: MomentsBroadcastExtension
+        embed: true
+      # RPSystemBroadcastPickerView（主 App 弹出系统录制入口）来自 ReplayKit
+      - sdk: ReplayKit.framework
       # ═══ whisper.cpp（M2 转写引擎）═══
       # 官方已移除 SwiftPM 支持，因此由 CI 用官方 build-xcframework.sh
       # 构建成【静态】xcframework 后在此链接。third_party/ 不入版本控制。
@@ -86,6 +94,10 @@ targets:
         DEVELOPMENT_TEAM: "S2GX2R7LD5"
         INFOPLIST_FILE: Resources/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
+        # R23 探针：主 App 与广播扩展共享 App Group（读扩展写出的统计）。
+        # 未签名构建下 entitlement 不参与签名，由 Sideloadly 侧载时注入；
+        # 若侧载不支持 App Group，探针自动降级为只看"麦克风计数"（仍可判互斥）。
+        CODE_SIGN_ENTITLEMENTS: Resources/Moments.entitlements
         # 桥接头：把两个第三方 C 库（whisper.cpp、sherpa-onnx）暴露给 Swift。
         # 注意 Xcode 只能指定**一个**桥接头，因此收口到 Bridges.h，
         # 由它分别 include WhisperBridge.h 与 SherpaBridge.h。
@@ -119,12 +131,42 @@ targets:
         # 只会静默地没有图标，装到手机上表现为"还是默认白图标"。
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
+  # ---- 广播扩展（R23 探针，临时）----
+  # 会议模式（系统内录）的 Broadcast Upload Extension。
+  # 当前仅承载 R23 探针：只统计 audioApp/audioMic 的 buffer 与格式、写入 App Group，
+  # **不做任何音频搬运、不落盘、不跑推理**（扩展内存几十 MB，见设计文档 4.6 约束二）。
+  MomentsBroadcastExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: BroadcastExtension
+        excludes:
+          - Info.plist
+          - "*.entitlements"
+    dependencies:
+      # RPBroadcastSampleHandler 来自 ReplayKit
+      - sdk: ReplayKit.framework
+    settings:
+      base:
+        PRODUCT_NAME: MomentsBroadcastExtension
+        # 扩展的 Bundle ID 必须是主 App 的子域，这是 Apple 的硬要求
+        PRODUCT_BUNDLE_IDENTIFIER: com.xfish.moments.Broadcast
+        DEVELOPMENT_TEAM: "S2GX2R7LD5"
+        INFOPLIST_FILE: BroadcastExtension/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        CODE_SIGN_ENTITLEMENTS: BroadcastExtension/MomentsBroadcastExtension.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: "NO"
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+
 # 必须显式声明 scheme，否则 CI 中的 xcodebuild -scheme 找不到共享 scheme
 schemes:
   Moments:
     build:
       targets:
         Moments: all
+        MomentsBroadcastExtension: all
     run:
       config: Debug
     archive:

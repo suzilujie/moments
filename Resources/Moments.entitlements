@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- R23 探针：主 App 读取广播扩展写进共享容器的统计文件 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.xfish.moments</string>
+	</array>
+</dict>
+</plist>

@@ -478,4 +478,58 @@
     恰好导出，拿到的是"当时已有的部分译文"——语义正确（实时反映），非缺陷
   · 风险 3：P2-3 的索引可能在实时稿异步落盘完成前被触发（低概率读到旧稿），
     靠后续 index 幂等修正，已注释说明
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日六次] 新增 R23 探针：广播扩展 + 探针页（会议模式前置实测）
+--------------------------------------------------------------------------------
+
+■ 起因
+  用户问"看视频/通话能否取到声音" → 评估会议模式（系统内录，M8）提前的量级 →
+  结论：先做 R23 探针（验证"广播运行期间主 App 能否继续采麦克风"的互斥问题），
+  用户确认实施。
+
+■ 改动文件（3 新增 + 3 修改）
+
+  新增：
+    BroadcastExtension/Info.plist              广播上传扩展的 Info.plist
+    BroadcastExtension/SampleHandler.swift      扩展处理器（只统计不搬运）
+    BroadcastExtension/MomentsBroadcastExtension.entitlements  扩展 App Group
+    Resources/Moments.entitlements              主 App App Group（读扩展统计）
+    Sources/Features/R23Probe/R23ProbeView.swift  探针页 + 模型 + 广播选择器包装
+  修改：
+    project.yml                                 新增扩展 target + 依赖 + scheme + entitlements
+    Sources/App/RootView.swift                  自检页加"R23 探针（临时）"入口
+    .github/workflows/ios-build.yml             打包后校验扩展 .appex 打进 PlugIns
+
+■ 探针回答的三个问题（设计文档 4.6 R23 的前置实测）
+  1) 互斥：广播运行期间，主 App 的麦克风 installTap 计数是否还在涨
+  2) 扩展能拿到什么：audioApp / audioMic 两条流的回调与格式（采样率/声道）
+  3) （预留）扩展在无人读取时的存活时长（R24，本版未测）
+
+■ 关键设计决策
+  · 扩展**只统计不搬运**：不落盘、不推理，把内存风险（R24）排除在探针之外。
+    每次回调覆盖式写一个几十字节的 plist 到 App Group，主 App 每 1 秒轮询读。
+  · 主 App 麦克风采集用**独立 AVAudioEngine**，不碰现有 AudioCaptureEngine /
+    CapturePipeline —— 探针与正式录音链路完全隔离，用完即删。
+  · App Group 是"扩展统计可视化"的通道，但它依赖 entitlement 在侧载时被注入。
+    若 Sideloadly 不注入（最大不确定点），探针页降级为只看"麦克风计数停不停"——
+    **Q1（互斥）仍可判定**，只是 Q2（扩展格式）要延后。
+  · 结论判定：广播启动那一刻记下麦克风计数，之后计数涨=不互斥、停=互斥。
+    顺序错了（先广播后开麦）不记基准，探针页文案引导正确顺序。
+
+■ 影响范围与风险
+  · 现有录音链路一行未动；新增代码全部隔离在 BroadcastExtension/ 与 R23Probe/。
+  · 风险 1：扩展 target 首次配置，project.yml 的 app-extension 语法、NSExtension
+    配置、ReplayKit 链接是否正确，**只能靠 CI 验证**（本机 Windows 无 xcodegen）。
+  · 风险 2：App Group 在未签名侧载下能否生效，取决于 Sideloadly 是否注入 entitlement，
+    这是探针可视化的大前提；配不通则降级（见上）。
+  · 风险 3：`RPSystemBroadcastPickerView.preferredExtension` 指定扩展 bundle id，
+    若写错，系统录制列表里本 App 不可选 —— CI 只验证扩展进包，验证不了这个
+    "运行期可选"行为，必须真机确认。
+  · 风险 4：探针是临时代码，结论出来后要删（R23ProbeView + 探针入口 + 扩展
+    target + 两处 entitlements + CI 断言）。
+
+■ 验证与未验证
+  已做：3 个 Swift 文件 lint 零错误。
+  未做：编译只能以 CI 为准；互斥行为、App Group、扩展可选性都要真机。
 ================================================================================
