@@ -245,12 +245,14 @@ final class TranscriptionWorker {
     private let cancelLock = NSLock()
     private var cancelled = false
 
-    /// 首个出字分片检测到的语言（仅当 `inputs.language == "auto"` 时才有值）。
+    /// auto 模式下投票得出的语言（仅当 `inputs.language == "auto"` 时才有值）。
     /// SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），识别时不能再改，
     /// 因此这里**不再回传引擎**（whisper 时代是回传的）—— 它现在的唯一用途是：
     /// 把「实际检测到的语言」写回终稿文档的 `language` 字段，替代"auto"这个占位。
     /// 只在本 worker 自己的串行队列上读写，不需要锁（与其它 worker 状态一致）。
     private var pinnedLanguage: String?
+    /// 语言投票箱（与实时路径同一规则：单片判定不决定全场）
+    private var languageVotes: [String: Int] = []
 
     var onStage: ((TranscriptionStage) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
@@ -365,7 +367,10 @@ final class TranscriptionWorker {
                         // 给出 —— 这里只锁定一次用于日志，不再回传（SenseVoice 语言判定足够稳定）。
                         // 与实时路径同一条规则：只有**真的转出了内容**才锁定语言。
                         if !recognition.segments.isEmpty {
-                            pinLanguageIfNeeded(afterDetecting: recognition.language)
+                            pinLanguageIfNeeded(
+                                afterDetecting: recognition.language,
+                                audioMs: samples.count * 1000 / 16_000
+                            )
                         }
                         // 相对分片 → 相对会话。做错的后果是点句回听定位偏移（见 TranscriptMath）
                         segments.append(contentsOf: TranscriptMath.mapToSessionTimeline(
@@ -411,6 +416,7 @@ final class TranscriptionWorker {
 
         let completedAll = failedSegments == 0
         let note = completedAll ? nil : "本次有 \(failedSegments) 片未能转写，可再次点击继续"
+        resolveLanguageAtEnd()
         let document = makeDocument(segments: segments, isComplete: completedAll, note: note)
 
         onStage?(.saving)
@@ -422,18 +428,44 @@ final class TranscriptionWorker {
         }
     }
 
-    /// 记录首个出字分片检测到的语言（仅 `inputs.language == "auto"` 时）。
+    /// 语言投票（仅 `inputs.language == "auto"` 时）。
     ///
-    /// SenseVoice 引擎在创建时已固定语言，识别时不能逐片改 —— 所以这里**只记录、
-    /// 不再回传引擎**。记录的用途是写回终稿文档的 `language` 字段（见 makeDocument），
-    /// 让 auto 模式下的留档不再是一个无信息量的"auto"。
-    private func pinLanguageIfNeeded(afterDetecting detected: String?) {
+    /// 与实时路径同一规则：单片判定不决定全场。终稿的分片是 60 秒一块、
+    /// 天然满足"≥3 秒"门槛，因此累计 3 片（约 3 分钟）后开票；
+    /// 若整场不足 3 片，由 `resolveLanguageAtEnd()` 用已有票数收尾。
+    private func pinLanguageIfNeeded(afterDetecting detected: String?, audioMs: Int) {
         guard inputs.language == "auto", pinnedLanguage == nil, let detected else { return }
-        pinnedLanguage = detected
+        guard audioMs >= 3_000 else { return }
+
+        languageVotes[detected, default: 0] += 1
+        let totalVotes = languageVotes.values.reduce(0, +)
+        guard totalVotes >= 3 else { return }
+
+        let top = languageVotes.values.max() ?? 0
+        let tied = languageVotes.filter { $0.value == top }.map { $0.key }
+        // 平票优先中文：zh / yue 是模型最易混淆的一对
+        pinnedLanguage = tied.contains("zh") ? "zh" : (tied.first ?? detected)
+        let summary = languageVotes
+            .sorted { $0.value > $1.value }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
         Log.shared.info(
             .asr,
-            "终稿检测语言｜\(detected)（首个出字分片判定，写入留档 language 字段）"
+            "终稿锁定语言｜\(pinnedLanguage ?? "-")｜票数 \(summary)｜写入留档 language 字段"
         )
+    }
+
+    /// 转写结束前收尾：票数不足 3 票时用领先票定语言，避免留档退回无信息量的"auto"。
+    private func resolveLanguageAtEnd() {
+        guard inputs.language == "auto", pinnedLanguage == nil,
+              let top = languageVotes.values.max() else { return }
+        let tied = languageVotes.filter { $0.value == top }.map { $0.key }
+        pinnedLanguage = tied.contains("zh") ? "zh" : tied.first
+        let summary = languageVotes
+            .sorted { $0.value > $1.value }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        Log.shared.info(.asr, "终稿语言收尾（票数不足）｜\(pinnedLanguage ?? "-")｜票数 \(summary)")
     }
 
     private func makeDocument(segments: [TranscriptSegment], isComplete: Bool, note: String?) -> TranscriptDocument {

@@ -125,6 +125,24 @@ final class LiveTranscriptionEngine {
     /// 作为实时翻译的源语言（见 pinLanguageIfNeeded 的 onLanguagePinned 回调）。
     private var pinnedLanguage: String?
 
+    /// 语言投票箱（仅 auto 模式）。
+    ///
+    /// ## 为什么不再"第一段定生死"
+    /// 原实现是**第一个出字段**判完就锁定、永不更正。而第一个出字段恰恰是最短的
+    ///（静音边界切出的首句常只有 1~3 秒），而 SenseVoice 的语言识别（LID）在短音频上
+    /// 方差极大；真机证据是普通话被稳定判成 `yue`，然后整场都显示粤语。
+    /// 改为投票后，单个错判只会是一票，不会决定全场。
+    private var languageVotes: [String: Int] = [:]
+    /// 参与投票的音频总长（毫秒）
+    private var languageSampleMs = 0
+
+    /// 单段音频短于该值时不参与投票：短段判定不可信，投票只会放大噪声。
+    private static let languageMinSampleMs = 3_000
+    /// 达到该票数即锁定
+    private static let languageVotesToPin = 3
+    /// 或累计音频达到该值也锁定（说话少、句子长的场景，等价于 15 秒证据）
+    private static let languageSampleMsToPin = 15_000
+
     // M3：真 VAD 与降噪器。都按需加载、且只在本引擎队列上使用 ——
     // 这两个类都持有 C 指针、不是线程安全的，因此一路一实例、不共享。
     private var denoiseEnabled = false
@@ -239,6 +257,9 @@ final class LiveTranscriptionEngine {
             self.denoiseEnabled = denoiseEnabled
             // 每次开始都重新判定：上一次会话锁定的语言不该带到这一次
             self.pinnedLanguage = nil
+            // 投票箱同理：跨会话累积会让旧会话的语言影响新会话
+            self.languageVotes = [:]
+            self.languageSampleMs = 0
             self.tail = []
             self.tailStartSample = 0
             self.display = []
@@ -651,7 +672,7 @@ final class LiveTranscriptionEngine {
         // **只在真的出了字之后才锁定**：对一段"VAD 认为有人声、但一个词都没听出来"
         // 的音频给出的语言判定，可信度最低，而锁定是一次性的（见 pinLanguageIfNeeded）。
         if !local.isEmpty {
-            pinLanguageIfNeeded(afterDetecting: recognition.language)
+            pinLanguageIfNeeded(afterDetecting: recognition.language, audioMs: audioMs)
         }
         let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
 
@@ -750,21 +771,60 @@ final class LiveTranscriptionEngine {
         reportLiveStatsIfNeeded()
     }
 
-    /// 记录首个出字段检测到的语言，并回调界面（语言胶囊显示 + 实时翻译源语言）。
+    /// 语言投票：累计足够证据后再锁定（语言胶囊显示 + 实时翻译源语言）。
     ///
-    /// ## 与 whisper 时代的不同
-    /// whisper 时代语言是**每个窗口独立判定**的，锁定的作用是"防窗口间来回跳"
-    /// （那会让实时字幕出现各种语言）。SenseVoice 的语言在引擎创建时固定（auto 或
-    /// 具体语言），识别时不再逐段传语言 —— 所以这里**只记录与回调，不再回传引擎**。
-    /// auto 模式下每段仍由模型各自判语言，但 SenseVoice 判定足够稳定，无需再锁。
-    private func pinLanguageIfNeeded(afterDetecting detected: String?) {
+    /// ## 与旧实现的差别（为什么要改）
+    /// 旧实现"第一个出字段判完即锁"，而首段往往只有 1~3 秒。SenseVoice 的 LID
+    /// 在短音频上极不稳定，中文普通话被稳定判成 `yue`，接着整场都显示粤语 ——
+    /// 用户看到的是"总是识别成粤语"，根因就是**只采样一次且永不更正**。
+    ///
+    /// 现规则：
+    ///   · 只采信 ≥ 3 秒且真出了字的段（短段不投票）；
+    ///   · 累计 3 票、或累计 15 秒音频后开票；
+    ///   · 平票时**优先中文**：zh 与 yue 是模型最容易混淆的一对，
+    ///     在中文优先的产品里把平票判给 zh 比随机更合理。
+    private func pinLanguageIfNeeded(afterDetecting detected: String?, audioMs: Int) {
         guard language == "auto", pinnedLanguage == nil, let detected else { return }
-        pinnedLanguage = detected
+
+        // 短段判定不可信，直接跳过（但仍记录，便于判断"为什么一直没锁定"）
+        guard audioMs >= Self.languageMinSampleMs else {
+            Log.shared.info(
+                .asr,
+                "语言投票跳过｜本段 \(audioMs)ms 短于 \(Self.languageMinSampleMs)ms｜检测 \(detected)"
+            )
+            return
+        }
+
+        languageVotes[detected, default: 0] += 1
+        languageSampleMs += audioMs
+
+        let totalVotes = languageVotes.values.reduce(0, +)
+        let summary = languageVotes
+            .sorted { $0.value > $1.value }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+
+        guard totalVotes >= Self.languageVotesToPin || languageSampleMs >= Self.languageSampleMsToPin else {
+            Log.shared.info(
+                .asr,
+                "语言投票｜本段 \(detected)（\(audioMs)ms）｜当前 \(summary)"
+                    + "｜累计 \(languageSampleMs)ms"
+            )
+            return
+        }
+
+        // 平票优先中文：zh / yue 是模型最易混淆的一对，把平票判给 zh 比随机更稳
+        let top = languageVotes.values.max() ?? 0
+        let tied = languageVotes.filter { $0.value == top }.map { $0.key }
+        let winner = tied.contains("zh") ? "zh" : (tied.first ?? detected)
+
+        pinnedLanguage = winner
         Log.shared.info(
             .asr,
-            "实时字幕检测语言｜\(detected)（首个出字段判定，用于界面显示与翻译源语言）"
+            "实时字幕锁定语言｜\(winner)｜票数 \(summary)"
+                + "｜样本 \(totalVotes) 段/\(languageSampleMs)ms"
         )
-        onLanguagePinned?(detected)
+        onLanguagePinned?(winner)
     }
 
     /// 每 N 个事件汇总一行实时统计（含**实时倍率**）。
