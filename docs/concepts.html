@@ -567,6 +567,12 @@ li{margin:6px 0}
 <td>双轨录制、降噪反噬</td>
 </tr>
 <tr>
+<td><b>音乐检测</b><br>Music Detection (CED)</td>
+<td>用 sherpa-onnx 的 CED（Conditional Event Detection，条件事件检测）模型判断"这段是音乐还是人声"——VAD 只分语音/非语音，分不清带歌声的 BGM，而 whisper 对音乐只会编造文本</td>
+<td>2026-10-17 落地；<span class="ok">已接入实时链路</span>。Music 概率 ≥ 阈值（0.5）即标注「（音乐）」、不送 whisper，幻觉从源头消失</td>
+<td>VAD、幻觉、静音幻觉</td>
+</tr>
+<tr>
 <td><b>降噪反噬</b><br>Denoising Backfire</td>
 <td>降噪算法自身引入<b>失真伪影（artifact / musical noise）</b>，抹掉识别模型所需的语音细节，导致字错误率不降反升</td>
 <td>设计阶段识别为关键反直觉点；<span class="warn">待 A/B 实测</span>。<b>因此"降噪"在本项目的定位是"可验证的选项"而非"无条件的改进"</b>——这也是双轨架构存在的唯一理由</td>

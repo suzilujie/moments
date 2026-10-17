@@ -1078,6 +1078,26 @@ li{margin:6px 0}
 </tbody>
 </table>
 
+<h3 id="speech-music">6.7 CED 音乐检测（Music Detection）</h3>
+
+<p>音乐检测回答的是「<b>这段是音乐还是人声</b>」—— 一个 VAD 与 <code>no_speech_prob</code> 都回答不了的问题。VAD 只分「语音 / 非语音」，带歌声的主题曲、BGM 会被误判为 speech；而 whisper 对音乐<b>只会编造文本</b>（「普通话是普通话的简体中文句子」「（词: …）」这类元描述）。音乐检测在送 whisper 之前拦下音乐段，幻觉从源头消失。</p>
+
+<table>
+<thead><tr><th>项</th><th>设计</th></tr></thead>
+<tbody>
+<tr><td>模型</td><td>sherpa-onnx 的 CED tiny int8（Conditional Event Detection，条件事件检测），约 5.85 MB，随包内置（见 <code>SherpaBundledModel.ced</code>）</td></tr>
+<tr><td>为什么不是 Zipformer</td><td>Zipformer 音频标记模型约 90 MB，无法内置、只能运行时下载（交付环境 github.com 不可达）；CED tiny 是唯一「既能内置、又解决痛点」的选择</td></tr>
+<tr><td>标签</td><td>AudioSet 本体：<code>class_labels_indices.csv</code>，含 <code>Speech</code>(0)、<code>Singing</code>(27)、<code>Music</code>(137) 等</td></tr>
+<tr><td>判定</td><td>每段音频跑一次 CED 前向，取 <code>Music</code> 事件概率；≥ 阈值（当前 0.5）即判为音乐</td></tr>
+<tr><td>产出</td><td>不送 whisper，直接产出一句「（音乐）」标注段，进入字幕与留档 —— 音乐占据了一段真实时间轴，标注比「跳过」更如实</td></tr>
+<tr><td>采样率</td><td>16 kHz Float32，与 VAD 同源，喂入<b>未降噪</b>的原始音频（降噪会破坏音乐特征）</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>阈值需要真机校准</b>：0.5 是保守起步值。漏判 → 音乐仍产生幻觉文本；误判 → 正常语音被标成「（音乐）」。真机日志（实时字幕统计里的「音乐标注 N 段」）是校准依据。检测器不可用（模型缺失）时视作「不是音乐」放行 —— 宁可放行也不误杀真话。</p>
+</blockquote>
+
 <h2 id="translate">7. 翻译层（Translation）</h2>
 
 <h3 id="translate-position">7.1 翻译在链路中的位置</h3>
@@ -2431,6 +2451,7 @@ protocol TaskScheduling {
 <a class="sub" href="#speech-registry">6.4 声纹库与认人</a>
 <a class="sub" href="#speech-long">6.5 超长会话分块</a>
 <a class="sub" href="#speech-overlap">6.6 重叠说话局限</a>
+<a class="sub" href="#speech-music">6.7 音乐检测</a>
 <a href="#translate">7. 翻译层</a>
 <a class="sub" href="#translate-position">7.1 在链路中的位置</a>
 <a class="sub" href="#translate-engine">7.2 引擎选型</a>

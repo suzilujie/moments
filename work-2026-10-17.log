@@ -533,3 +533,105 @@
   已做：3 个 Swift 文件 lint 零错误。
   未做：编译只能以 CI 为准；互斥行为、App Group、扩展可选性都要真机。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日七次] 新增 CED 音乐检测：音频事件标记 + 内置模型 + 接入实时链路
+--------------------------------------------------------------------------------
+
+■ 起因（用户原话 + 判据）
+  用户问「录音链路之前没有吗?」—— 经核实 MusicDetector（音频事件检测类）
+  此前**只有类、从未接入链路**（全项目零引用、git untracked）。本次把「音乐检测」
+  整条能力落地：检测器切到可内置的 CED 模型 + 随包内置 + 接进实时转写链路。
+  用户确认「A+B 一起做」。
+
+■ 背景：为什么需要音乐检测（VAD 与 no_speech_prob 都挡不住）
+  whisper 对「带歌声的音乐」只会编造文本（"普通话是普通话的简体中文句子"、
+  "（词: …）"这类元描述）。现有两道防线都不管用：
+  · no_speech_prob 阈值（WhisperEngine.dropLikelySilence）只对纯静音/噪声有效，
+    歌声被当成语音、概率低，挡不住；
+  · Silero VAD 只分"语音/非语音"，分不清"音乐/人声"，带歌声的 BGM 被判为 speech。
+  音乐检测回答的是正确的问题："这段到底是音乐还是人声"。
+
+■ 改动文件（3 个源码 + 1 个 CI）
+  1) Sources/ASR/MusicDetector.swift
+     模型家族从 Zipformer（约 90 MB，无法内置）切到 CED tiny int8（约 5.85 MB）。
+     `SherpaOnnxAudioTaggingModelConfig.ced` 直接指向模型路径，zipformer 留空。
+     头注释补「为什么选 CED 而不是 Zipformer」。
+  2) Sources/ASR/SherpaBundledModel.swift
+     新增 `case ced`；单文件模型改造为多文件模型（files / availableURLs /
+     missingFiles / cedModelAndLabels）。CED 需两个文件（ced.int8.onnx 模型
+     + ced_labels.csv 标签），isAvailable 改为「所有文件齐全」。
+  3) Sources/ASR/LiveTranscriber.swift（接线，数据流改造）
+     · 新增 musicDetector 成员 + musicThreshold（0.5）+ 统计（musicSegmentsCount）
+     · prepareHelpersIfNeeded 按需加载 CED；stop() 释放
+     · tick() 在切窗后、送 whisper 前加音乐检测 gate：Music 概率 ≥ 阈值则
+       appendMusicSegment（产出「（音乐）」标注段）+ finishSegment() + return
+     · 出栈逻辑抽成 finishSegment()（音乐段与识别段共用，避免两处重写）
+     · logLiveStats 加「音乐标注 N 段」
+  4) .github/workflows/ios-build.yml
+     Fetch 模型步骤从 HuggingFace 直链下载 CED 两个单文件（GitHub Releases 里
+     是 .tar.bz2 需解包，HF 单文件更简单），重命名 ced.int8.onnx / ced_labels.csv；
+     打包断言与清单循环各加这两个文件。
+
+■ 关键设计决策
+  · 音乐段产出「（音乐）」标注段，而不是「直接跳过」：音乐占据真实时间轴，
+    标注后字幕与留档如实反映"这段时间是音乐"；跳过则屏幕空白、像识别坏了。
+  · 音乐段不走 assemble 的极短合并：assemble 只在同一次 whisper 结果内部合并
+    （kept 内部），音乐段直接 append 进 display，两者天然隔离，不会互相拼接。
+  · id 用 "music-" 前缀，与 whisper 段 "seg-" 前缀错开，避免检索/去重碰撞。
+  · 音乐检测用**原始 tail**（未降噪）：降噪会破坏音乐特征。
+  · 检测器不可用（模型缺失）时 musicProbability 返回 0，视作「不是音乐」放行 ——
+    宁可放行也不误杀真话，与 VAD 降级同类。
+
+■ 影响范围与风险
+  · ipa 增加约 6 MB（CED 5.86 MB），仍远低于 200 MB 上限
+  · 每次切窗（每句）多一次 CED 前向，实时路径新增几十毫秒量级延迟；
+    真机日志的「音乐标注 N 段」与实时倍率可观察
+  · 阈值 0.5 是保守起步值，真机可能需校准：漏判=继续有幻觉文本；误判=正常语音被标成音乐
+  · 音乐段的「（音乐）」会被检索索引与留档收录，属预期行为
+
+■ 验证与未验证
+  已做：3 个 Swift 文件 lint 零错误；tick 音乐 gate、finishSegment、
+  appendMusicSegment、logLiveStats 接缝逐段读回结构完整；全库检索确认无
+  fileName/zipformer 残留引用。
+  未做（只能由 CI 与真机回答）：能否编译以 CI 为准（本项目有"零 lint 但编不过"
+  前例 009c477）；音乐检测实际效果、阈值、单次前向耗时都需真机实测。
+
+■ 文档同步
+  · docs/设计文档.html → 新增 6.7 CED 音乐检测（模型选型/标签/阈值/产出/采样率），
+    目录新增 6.7 锚点
+  · docs/concepts.html → 新增「音乐检测 Music Detection (CED)」概念
+
+■ 下一步
+  待用户确认后 commit → push 触发 CI → 贴 ipa 直链。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日八次] review 后修复：音乐标注段不再送实时翻译（P3-1）
+--------------------------------------------------------------------------------
+
+■ 起因
+  对「同日七次」的 CED 音乐检测做代码 review，审出 P2×3 + P3×2。
+  P2 三项属真机验证 / 既有问题，不改代码；用户确认修 P3-1：
+  「（音乐）」标注段会被送进实时翻译，把标注本身翻一遍（浪费且无意义）。
+
+■ 改动（3 个文件）
+  1) Sources/Store/Transcript.swift
+     `TranscriptSegment` 新增 `static let musicMarkerIDPrefix = "music-"` 与
+     `isMusicMarker`（按 id 前缀判断）。前缀知识收在 TranscriptSegment 内，
+     不泄漏到下游（与「后缀格式收在 SearchHit 内」同一原则）。
+  2) Sources/ASR/LiveTranscriber.swift
+     `appendMusicSegment` 的 id 改用 `TranscriptSegment.musicMarkerIDPrefix` 拼接，
+     消除硬编码重复（单一来源）。
+  3) Sources/Translate/TranslationService.swift
+     `enqueueLive` 循环里 `guard !segment.isMusicMarker else { continue }`，
+     音乐标注段不送翻译。
+
+■ 影响与风险
+  · 纯增量、无行为回退：音乐段此前会被翻译、现在被跳过；语音段不受影响
+  · isMusicMarker 靠 id 前缀（music-）判断，若未来音乐段 id 规则变化需同步改常量
+    （已用单一常量收口，避免多处硬编码漂移）
+
+■ 验证
+  5 个 Swift 文件 lint 零错误。
+================================================================================

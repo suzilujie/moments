@@ -61,6 +61,17 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     /// 存在的理由：必须让用户看到"这段还在识别中"，而不是以为文字出了故障（设计文档 R15）。
     var isProvisional: Bool
 
+    /// 音乐标注段的 id 前缀。
+    ///
+    /// ## 为什么用前缀而不是独立字段
+    /// 音乐段复用 `TranscriptSegment`（不新增字段，避免老数据解码失败），
+    /// 用 `music-` 前缀与 whisper 段的 `seg-` 前缀区分。由 `LiveTranscriber` 产出。
+    static let musicMarkerIDPrefix = "music-"
+
+    /// 是否为「（音乐）」标注段（非真实语音内容）。
+    /// 翻译、导出等下游应跳过这类标注 —— 它不是"说的话"。
+    var isMusicMarker: Bool { id.hasPrefix(Self.musicMarkerIDPrefix) }
+
     var durationMs: Int { max(0, endMs - startMs) }
 
     /// 时间轴展示形式（会话内的相对位置）

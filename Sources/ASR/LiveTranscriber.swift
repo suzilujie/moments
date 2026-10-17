@@ -132,6 +132,11 @@ final class LiveTranscriptionEngine {
     /// 降噪失败只提示一次：滑窗每几秒跑一次，若每次都记日志会把日志刷爆，
     /// 而"降噪失败"这件事看一次就够了。
     private var hasReportedDenoiseFailure = false
+    /// 音乐检测器（CED）。同 VAD：持有 C 指针、只在本引擎队列上使用。
+    private var musicDetector: MusicDetector?
+    /// Music 概率 ≥ 该阈值即判为音乐、跳过 whisper。0.5 是保守起步值，
+    /// 真机日志（logLiveStats 的"音乐标注 N 段"）会告诉我们该调高还是调低。
+    private static let musicThreshold: Float = 0.5
 
     // MARK: - 实时统计（供日志汇总）
     //
@@ -149,6 +154,8 @@ final class LiveTranscriptionEngine {
     ///（最大识别音频时长：它贴近 12 秒就意味着上限确实在频繁触发）。
     private var cappedUtteranceCount = 0
     private var droppedSilenceCount = 0
+    /// 本场被判为音乐、未送 whisper 的段数（只在检测器可用时才可能 > 0）。
+    private var musicSegmentsCount = 0
     private var producedSegments = 0
     private var totalCostMs = 0
     private var maxCostMs = 0
@@ -169,6 +176,8 @@ final class LiveTranscriptionEngine {
     private var hasReportedPauseDrop = false
     /// "喂了音频但 VAD 从未判出语音"的提醒只记一次
     private var hasReportedNoSpeechDetected = false
+    /// "首个音乐标注"日志只记一次（每个音乐段都记会刷屏）
+    private var hasReportedFirstMusic = false
 
     /// 每多少个事件汇总一行统计
     private static let statsEveryEvents = 10
@@ -186,9 +195,11 @@ final class LiveTranscriptionEngine {
         statsEventCount = 0
         totalEntryDroppedFrames = 0
         entryDroppedPending = 0
+        musicSegmentsCount = 0
         hasReportedFirstSegments = false
         hasReportedPauseDrop = false
         hasReportedNoSpeechDetected = false
+        hasReportedFirstMusic = false
     }
 
     /// 结果回调。**在本引擎队列上触发**，调用方需自行切回主线程。
@@ -269,6 +280,9 @@ final class LiveTranscriptionEngine {
         if denoiseEnabled {
             parts.append(denoiser != nil ? "降噪已启用" : "降噪不可用（模型缺失）")
         }
+        if musicDetector != nil {
+            parts.append("音乐检测已启用")
+        }
         return parts.joined(separator: "｜")
     }
 
@@ -297,6 +311,17 @@ final class LiveTranscriptionEngine {
                 }
             } else {
                 Log.shared.warn(.asr, "未找到内置 VAD 模型，回退到固定切窗 + 能量门限")
+            }
+
+            // 音乐检测（CED）：与 VAD 同样内置、按需加载。加载失败**不阻断**实时字幕，
+            // 只意味着"音乐段落会照常送 whisper"（可能产生幻觉文本，但字幕仍可用）。
+            if let ced = SherpaBundledModel.ced.cedModelAndLabels {
+                musicDetector = MusicDetector(modelPath: ced.model.path, labelsPath: ced.labels.path)
+                if musicDetector == nil {
+                    Log.shared.warn(.asr, "音乐检测（CED）模型加载失败，音乐段落将照常送 whisper")
+                }
+            } else {
+                Log.shared.warn(.asr, "未找到内置音乐检测（CED）模型，音乐段落将照常送 whisper")
             }
         }
 
@@ -356,6 +381,8 @@ final class LiveTranscriptionEngine {
             self.vad = nil
             self.denoiser?.close()
             self.denoiser = nil
+            self.musicDetector?.close()
+            self.musicDetector = nil
             self.didAttemptLoadingHelpers = false
             self.hasReportedDenoiseFailure = false
             // 停止时把**尚未识别**的尾部如实报出来：这段音频不会出现在实时字幕里
@@ -604,6 +631,16 @@ final class LiveTranscriptionEngine {
         // 时间轴起点由**累计样本数**推出，不由"喂了多少减去窗口长度"推算 ——
         // 后者会随裁剪产生漂移（与分片时间轴的取舍一致）。
         let startMs = tailStartSample * 1000 / sampleRate
+
+        // 音乐检测 gate（CED）：whisper 对带歌声的音乐只会编造文本，所以先问
+        // "这段是不是音乐"，是就标注「（音乐）」、不送 whisper —— 幻觉从源头消失。
+        // 检测器不可用时 musicProbability 返回 0（视作"不是音乐"，宁可放行也不误杀真话）。
+        if (musicDetector?.musicProbability(tail) ?? 0) >= Self.musicThreshold {
+            appendMusicSegment(startMs: startMs, audioMs: audioMs)
+            finishSegment()
+            return
+        }
+
         // 降噪在这里临时施加（原始音频始终没有被动过）
         let audio = maybeDenoise(tail)
 
@@ -662,15 +699,7 @@ final class LiveTranscriptionEngine {
             isProvisional: false
         )
         assemble(newSegments: mapped)
-
-        // 4) 已处理的音频出栈。
-        //    入口丢弃的帧在这里一并补进时间轴：它们排在刚消费掉的这段**之后**、
-        //    下一段**之前**，补在这里正好对齐（补早了会把这一段本身推后）。
-        tailStartSample += tail.count + entryDroppedPending
-        entryDroppedPending = 0
-        tail.removeAll(keepingCapacity: true)
-
-        reportLiveStatsIfNeeded()
+        finishSegment()
     }
 
     /// 丢掉 tail 开头的长静音，只留下 `prerollSeconds` 作为下一句的前导。
@@ -681,6 +710,48 @@ final class LiveTranscriptionEngine {
         tail.removeFirst(dropped)
         tailStartSample += dropped
         return dropped
+    }
+
+    /// 已处理音频出栈 + 触发统计。音乐段与识别段共用（见 tick），
+    /// 避免两条路径各自写一遍出栈逻辑、日后新增字段时漏改一处。
+    private func finishSegment() {
+        // 入口丢弃的帧在这里一并补进时间轴：它们排在刚消费掉的这段**之后**、
+        // 下一段**之前**，补在这里正好对齐（补早了会把这一段本身推后）。
+        tailStartSample += tail.count + entryDroppedPending
+        entryDroppedPending = 0
+        tail.removeAll(keepingCapacity: true)
+        reportLiveStatsIfNeeded()
+    }
+
+    /// 产出一个「（音乐）」标注段，**不送 whisper**。
+    ///
+    /// 为什么是"标注段"而不是"直接跳过"：音乐不是没有内容 —— 它占据了一段
+    /// 时间轴。产出「（音乐）」后，字幕与留档都能如实反映"这段时间是音乐"，
+    /// 用户回听时也知道这里发生了什么；若直接跳过，屏幕上就是一段空白，
+    /// 看起来像识别坏了。
+    private func appendMusicSegment(startMs: Int, audioMs: Int) {
+        musicSegmentsCount += 1
+        if !hasReportedFirstMusic {
+            hasReportedFirstMusic = true
+            Log.shared.info(
+                .asr,
+                "实时字幕首个音乐标注｜音频 \(audioMs)ms｜时间轴起点 \(startMs)ms"
+                    + "（Music 概率超阈值，跳过 whisper，避免幻觉文本）"
+            )
+        }
+        // id 用 "music-" 前缀：与 whisper 段的 "seg-" 前缀错开，避免检索/去重碰撞。
+        // seq 用 display.count（display 已被 assemble 连续编号，这里顺延）。
+        let segment = TranscriptSegment(
+            id: TranscriptSegment.musicMarkerIDPrefix + "\(startMs)",
+            seq: display.count,
+            startMs: startMs,
+            endMs: startMs + audioMs,
+            text: "（音乐）",
+            speakerId: nil,
+            isProvisional: false
+        )
+        display.append(segment)
+        onSegments?(display)
     }
 
     /// 静音丢弃的计数：只在**丢掉 1 秒以上**时才算一次事件。
@@ -742,6 +813,7 @@ final class LiveTranscriptionEngine {
         var summary = "实时字幕统计｜识别段 \(utteranceCount) 个"
             + "（其中切于长度上限 \(cappedUtteranceCount) 个）"
             + "｜解码 \(Self.realtimeDecodeMode.text)"
+            + "｜音乐标注 \(musicSegmentsCount) 段"
             + "｜丢弃长静音 \(droppedSilenceCount) 次"
             + "｜平均音频 \(avgAudioMs)ms｜最长音频 \(maxUtteranceAudioMs)ms"
             + "（上限 \(vadMaxSpeechSeconds * 1000)ms）"

@@ -304,6 +304,8 @@ final class TranslationService: ObservableObject {
     func enqueueLive(_ segments: [TranscriptSegment]) {
         guard liveConfiguration != nil else { return }
         for segment in segments {
+            // 音乐标注段不是真实语音内容，不送翻译（id 前缀见 TranscriptSegment.musicMarkerIDPrefix）。
+            guard !segment.isMusicMarker else { continue }
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             guard !liveSubmittedIds.contains(segment.id) else { continue }

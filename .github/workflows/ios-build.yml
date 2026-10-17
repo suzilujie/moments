@@ -255,21 +255,27 @@ jobs:
       # sherpa-onnx 模型 —— **内置随包**，不做运行时下载
       #
       # 与 whisper 模型刻意做成相反的两种策略，判据是「体积 + 可靠性」：
-      #   · 这两个模型合计约 1.2 MB，远低于蜂窝下载 200 MB 的上限；
-      #   · 它们的原始托管在 GitHub Releases，而交付环境实测 github.com
-      #     不可达（见工作日志阶段十一、十四）。若做成运行时下载，
-      #     「VAD / 降噪」就会在用户手上直接不可用 ——
+      #   · 这三个模型合计约 7 MB（VAD 0.6 + 降噪 0.5 + CED 5.86），
+      #     远低于蜂窝下载 200 MB 的上限；
+      #   · 它们的原始托管在 GitHub Releases / HuggingFace，而交付环境实测
+      #     github.com 不可达（见工作日志阶段十一、十四）。若做成运行时下载，
+      #     「VAD / 降噪 / 音乐检测」就会在用户手上直接不可用 ——
       #     那是把一个可用的功能做成不可用。
-      # 内置之后，这两项能力永久可用、不依赖任何网络。
+      # 内置之后，这些能力永久可用、不依赖任何网络。
       #
       # 2026-10-17：说话人分割（pyannote，6.6 MB）与声纹嵌入（CAM++，27 MB）
       # 已随「说话人」功能一并移除（用户确认不需要），ipa 因此减少约 34 MB。
+      # 同日新增 CED 音乐检测（约 5.86 MB），随包内置 —— 见 SherpaBundledModel.ced。
       # ═══════════════════════════════════════════════════════════════
       - name: Fetch sherpa-onnx models (bundled into ipa)
         run: |
           DEST=Resources/SherpaModels
           mkdir -p "$DEST"
           BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+          # CED 音乐检测模型：sherpa-onnx 在 GitHub Releases 里以 .tar.bz2 压缩包分发，
+          # 而 HuggingFace 提供单文件直链，下载更简单、无需解包。
+          # 本地重命名为 ced.int8.onnx / ced_labels.csv，与 SherpaBundledModel.files 对齐。
+          CED_BASE="https://huggingface.co/k2-fsa/sherpa-onnx-ced-tiny-audio-tagging-2024-04-19/resolve/main"
 
           fetch() {
             name="$1"; url="$2"
@@ -284,9 +290,11 @@ jobs:
 
           fetch silero_vad.onnx "$BASE/asr-models/silero_vad.onnx"
           fetch gtcrn_simple.onnx "$BASE/speech-enhancement-models/gtcrn_simple.onnx"
+          fetch ced.int8.onnx "$CED_BASE/model.int8.onnx"
+          fetch ced_labels.csv "$CED_BASE/class_labels_indices.csv"
           echo "=== 内置模型清单 ==="
           ls -lh "$DEST"
-          for f in silero_vad.onnx gtcrn_simple.onnx; do
+          for f in silero_vad.onnx gtcrn_simple.onnx ced.int8.onnx ced_labels.csv; do
             if [ -f "$DEST/$f" ]; then
               echo "::notice::bundled-model $f $(stat -f%z "$DEST/$f") bytes"
             else
@@ -503,7 +511,7 @@ jobs:
           # （代码里刻意做了失败降级），而用户完全不知道为什么 ——
           # 这种"功能没生效但不报错"的情况，必须在这一步拦住。
           APP_DIR="verify/Payload/Moments.app"
-          for f in silero_vad.onnx gtcrn_simple.onnx; do
+          for f in silero_vad.onnx gtcrn_simple.onnx ced.int8.onnx ced_labels.csv; do
             if [ ! -f "$APP_DIR/$f" ]; then
               echo "::error::内置模型未打进包：$f"
               exit 1
