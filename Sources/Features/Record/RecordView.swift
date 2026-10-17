@@ -615,28 +615,77 @@ struct RecordView: View {
     /// 字幕可以一直铺到屏幕底部，能多看到两三句。
     private var liveSubtitleList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(live.segments) { segment in
-                        liveSegmentRow(segment)
-                            .id(segment.id)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(live.segments) { segment in
+                            liveSegmentRow(segment)
+                                .id(segment.id)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 2)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 2)
-            }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.contentOffset.y
-                    - geometry.containerSize.height < 40
-            } action: { _, atBottom in
-                isSubtitlePinnedToBottom = atBottom
-            }
-            .onChange(of: live.segments.count) {
-                guard isSubtitlePinnedToBottom, let last = live.segments.last else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+                .onScrollGeometryChange(for: SubtitleScrollMetrics.self) { geometry in
+                    SubtitleScrollMetrics(
+                        offsetY: geometry.contentOffset.y,
+                        contentHeight: geometry.contentSize.height,
+                        containerHeight: geometry.containerSize.height
+                    )
+                } action: { old, new in
+                    // ══ 关键：只在"用户滚动"时更新吸底状态 ══
+                    // 旧判据把"内容变高"也算成"离开底部"：新句子进来 → contentHeight 变大、
+                    // offset 不变 → 判定不在底部 → 吸底被关掉，而**没有任何东西再打开它**。
+                    // 表现就是"必须手动滚到底才能看到新内容"。
+                    // 内容高度变化只可能来自新句子（用户不可能改变内容高度），
+                    // 因此这里先比较高度：高度变了就跳过，不碰 pin。
+                    guard abs(new.contentHeight - old.contentHeight) < 0.5 else { return }
+                    isSubtitlePinnedToBottom = new.isAtBottom
                 }
+                .onChange(of: live.segments.count) {
+                    guard isSubtitlePinnedToBottom, let last = live.segments.last else { return }
+                    scrollToLatest(proxy: proxy, id: last.id)
+                }
+
+                // 解除吸底时给一个"回到底部"的入口：用户翻历史之后，
+                // 没有它就只能靠手动滑到底才知道实时位置在哪。
+                if !isSubtitlePinnedToBottom {
+                    Button {
+                        isSubtitlePinnedToBottom = true
+                        if let last = live.segments.last {
+                            scrollToLatest(proxy: proxy, id: last.id)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 34, height: 34)
+                            .background(.thinMaterial, in: Circle())
+                    }
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.15), value: isSubtitlePinnedToBottom)
+        }
+    }
+
+    /// 滚到最新一句。
+    ///
+    /// **必须滚两次**：`LazyVStack` 里新插入的行在同一个 runloop 内可能还没完成布局，
+    /// 第一次 `scrollTo` 会落空（位置停在旧的末尾）。隔一帧再滚一次即可稳定到底。
+    private func scrollToLatest(proxy: ScrollViewProxy, id: String) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(id, anchor: .bottom)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard isSubtitlePinnedToBottom else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(id, anchor: .bottom)
             }
         }
     }
@@ -910,6 +959,25 @@ struct RecordView: View {
         }
         .font(.subheadline)
     }
+}
+
+// MARK: - 字幕滚动几何
+
+/// 字幕滚动区的几何快照。
+///
+/// **为什么不能直接比较 Bool**：`onScrollGeometryChange` 在内容高度变化时同样会触发。
+/// 只看"是否贴底"这一个布尔，就无法区分"用户往上翻"与"新句子把内容撑高了"——
+/// 后者会让吸底被误关掉（这正是"必须手动滚动"的根因）。
+/// 保留三个原始量，才能在 action 里先判断"高度有没有变"。
+private struct SubtitleScrollMetrics: Equatable {
+    let offsetY: CGFloat
+    let contentHeight: CGFloat
+    let containerHeight: CGFloat
+
+    /// 内容底边距可视区底部还有多远（<0 表示内容不足一屏）
+    var distanceToBottom: CGFloat { contentHeight - offsetY - containerHeight }
+    /// 40 点余量：手指离开后还有惯性在滚，判得太紧会在临界处抖
+    var isAtBottom: Bool { distanceToBottom < 40 }
 }
 
 // MARK: - 子视图
