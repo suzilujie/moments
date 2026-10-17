@@ -1096,3 +1096,28 @@
 ■ 影响范围
   · 仅 .github/workflows/ios-build.yml；不动 Swift/C++ 代码、project.yml。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十一次] 修复：LlamaBridge 对齐 llama.cpp vocab API
+--------------------------------------------------------------------------------
+
+■ 现象
+  上一轮 llama.cpp 静态库已编好（libllama-all.a 生成），失败移到 xcodebuild 的 .mm 编译。
+  注解：no matching function for call to 'llama_token_to_piece' / 'llama_token_eos' /
+  'llama_tokenize'（4 errors）。
+
+■ 根因
+  clone 到的 llama.cpp 是较新版本（2025 vocab 重构后），llama_tokenize / llama_token_eos /
+  llama_token_to_piece 的第一个参数从 llama_model* 改为 llama_vocab*（词表对象）。
+
+■ 修复（Sources/Support/LlamaBridge.mm，5 处）
+  1) LlamaHandle 增加 const llama_vocab* vocab。
+  2) lbr_load 加载模型后 vocab = llama_model_get_vocab(model)。
+  3) tokenizePrompt 首参 model → vocab。
+  4) llama_token_eos(model) → llama_token_eos(vocab)。
+  5) llama_token_to_piece(model,...) → llama_token_to_piece(vocab,...)。
+
+■ 影响范围
+  · 仅 LlamaBridge.mm；不动 CI、project.yml、Swift 代码；LLAMA_BUMP 不变（llama.cpp
+    静态库不变，缓存继续命中）。
+================================================================================

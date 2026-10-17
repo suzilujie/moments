@@ -24,13 +24,14 @@ namespace {
 struct LlamaHandle {
     llama_model* model = nullptr;
     llama_context* ctx = nullptr;
+    const llama_vocab* vocab = nullptr;
 };
 
 /// 把 prompt 编码成 token 序列。
-bool tokenizePrompt(const llama_model* model, const std::string& text,
+bool tokenizePrompt(const llama_vocab* vocab, const std::string& text,
                     std::vector<llama_token>& tokens) {
     // 第一次调用只取长度（llama_tokenize 返回负数表示「还需要 |n| 个」）。
-    int n = llama_tokenize(model, text.c_str(), static_cast<int>(text.size()),
+    int n = llama_tokenize(vocab, text.c_str(), static_cast<int>(text.size()),
                            nullptr, 0, true, true);
     if (n < 0) {
         n = -n;
@@ -39,7 +40,7 @@ bool tokenizePrompt(const llama_model* model, const std::string& text,
         return false;
     }
     tokens.resize(static_cast<size_t>(n));
-    int got = llama_tokenize(model, text.c_str(), static_cast<int>(text.size()),
+    int got = llama_tokenize(vocab, text.c_str(), static_cast<int>(text.size()),
                              tokens.data(), n, true, true);
     return got > 0;
 }
@@ -62,6 +63,7 @@ void* lbr_load(const char* model_path) {
         delete handle;
         return nullptr;
     }
+    handle->vocab = llama_model_get_vocab(handle->model);
 
     // 纠错 prompt 很短（~100 tokens），512 的 KV cache 足够，也省内存。
     llama_context_params cp = llama_context_default_params();
@@ -91,7 +93,7 @@ int lbr_correct(void* handle, const char* prompt,
     const auto t0 = std::chrono::steady_clock::now();
 
     std::vector<llama_token> tokens;
-    if (!tokenizePrompt(h->model, prompt, tokens)) {
+    if (!tokenizePrompt(h->vocab, prompt, tokens)) {
         return 0;
     }
     if (prompt_toks != nullptr) {
@@ -106,7 +108,7 @@ int lbr_correct(void* handle, const char* prompt,
     }
 
     // 贪婪采样生成，直到 EOS 或达到上限。
-    llama_token eos = llama_token_eos(h->model);
+    llama_token eos = llama_token_eos(h->vocab);
     const int max_new_tokens = 256;
 
     llama_sampler_chain_params sp = llama_sampler_chain_default_params();
@@ -125,7 +127,7 @@ int lbr_correct(void* handle, const char* prompt,
         }
 
         char piece[512];
-        int len = llama_token_to_piece(h->model, token, piece,
+        int len = llama_token_to_piece(h->vocab, token, piece,
                                        static_cast<int32_t>(sizeof(piece)), 0, true);
         if (len < 0) {
             break;
