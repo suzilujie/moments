@@ -83,12 +83,10 @@ final class TranscriptionService: ObservableObject {
     /// 转写一次会话。
     /// - Parameters:
     ///   - pass: 实时稿或终稿（本服务的典型用法是终稿）
-    ///   - modelId: 使用的模型；nil 时取该稿的默认模型
     ///   - language: 语言代码，"auto" 表示自动判定
     func transcribe(
         sessionId: String,
         pass: TranscriptPass = .final,
-        modelId: String? = nil,
         language: String = "auto",
         denoise: Bool = false
     ) {
@@ -98,24 +96,15 @@ final class TranscriptionService: ObservableObject {
             return
         }
 
-        let resolvedId = modelId ?? (pass == .final
-            ? WhisperModelCatalog.finalDefaultId
-            : WhisperModelCatalog.realtimeDefaultId)
-
-        guard let descriptor = WhisperModelCatalog.model(id: resolvedId) else {
-            stage = .failed("未知模型 \(resolvedId)")
-            return
-        }
-
         // 新一轮开始，清掉上一次的失败归属
         failedSessionId = nil
 
         // 明确区分"模型没下载"与"转写失败"：界面据此给出不同引导（去下载，而不是重试）
-        guard let modelURL = ModelManager.shared.installedURL(for: resolvedId) else {
-            stage = .failed(TranscriptionError.modelNotInstalled(descriptor.displayName).localizedDescription)
+        guard let modelURL = ModelManager.shared.modelURL, ModelManager.shared.isInstalled else {
+            stage = .failed(TranscriptionError.modelNotInstalled(SenseVoiceModel.displayName).localizedDescription)
             // 归属到本会话：这条提示只会出现在这个会话的详情页上
             failedSessionId = sessionId
-            Log.shared.warn(.asr, "转写被拒：模型未下载｜\(descriptor.displayName)")
+            Log.shared.warn(.asr, "转写被拒：模型未下载｜\(SenseVoiceModel.displayName)")
             return
         }
 
@@ -142,7 +131,6 @@ final class TranscriptionService: ObservableObject {
         let inputs = TranscriptionWorker.Inputs(
             manifest: manifest,
             pass: pass,
-            descriptor: descriptor,
             modelURL: modelURL,
             language: language,
             existing: TranscriptStore.shared.load(sessionId: sessionId, pass: pass),
@@ -154,7 +142,7 @@ final class TranscriptionService: ObservableObject {
         totalSegments = manifest.segments.count
         stage = .loadingModel
         lastMessage = "开始\(pass.title)｜\(manifest.segments.count) 个分片"
-            + "｜模型 \(descriptor.displayName)"
+            + "｜模型 \(SenseVoiceModel.displayName)"
             + (denoise ? "｜音频已降噪" : "｜音频为原始轨")
 
         // 让实时字幕避让：两者同时跑会互相抢 CPU，结果是录音被拖累（设计文档 5.4）
@@ -226,14 +214,14 @@ final class TranscriptionService: ObservableObject {
 
 /// 转写执行体（**非 MainActor**，自带串行队列）。
 ///
-/// 所有对 `WhisperEngine` 的调用都落在这条队列上 —— whisper 上下文不是线程安全的。
+/// 所有对 `SenseVoiceEngine` 的调用都落在这条队列上 —— recognizer 上下文不是线程安全的。
 /// 回调在**本条队列上**触发，由调用方自行切回主线程（本项目统一用 `Task { @MainActor in }`）。
 final class TranscriptionWorker {
 
     struct Inputs {
         let manifest: SessionManifest
         let pass: TranscriptPass
-        let descriptor: WhisperModelDescriptor
+        /// SenseVoice 模型文件路径（`model.int8.onnx`，运行时下载）。
         let modelURL: URL
         let language: String
         let existing: TranscriptDocument?
@@ -257,9 +245,10 @@ final class TranscriptionWorker {
     private let cancelLock = NSLock()
     private var cancelled = false
 
-    /// 已锁定的语言（仅当 `inputs.language == "auto"` 时使用）。
-    /// 与实时路径同理：自动判定只做一次，之后沿用 —— 否则同一场会话的不同分片
-    /// 可能被判成不同语言，最终文字稿里混着两三种语言。
+    /// 首个出字分片检测到的语言（仅当 `inputs.language == "auto"` 时才有值）。
+    /// SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），识别时不能再改，
+    /// 因此这里**不再回传引擎**（whisper 时代是回传的）—— 它现在的唯一用途是：
+    /// 把「实际检测到的语言」写回终稿文档的 `language` 字段，替代"auto"这个占位。
     /// 只在本 worker 自己的串行队列上读写，不需要锁（与其它 worker 状态一致）。
     private var pinnedLanguage: String?
 
@@ -293,12 +282,21 @@ final class TranscriptionWorker {
         let manifest = inputs.manifest
         let total = manifest.segments.count
 
-        let engine = WhisperEngine(modelPath: inputs.modelURL.path)
-        let startedAt = Date()
+        // SenseVoice 需要两个文件：tokens（随包内置）+ 模型（运行时下载）。
+        // tokens 缺失说明安装包不完整，属硬失败，必须明确报出而不是含糊的"加载失败"。
+        guard let tokensURL = SenseVoiceModel.bundledTokensURL else {
+            onFinished?(.failed("内置 tokens 缺失（tokens.txt 未打进包）"))
+            return
+        }
 
+        let startedAt = Date()
         onStage?(.loadingModel)
-        guard engine.load() else {
-            onFinished?(.failed(engine.lastError ?? "模型加载失败"))
+        guard let engine = SenseVoiceEngine(
+            modelPath: inputs.modelURL.path,
+            tokensPath: tokensURL.path,
+            language: inputs.language
+        ) else {
+            onFinished?(.failed("SenseVoice 引擎创建失败（模型或 tokens 可能损坏）"))
             return
         }
 
@@ -341,7 +339,7 @@ final class TranscriptionWorker {
 
         if startIndex < total {
             for index in startIndex..<total {
-                // 取消只在这些边界上生效：whisper 单次调用无法中途打断，
+                // 取消只在这些边界上生效：SenseVoice 单次调用无法中途打断，
                 // 但一片只有几十秒音频，所以取消延迟是可接受的（秒级）。
                 if isCancelled {
                     Log.shared.info(.asr, "转写在第 \(index + 1) 片处取消")
@@ -352,7 +350,7 @@ final class TranscriptionWorker {
                 let url = RecordingLibrary.shared.segmentURL(sessionId: manifest.id, fileName: entry.fileName)
 
                 do {
-                    let samples = try WhisperEngine.loadSamples(from: url)
+                    let samples = try SenseVoiceEngine.loadSamples(from: url)
 
                     // 语音判定：优先真 VAD，缺失时回退 M2 的能量门限
                     let hasSpeech = vad?.containsSpeech(in: samples)
@@ -361,22 +359,17 @@ final class TranscriptionWorker {
                     if hasSpeech {
                         // 降噪只在对照稿里施加；失败时回退原始音频（见 SherpaDenoiser）
                         let audio = denoiser?.denoise(samples) ?? samples
-                        let local = engine.transcribe(
-                            samples: audio,
-                            language: inputs.language == "auto" ? pinnedLanguage : inputs.language,
-                            translateToEnglish: false,
-                            // 终稿求准、不求快（后台补跑）：beam search 在歧义处能纠回来，
-                            // 中文同音字（是/时/事/实）正是贪心最容易错的地方。
-                            decodeMode: .beamSearch
-                        )
+                        let recognition = engine.transcribe(samples: audio)
+                        // SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），不能在
+                        // 每次识别时改。auto 模式下每片独立判语言、结果由 recognition.language
+                        // 给出 —— 这里只锁定一次用于日志，不再回传（SenseVoice 语言判定足够稳定）。
                         // 与实时路径同一条规则：只有**真的转出了内容**才锁定语言。
-                        // 空结果分片的语言判定最不可信，而锁定是一次性的。
-                        if !local.isEmpty {
-                            pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+                        if !recognition.segments.isEmpty {
+                            pinLanguageIfNeeded(afterDetecting: recognition.language)
                         }
                         // 相对分片 → 相对会话。做错的后果是点句回听定位偏移（见 TranscriptMath）
                         segments.append(contentsOf: TranscriptMath.mapToSessionTimeline(
-                            local: local,
+                            local: recognition.segments,
                             sessionStartMs: entry.startMs,
                             seqBase: segments.count,
                             isProvisional: false
@@ -405,7 +398,7 @@ final class TranscriptionWorker {
             }
         }
 
-        engine.unload()
+        engine.close()
         // M3 的两个模型也显式释放：各自持有 ONNX 会话，占内存；
         // 一次转写可能跑几百个分片，跑完必须还回去
         vad?.close()
@@ -429,17 +422,17 @@ final class TranscriptionWorker {
         }
     }
 
-    /// 语言锁定：与实时路径同一处修复（见 `LiveTranscriptionEngine.pinLanguageIfNeeded`）。
+    /// 记录首个出字分片检测到的语言（仅 `inputs.language == "auto"` 时）。
     ///
-    /// 终稿是**逐分片**转写的，若每个分片都各自自动判定，同一场会话的不同分片
-    /// 可能被判成不同语言 —— 最终文字稿里就会混着两三种语言。而一场会话
-    /// 几乎总是同一门语言，判一次就够。
+    /// SenseVoice 引擎在创建时已固定语言，识别时不能逐片改 —— 所以这里**只记录、
+    /// 不再回传引擎**。记录的用途是写回终稿文档的 `language` 字段（见 makeDocument），
+    /// 让 auto 模式下的留档不再是一个无信息量的"auto"。
     private func pinLanguageIfNeeded(afterDetecting detected: String?) {
         guard inputs.language == "auto", pinnedLanguage == nil, let detected else { return }
         pinnedLanguage = detected
         Log.shared.info(
             .asr,
-            "终稿语言已锁定｜\(detected)（由首个出字分片自动判定，后续分片不再重判）"
+            "终稿检测语言｜\(detected)（首个出字分片判定，写入留档 language 字段）"
         )
     }
 
@@ -447,8 +440,8 @@ final class TranscriptionWorker {
         TranscriptDocument(
             sessionId: inputs.manifest.id,
             pass: inputs.pass,
-            modelId: inputs.descriptor.id,
-            language: inputs.language,
+            modelId: SenseVoiceModel.id,
+            language: pinnedLanguage ?? inputs.language,
             createdAtMs: Int64(Date().timeIntervalSince1970 * 1000),
             isComplete: isComplete,
             segments: segments,
@@ -466,7 +459,7 @@ enum TranscriptMath {
 
     /// 把「相对分片」的毫秒映射为「相对会话」的毫秒。
     static func mapToSessionTimeline(
-        local: [WhisperEngine.Segment],
+        local: [SenseVoiceEngine.Segment],
         sessionStartMs: Int,
         seqBase: Int,
         isProvisional: Bool
@@ -488,7 +481,7 @@ enum TranscriptMath {
 
     /// 极简能量门限（VAD-lite）。
     ///
-    /// 为什么需要它：whisper 面对纯噪声或音乐时会**编造出文本**（典型的"字幕幻觉"），
+    /// 为什么需要它：识别模型面对纯噪声或音乐时会**编造出文本**（典型的"字幕幻觉"），
     /// 而且编得很像真的，用户会以为识别出了问题。用均方根幅度做一个下限判断，
     /// 代价几乎为零，却能挡掉大部分幻觉。
     ///

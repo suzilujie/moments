@@ -670,3 +670,253 @@
 ■ 验证
   3 个 Swift 文件 lint 零错误。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十次] 禁用 CED 音乐检测（真机断点）+ 确认 SenseVoice 替换方案
+--------------------------------------------------------------------------------
+
+■ 起因（真机反馈）
+  用户装包后反馈「实时字幕没有输出」→ 追问确认是实时字幕，且「音乐识别导致
+  语言识别很多断点」。根因：CED 音乐检测在真机上把语音误判为音乐，每段还多
+  一次 CED 前向，实时字幕被切成一截一截的断点。这是同日七次 CED 方案的真机失败。
+
+■ 处置：临时禁用 CED
+  1) Sources/ASR/LiveTranscriber.swift
+     `musicThreshold` 由 0.5 → 2.0（概率最大 1.0，`≥ 2.0` 永不成立），等效禁用。
+     注释写明「待 SenseVoice 替换后整体移除」。
+  · 最小改动、可回滚（改回 0.5 即恢复），不做"删 MusicDetector"的破坏性移除。
+
+■ SenseVoice 替换方案（用户确认实施，分阶段）
+  调研结论（关键事实，均已核实）：
+  · 桥接头无需改：SherpaBridge.h 已 include 完整 c-api.h，内含
+    SherpaOnnxCreateOfflineRecognizer 等 SenseVoice 全套 API
+  · sherpa-onnx 库无需重建：offline recognizer 在 libsherpa-onnx-all.a 内
+  · 模型 226 MB（model.int8.onnx 237,115,547 B + tokens.txt 308 KB），
+    仓库 csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09
+  · 语言 zh/en/ja/ko/yue 与项目选项完全一致；事件检测（<|MUSIC|> 等）内建
+  分阶段：阶段 1 终稿 SenseVoice（低风险、解同音字）；阶段 2 实时字幕
+  SenseVoice（解音乐幻觉、删 CED）。
+  待办：SenseVoiceEngine 封装 / 模型下载（tokens 内置 + model 运行时下载）/
+  终稿对接 / 事件解析。
+
+■ 下一步
+  构建禁用 CED 的修复恢复实时字幕 → 继续 SenseVoice 阶段 1。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十一次] 识别引擎整体换成 SenseVoice（删 whisper + CED，一步到位）
+--------------------------------------------------------------------------------
+
+■ 起因（用户拍板）
+  用户先确认「改成 SenseVoice 架构」，追问两个关键分叉后拍板：
+  · 替换范围：**一步到位**（实时 + 终稿全换 SenseVoice，一并删 CED 和 whisper）
+  · whisper.cpp 去留：**彻底删除**（删代码 + CI 构建 + project.yml 依赖，ipa 减小但不可回退）
+
+■ 一、核心判断（为什么改动比想象干净）
+  1) 桥接头 / 库都不用动：SherpaBridge.h 已 include 完整 c-api.h，内含
+     SherpaOnnxCreateOfflineRecognizer / SherpaOnnxOfflineSenseVoiceModelConfig /
+     SherpaOnnxOfflineRecognizerResult（text/lang/event/tokens_arr/count）等全套 API；
+     offline recognizer 在 libsherpa-onnx-all.a 内。
+  2) SenseVoice 与 whisper 同为**批式（batch）**——「喂一段吐一段」，所以实时字幕的
+     「VAD 切句 + 逐段识别」骨架原样保留，只把 WhisperEngine.transcribe 换成
+     SenseVoiceEngine.transcribe。
+  3) SenseVoice 单模型（约 226 MB）中文已优于 whisper medium，故实时与终稿共用，
+     删掉 whisper 四档模型与两套解码参数。
+
+■ 二、新增文件（2）
+  1) Sources/ASR/SenseVoiceEngine.swift
+     封装 offline recognizer（OpaquePointer + retainedStrings + close，模式照抄
+     SherpaVad/MusicDetector）。关键点：
+     · sense_voice.language 在创建时固定（auto 或具体语言），识别时不再传 ——
+       因此"语言锁定"从 whisper 的"锁定后回传"简化为"锁定只记录/显示"，
+       SenseVoice auto 判定每段独立、足够稳定。
+     · 事件解析：遍历 tokens_arr 找 <|MUSIC|>/<|BGM|> 判音乐；语言 token
+       （<|zh|> 等）作 lang 字段兜底；text 字段已是 sherpa-onnx 过滤后的纯文本。
+     · use_itn=0（不启用逆文本归一化，避免额外 rule fsts/fars 依赖）。
+     · 迁移 WhisperEngine.loadSamples（16kHz 单声道读取，与 whisper 无关）。
+  2) Sources/ASR/SenseVoiceModel.swift
+     模型描述 + 语言选项（zh/en/yue/ja/ko/auto，从 WhisperModelCatalog 平移）。
+     model.int8.onnx 运行时下载（超蜂窝 200MB 上限）；tokens.txt 随包内置
+     （CI 下载到 Resources/SherpaModels），保证词表永久可用且与模型版本固定配对。
+
+■ 三、改动文件（10）
+  ModelManager.swift：states 字典 → 单 state；删 ggml 魔数校验改「体积下界 + 加载时验证」
+    （ONNX 无魔数）；删 WhisperModelDescriptor 耦合。
+  TranscriptionService.swift：WhisperEngine → SenseVoiceEngine；modelId 参数删除；
+    mapToSessionTimeline 参数类型 [WhisperEngine.Segment] → [SenseVoiceEngine.Segment]。
+  LiveTranscriber.swift：删 realtimeDecodeMode / musicDetector / musicThreshold / CED 加载；
+    音乐 gate 改为"识别后按 recognition.isMusic 判"；start 删 modelId。
+  SherpaBundledModel.swift：删 ced case（四个 switch 分支 + cedModelAndLabels）。
+  AppSettings.swift：删 realtimeModelId / finalModelId / resolveModelId 及持久化键。
+  SettingsView / RecordView / SessionListView / RootView / AppDelegate：模型 Picker 删除、
+    单模型下载行、installedURL→modelURL+isInstalled、whisper 后端信息 → SenseVoice。
+
+■ 四、删除文件（4）
+  WhisperEngine.swift / WhisperModel.swift / MusicDetector.swift / WhisperBridge.h
+
+■ 五、配置（3）
+  Bridges.h：删 WhisperBridge.h include，只留 SherpaBridge.h。
+  project.yml：删 whisper.xcframework 依赖 + Accelerate/Metal/MetalKit/CoreML（均为
+    whisper/ggml 专属系统框架）；注释订正（sherpa-onnx 单库、226MB 模型）。
+  ios-build.yml：删 whisper.cpp 构建三段（cache/build/report）+ WHISPER_TAG；
+    内置模型下载删 ced 两个文件、新增 tokens.txt（从 SenseVoice 模型仓库拉取）；
+    打包断言循环改为 silero_vad + gtcrn_simple + tokens.txt。
+
+■ 六、刻意保留（易被后人误删）
+  1) Transcript.swift 的 musicMarkerIDPrefix / isMusicMarker：SenseVoice 事件检测
+     仍是"音乐检测"（只是来源从 CED 换成模型内建），音乐段标注「（音乐）」与
+     翻译跳过逻辑照旧。
+  2) TranslationLanguageCatalog.identifier(forWhisperCode:)：参数标签 forWhisperCode
+     是历史命名，但功能是"语言 code → 翻译标识符"，SenseVoice 语言 code 与之兼容，
+     改名会扩大改动面，故保留。
+  3) AppSettings.preferModelMirror / autoPrepareModel / autoPrepareOnCellular：SenseVoice
+     226MB 运行时下载仍需镜像回退与移动网络边界。
+
+■ 七、验证与未验证
+  已做：
+  · 全库精确检索：WhisperEngine/WhisperModel/MusicDetector/models.states/installedURL
+    等符号**零代码引用残留**（仅剩历史注释）
+  · read_lints 零诊断（注意：本机 Windows 无 Swift 编译器，仅供参考）
+  未做（只能由 CI + 真机回答）：
+  · **能否编译以 CI 为准**（本项目前例 009c477「零 lint 但编不过」）
+  · SenseVoice int8 在 iPhone 的实时倍率能否满足实时字幕（未实测）
+  · tokens_arr 里事件 token 的确切形态（按官方约定写，真机打印校准）
+  · SenseVoice 单模型下"点句回听"粒度从 whisper 子句变成 VAD 句
+
+■ 八、影响范围
+  16 个文件（2 新增 + 10 改 + 4 删）+ 3 配置（Bridges.h / project.yml / ios-build.yml）。
+  数据层 TranscriptSegment / 落盘 / 检索 / 翻译**完全不动**。ipa 预期显著减小
+  （删 whisper.xcframework + CED 模型约 6MB + 四档 whisper 模型下载逻辑）。
+
+■ 九、潜在风险
+  1) 改动面大、一次 CI 混了"删文件 + 改引擎 + 改 UI + 改 CI 脚本"多类变量；
+     失败第一嫌疑是 Swift 隐式残留引用。
+  2) SenseVoice 模型 226MB 首次下载比 whisper Small(190MB) 更久。
+  3) 删 whisper 后不可回退（若 SenseVoice 真机出意外，需从 git 历史取回并重设计）。
+  4) Accelerate.framework 一并删除：onnxruntime 若在 iOS 构建里依赖它做 BLAS，
+     CI 会报链接错误 —— 若报，把 Accelerate 加回即可（先按"彻底删"走，CI 验证）。
+
+■ 下一步
+  待用户确认后 commit → push 触发 CI；CI 通过后核验：能否装、ipa 体积、
+  SenseVoice 模型下载、实时字幕不再有音乐断点、终稿同音字改善。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十二次] 代码 review（review）—— SenseVoice 架构替换的自查
+--------------------------------------------------------------------------------
+
+■ 修复（2 类）
+  1) 音乐检测加 `event` 字段双保险（SenseVoiceEngine.swift）
+     原实现只遍历 tokens_arr 找 <|MUSIC|>/<|BGM|>。查 c-api.h 发现
+     `SherpaOnnxOfflineRecognizerResult` 另有专门的 `event` 字段
+     （"Optional recognized event label"，sherpa-onnx 从事件 token 解析出的便捷字段）。
+     若 tokens_arr 里的特殊 token 被 sherpa-onnx 过滤，单靠 tokens_arr 会漏判音乐。
+     改为：优先读 event 字段（按"是否含 music/bgm 关键字"判断，不依赖具体格式）+
+     tokens_arr 遍历兜底，两者任一命中即判音乐。
+  2) 注释残留订正（whisper → SenseVoice/识别引擎）
+     TranscriptionService（3 处）、LiveTranscriber（4 处）、Transcript（2 处）、
+     Database（1 处）—— 均为注释或日志文案，不影响编译。
+
+■ 确认正确（逐项核对 c-api.h）
+  · 字段名 `model_config` / `sense_voice` / `tokens` / `num_threads` / `debug` /
+    `provider` / `feat_config` / `decoding_method` 与 c-api.h 一致
+  · `SherpaOnnxOfflineSenseVoiceModelConfig(model:language:use_itn:)` 成员序与头文件一致
+  · 结果字段 text / lang / event / tokens_arr / count 访问方式正确
+  · MainActor 隔离正确：TranscriptionService(@MainActor)→ModelManager(@MainActor)；
+    TranscriptionWorker / LiveTranscriptionEngine（非隔离）→SenseVoiceEngine（非隔离，
+    modelURL 经参数传入，不跨隔离域调 ModelManager）
+  · TranscriptMath.mapToSessionTimeline 签名已改 [SenseVoiceEngine.Segment]，字段名
+    一致，函数体零改动
+  · 代码级 whisper 引用仅剩 TranslationLanguageCatalog.identifier(forWhisperCode:)，
+    为刻意保留（语言 code → 翻译标识符，参数标签是历史命名）
+
+■ 遗留风险（需 CI / 真机回答，本机 Windows 无 Swift 编译器）
+  1) 能否编译以 CI 为准（前例 009c477「零 lint 但编不过」）
+  2) tokens_arr / event 字段的实际取值形态（已做双保险，风险降低）
+  3) SenseVoice int8 实时倍率能否满足实时字幕
+  4) Accelerate.framework 删除后 onnxruntime 是否依赖（若报链接错误，加回即可）
+  5) SenseVoice 单模型下"点句回听"粒度从 whisper 子句变 VAD 句
+
+■ 次要观察（不改，属方案固有取舍）
+  音乐段现在也要跑完整 SenseVoice 前向（先识别才能判事件），比原 CED 轻量检测慢；
+  这是"删 CED 换 SenseVoice 内建事件"的必然代价，已记录在案。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十三次] 第二轮 review（子代理全链路审查）+ 修复 3 处 + 报告 2 个既有 bug
+--------------------------------------------------------------------------------
+
+■ 已修复（3 处，均与 SenseVoice 替换直接相关或顺手修复）
+  1) 终稿语言字段死代码 → 写回检测语言（TranscriptionService.swift）
+     SenseVoice 语言在引擎创建时固定、识别时不可改，原 `pinLanguageIfNeeded`
+     只写不读（whisper 时代它回传引擎，SenseVoice 时代变成死代码）。
+     修复：`makeDocument` 的 `language` 字段由 `inputs.language` 改为
+     `pinnedLanguage ?? inputs.language`，让 auto 模式的留档写入实际检测语言，
+     死代码恢复用途。
+  2) 批量翻译未跳过音乐段（TranslationService.swift）
+     实时翻译路径有 `isMusicMarker` 跳过，批量翻译路径漏了。补齐同一判断，
+     避免「（音乐）」标注段被送系统翻译产生无意义译文。
+  3) 注释 / UI 文案过时（LiveTranscriber + RootView）
+     LiveTranscriber 两处"语言锁定沿用"注释改为"仅记录与回调、不回传引擎"；
+     RootView 自检页"whisper 后端与 sherpa-onnx 两个静态库"改为"仅 sherpa-onnx"。
+
+■ 报告（2 个既有 bug，whisper 时代即存在，非本次替换引入，待用户决定是否修）
+  1)【重要】切语言后实时稿 id 碰撞丢失
+     实时稿段 id = "seg-\(seqBase+offset)-\(sessionStartMs+item.startMs)"，实时路径
+     seqBase 恒 0、唯一性靠 sessionStartMs 单调递增。录音中切语言会重启引擎并
+     把 tailStartSample 清零 → 新句 startMs 回到 0，与重启前早段 id 碰撞，
+     publish 的按 id 去重会把切语言后的新句**静默丢弃**，落盘丢内容。
+     修复需给引擎加"时间轴偏移"（切语言时把累积音频位置传进去），改动涉及
+     LiveTranscriptionEngine 时间轴逻辑，建议单独一轮处理，不混进本次换引擎。
+  2)【低】音乐标注在下游（全文检索 / 字数统计 / Markdown 导出）未跳过
+     `isMusicMarker` 目前只在翻译路径生效。检索命中、characterCount、fullText、
+     导出会把「（音乐）」当真实内容。属既有语义缺口，建议另开待办。
+
+■ 确认无误（子代理逐行核对）
+  · assemble 里音乐段与识别段混排时 seq 连续不重复（display + kept 统一 enumerated 重排）
+  · 实时翻译 id 键（clientIdentifier）不因音乐段 id 变化错位；resetLiveBuffers 清跨录音残留
+  · 终稿 id 在续跑（segments = existing）下仍唯一
+  · 全局代码级 whisper/CED/MusicDetector 残留仅剩刻意保留的
+    TranslationLanguageCatalog.identifier(forWhisperCode:)（+ 3 个调用点）
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十四次] 修复：切语言后实时稿 id 碰撞丢失（用户确认「一并修」）
+--------------------------------------------------------------------------------
+
+■ 根因
+  实时稿段 id = "seg-\(seqBase+offset)-\(sessionStartMs+item.startMs)"，实时路径
+  seqBase 恒 0，唯一性只靠 sessionStartMs（由 tailStartSample 推出）单调递增。
+  录音中切语言会重启引擎、把 tailStartSample 清零 → 新句 startMs 回到 0，与重启前
+  早段 id 碰撞，publish 的按 id 去重把新句静默丢弃，落盘丢失切语言后的全部内容。
+
+■ 修复方案：段序号偏移（segmentSeqBase）
+  让 id 唯一性不再依赖「时间轴连续」，改由「本场会话累计段序号」保证：
+  1) LiveTranscriptionEngine 新增 `segmentSeqBase`（识别段 + 音乐段共同计数）。
+     start() 加参数 segmentSeqBase；tick 识别段 `mapToSessionTimeline(seqBase: segmentSeqBase)`
+     后 `segmentSeqBase += local.count`；appendMusicSegment 的音乐段 id 改为
+     `music-\(segmentSeqBase)-\(startMs)` 后 `segmentSeqBase += 1`。
+  2) LiveTranscriber.start（@MainActor）切语言时传
+     `segmentSeqBase: isSameSession ? accumulated.count : 0` —— 重启前累计段数，
+     新段 id 序号从 N 继续，与重启前 seg-0…seg-(N-1) 不碰撞。
+
+■ 为什么用「段序号」而不是「时间轴偏移」
+  时间轴偏移需要引擎暴露 tail/tailStartSample（在引擎串行队列上），门面跨线程读会引入
+  同步复杂度；而「段序号」门面本来就持有（accumulated.count），零跨线程读取，
+  且 id 唯一性由序号保证后与时间戳无关，更简单可靠。
+
+■ 影响与已知边界
+  · 音乐段 id 格式由 music-\(startMs) 变为 music-\(seq)-\(startMs)，isMusicMarker 仍按
+    "music-" 前缀判断，检索/翻译/去重均不受影响。
+  · 竞态边界（毫秒级、后果=少一句）：若用户恰在「引擎刚识别完、publish 尚未到主线程」
+    的瞬间切语言，accumulated.count 会比引擎实际产出的段数少 1，新段可能再撞一次。
+    窗口极窄、后果轻微，暂不做跨线程同步（见方案取舍）。
+  · seq 字段仍由 persistLiveTranscript 统一重排，临时值不影响落盘。
+
+■ 验证
+  · 全库检索：LiveTranscriptionEngine.shared.start 仅 LiveTranscriber.start 一处调用点，
+    参数已同步。
+  · segmentSeqBase 8 个使用点（声明/参数/赋值/tick 识别/tick 推进/音乐段 id/音乐段推进/
+    门面传参）一致。
+  · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。
+================================================================================

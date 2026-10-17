@@ -13,7 +13,7 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 /// SQLite 连接与语句的薄封装（M4）。
 ///
 /// ## 为什么自己写而不用 GRDB / SQLite.swift
-/// 本项目已经有两个手工构建的二进制依赖（whisper.cpp、sherpa-onnx），
+/// 本项目已经有一个手工构建的二进制依赖（sherpa-onnx），
 /// 再多一个来源不同的依赖，只会增加"到底哪一层坏了"的排查成本。
 /// 系统 SQLite 的 C API 啰嗦一点，但确定可用、零版本风险。
 ///

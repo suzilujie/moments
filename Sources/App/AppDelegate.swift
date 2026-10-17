@@ -66,13 +66,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let settings = AppSettings.shared
         Log.shared.info(.app, "配置摘要｜\(settings.summary())")
 
-        // 两个推理引擎的链接状态。取不到版本号即说明静态库没真正链上 ——
-        // 这比"编译通过"是强得多的证据（编译通过也可能只是没引用）。
-        let whisper = WhisperEngine.systemInfo
+        // 识别引擎（SenseVoice）运行在 sherpa-onnx 上。取不到版本号即说明
+        // 静态库没真正链上 —— 这比"编译通过"是强得多的证据。
         Log.shared.info(
             .app,
-            "推理引擎｜whisper \(whisper.isEmpty ? "不可用" : "已链接（\(whisper.prefix(50))）")"
-                + "｜sherpa-onnx \(SherpaOnnxEngine.summary)"
+            "推理引擎｜SenseVoice（sherpa-onnx \(SherpaOnnxEngine.summary)）"
         )
 
         // 随包内置的 sherpa 模型：缺任何一个都会让对应能力**静默降级**
@@ -86,15 +84,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             )
         }
 
-        // whisper 模型是运行时下载的，因此"装没装"必须单独说
-        let installed = ModelManager.shared.installedModels
+        // SenseVoice 模型是运行时下载的，因此"装没装"必须单独说
         let modelBytes = ByteCountFormatter.string(
             fromByteCount: ModelManager.shared.installedBytes,
             countStyle: .file
         )
         Log.shared.info(
             .app,
-            "已下载模型｜\(installed.isEmpty ? "（无）" : installed.map { $0.displayName }.joined(separator: "、"))"
+            "已下载模型｜\(ModelManager.shared.isInstalled ? SenseVoiceModel.displayName : "（无）")"
                 + "｜占用 \(modelBytes)"
         )
 

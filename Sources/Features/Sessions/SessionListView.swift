@@ -257,7 +257,7 @@ struct SessionDetailView: View {
     @State private var transcriptExportURL: URL?
 
     /// 模型下载状态。**必须观察**：本页的「尚未下载」提示直接读
-    /// `ModelManager.installedURL(...)`，不观察的话，用户在设置里下载完成后
+    /// `ModelManager.isInstalled`，不观察的话，用户在设置里下载完成后
     /// 回来会发现提示还说"未下载" —— 又一处"设置没生效"。
     @ObservedObject private var models = ModelManager.shared
     /// 本页自带的设置入口（理由见 toolbar 处的说明）
@@ -793,11 +793,7 @@ struct SessionDetailView: View {
     /// 终稿模型的一键下载。下载中就地显示进度，避免"点了没反应"。
     @ViewBuilder
     private var finalModelDownloadRow: some View {
-        let modelId = settings.finalModelId
-        let descriptor = WhisperModelCatalog.model(id: modelId)
-        let name = descriptor?.displayName ?? modelId
-
-        if let progress = models.states[modelId]?.progress {
+        if let progress = models.state.progress {
             if progress.isProportional {
                 ProgressView(value: progress.fraction)
                     .progressViewStyle(.linear)
@@ -805,15 +801,15 @@ struct SessionDetailView: View {
                 ProgressView()
                     .progressViewStyle(.linear)
             }
-            Text("正在下载终稿模型「\(name)」：\(progress.summary)")
+            Text("正在下载识别模型「\(SenseVoiceModel.displayName)」：\(progress.summary)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         } else {
             Button {
-                models.download(modelId, preferMirror: settings.preferModelMirror)
+                models.download(preferMirror: settings.preferModelMirror)
             } label: {
                 Label(
-                    "下载终稿模型" + (descriptor.map { "（\($0.sizeText)）" } ?? ""),
+                    "下载识别模型（\(SenseVoiceModel.sizeText)）",
                     systemImage: "arrow.down.circle"
                 )
                 .font(.footnote)
@@ -825,7 +821,7 @@ struct SessionDetailView: View {
     /// 终稿模型是否已就绪。提示文案与入口按钮共用同一个判据 ——
     /// 两处各判一次，迟早会出现"说没下载却给了下载按钮"这类自相矛盾。
     private var isFinalModelInstalled: Bool {
-        ModelManager.shared.installedURL(for: settings.finalModelId) != nil
+        ModelManager.shared.isInstalled
     }
 
     private var emptyTranscriptHint: String {
@@ -833,13 +829,10 @@ struct SessionDetailView: View {
             return "音频已按保留期清理，无法再生成文字稿。文字稿只能对尚存的音频生成。"
         }
         if !isFinalModelInstalled {
-            let descriptor = WhisperModelCatalog.model(id: settings.finalModelId)
-            let name = descriptor?.displayName ?? settings.finalModelId
             // 直接指向**本页就在下面**的那个按钮：不要求用户先理解
             // "设置在哪"再自己找一遍。
-            return "终稿模型「\(name)」尚未下载。点下方「下载终稿模型」"
-                + (descriptor.map { "（约 \($0.sizeText)）" } ?? "")
-                + "即可 —— 下好之后这里的「转写为文字」就能用了。"
+            return "识别模型「\(SenseVoiceModel.displayName)」尚未下载。点下方「下载识别模型」"
+                + "（约 \(SenseVoiceModel.sizeText)）即可 —— 下好之后这里的「转写为文字」就能用了。"
         }
         return "尚未转写。全程在本机离线完成，音频不会离开设备。"
     }

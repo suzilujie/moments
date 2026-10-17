@@ -3,7 +3,7 @@ import Foundation
 /// 转写稿的用途 —— 设计文档 5.4 的「两遍转写」。
 ///
 /// 为什么必须分两稿，而不是只保留一份（这是本项目的核心体验设计）：
-///   · whisper 是**批式模型**，实时字幕靠滑窗反复重解，同一句话会先出一版、
+///   · 识别引擎是**批式模型**，实时字幕靠滑窗反复重解，同一句话会先出一版、
 ///     再被改对。若只有这一版，用户会对"文字乱跳"产生不信任；
 ///   · 终稿用更大的模型在闲置时段补跑，结果是稳定的、可用于留档的；
 ///   · 两稿并存，用户既能当场看到内容，事后又有准确版本可比对。
@@ -65,7 +65,7 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     ///
     /// ## 为什么用前缀而不是独立字段
     /// 音乐段复用 `TranscriptSegment`（不新增字段，避免老数据解码失败），
-    /// 用 `music-` 前缀与 whisper 段的 `seg-` 前缀区分。由 `LiveTranscriber` 产出。
+    /// 用 `music-` 前缀与识别段的 `seg-` 前缀区分。由 `LiveTranscriber` 产出。
     static let musicMarkerIDPrefix = "music-"
 
     /// 是否为「（音乐）」标注段（非真实语音内容）。

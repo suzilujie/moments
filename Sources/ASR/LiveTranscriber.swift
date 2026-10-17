@@ -10,7 +10,7 @@ import Foundation
 ///   · `LiveTranscriber`：@MainActor，只把结果发布给界面
 ///
 /// ## 实时字幕的本质（必须先接受，否则会以为有 bug）
-/// whisper 是**批式模型**，没有"边听边出字"的流式能力 —— 所以实时字幕必然是
+/// SenseVoice 是**批式模型**，没有"边听边出字"的流式能力 —— 所以实时字幕必然是
 /// "攒一段、送一次、等结果"。真正的问题是**攒到什么程度送**。
 ///
 /// 原先是固定时长滑窗（每 5 秒把最近 15 秒重解一遍），切点与说话节奏无关，
@@ -76,10 +76,6 @@ final class LiveTranscriptionEngine {
 
     private var prerollFrames: Int { Int(prerollSeconds * Double(sampleRate)) }
 
-    /// 实时字幕的解码策略。**只此一处定义** —— 调用与日志都读它，
-    /// 免得出现"日志写着 beam、实际跑的是贪心"这种自相矛盾的记录。
-    private static let realtimeDecodeMode: WhisperEngine.DecodeMode = .beamSearch
-
     // MARK: - 状态
 
     private let queue = DispatchQueue(label: "com.xfish.moments.asr.live", qos: .utility)
@@ -110,17 +106,23 @@ final class LiveTranscriptionEngine {
     private var tail: [Float] = []
     /// `tail[0]` 在整个会话样本流中的下标（用于把识别结果映射回会话时间轴）
     private var tailStartSample = 0
-    private var engine: WhisperEngine?
+    private var engine: SenseVoiceEngine?
     private var timer: DispatchSourceTimer?
     private var display: [TranscriptSegment] = []
+    /// 本场会话已产出的段序号起点（识别段 + 音乐段共同计数）。
+    /// 实时稿 id 里的序号部分由它保证「本场会话内唯一」；切语言重启时门面把
+    /// 重启前的累计段数传进来，避免新段 id 回到 0 与重启前碰撞
+    ///（那会让 publish 的按 id 去重把新句静默丢弃）。
+    private var segmentSeqBase = 0
     private var modelURL: URL?
     private var language = "auto"
     private var didFailLoading = false
 
     /// 已**锁定**的语言（仅当设置为"自动判定"时使用）。
     ///
-    /// 首个出字窗口判出来的语言会锁定在这里，后续窗口一律沿用它。
-    /// 原因见 `pinLanguageIfNeeded(afterDetecting:)`。
+    /// SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），识别时不能再改，
+    /// 因此这个"锁定"**不再回传引擎** —— 它现在只做两件事：显示在界面（语言胶囊）、
+    /// 作为实时翻译的源语言（见 pinLanguageIfNeeded 的 onLanguagePinned 回调）。
     private var pinnedLanguage: String?
 
     // M3：真 VAD 与降噪器。都按需加载、且只在本引擎队列上使用 ——
@@ -132,11 +134,6 @@ final class LiveTranscriptionEngine {
     /// 降噪失败只提示一次：滑窗每几秒跑一次，若每次都记日志会把日志刷爆，
     /// 而"降噪失败"这件事看一次就够了。
     private var hasReportedDenoiseFailure = false
-    /// 音乐检测器（CED）。同 VAD：持有 C 指针、只在本引擎队列上使用。
-    private var musicDetector: MusicDetector?
-    /// Music 概率 ≥ 该阈值即判为音乐、跳过 whisper。0.5 是保守起步值，
-    /// 真机日志（logLiveStats 的"音乐标注 N 段"）会告诉我们该调高还是调低。
-    private static let musicThreshold: Float = 0.5
 
     // MARK: - 实时统计（供日志汇总）
     //
@@ -216,9 +213,18 @@ final class LiveTranscriptionEngine {
     // MARK: - 生命周期
 
     /// 开始实时字幕。可在录音开始时调用。
-    /// - Parameter denoiseEnabled: 是否先把窗口音频降噪再识别（M3）。
-    ///   默认关 —— 降噪会引入失真伪影，可能反而更差（见 SherpaDenoiser）。
-    func start(modelURL: URL, language: String, denoiseEnabled: Bool = false) {
+    /// - Parameters:
+    ///   - denoiseEnabled: 是否先把窗口音频降噪再识别（M3）。
+    ///     默认关 —— 降噪会引入失真伪影，可能反而更差（见 SherpaDenoiser）。
+    ///   - segmentSeqBase: 本场会话已产出的段数。**切语言重启时传「重启前累计段数」**，
+    ///     让新段 id 的序号部分继续递增、不回到 0 —— 否则新句 id 会与重启前早段
+    ///     碰撞，被 publish 的按 id 去重静默丢弃（切语言后实时稿丢失的根因）。
+    func start(
+        modelURL: URL,
+        language: String,
+        denoiseEnabled: Bool = false,
+        segmentSeqBase: Int = 0
+    ) {
         lock.lock()
         pending.removeAll()
         pendingDroppedFrames = 0
@@ -236,6 +242,7 @@ final class LiveTranscriptionEngine {
             self.tail = []
             self.tailStartSample = 0
             self.display = []
+            self.segmentSeqBase = segmentSeqBase
             self.didFailLoading = false
             self.resetLiveStats()
             self.prepareHelpersIfNeeded()
@@ -251,16 +258,21 @@ final class LiveTranscriptionEngine {
             }
 
             self.onStatus?("正在加载实时字幕模型…")
-            let engine = WhisperEngine(modelPath: modelURL.path)
-            engine.isQuiet = true   // 见 WhisperEngine.isQuiet：否则会把日志淹掉
-            if engine.load() {
+            // SenseVoice 需要两个文件：tokens（随包内置）+ 模型（运行时下载）。
+            // 任一缺失都算加载失败；失败后 didFailLoading 会让 tick 持续裁剪 tail、不攒内存。
+            if let tokensURL = SenseVoiceModel.bundledTokensURL,
+               let engine = SenseVoiceEngine(
+                   modelPath: modelURL.path,
+                   tokensPath: tokensURL.path,
+                   language: language
+               ) {
                 self.engine = engine
                 self.startTimer()
                 self.onStatus?(self.runningStatusText)
             } else {
                 self.didFailLoading = true
-                self.onStatus?("实时字幕模型加载失败：\(engine.lastError ?? "未知原因")")
-                Log.shared.error(.asr, "实时字幕模型加载失败｜\(engine.lastError ?? "未知原因")")
+                self.onStatus?("实时字幕模型加载失败（模型未下载或内置 tokens 缺失）")
+                Log.shared.error(.asr, "实时字幕模型加载失败（模型未下载或内置 tokens 缺失）")
             }
         }
     }
@@ -279,9 +291,6 @@ final class LiveTranscriptionEngine {
         }
         if denoiseEnabled {
             parts.append(denoiser != nil ? "降噪已启用" : "降噪不可用（模型缺失）")
-        }
-        if musicDetector != nil {
-            parts.append("音乐检测已启用")
         }
         return parts.joined(separator: "｜")
     }
@@ -311,17 +320,6 @@ final class LiveTranscriptionEngine {
                 }
             } else {
                 Log.shared.warn(.asr, "未找到内置 VAD 模型，回退到固定切窗 + 能量门限")
-            }
-
-            // 音乐检测（CED）：与 VAD 同样内置、按需加载。加载失败**不阻断**实时字幕，
-            // 只意味着"音乐段落会照常送 whisper"（可能产生幻觉文本，但字幕仍可用）。
-            if let ced = SherpaBundledModel.ced.cedModelAndLabels {
-                musicDetector = MusicDetector(modelPath: ced.model.path, labelsPath: ced.labels.path)
-                if musicDetector == nil {
-                    Log.shared.warn(.asr, "音乐检测（CED）模型加载失败，音乐段落将照常送 whisper")
-                }
-            } else {
-                Log.shared.warn(.asr, "未找到内置音乐检测（CED）模型，音乐段落将照常送 whisper")
             }
         }
 
@@ -381,8 +379,6 @@ final class LiveTranscriptionEngine {
             self.vad = nil
             self.denoiser?.close()
             self.denoiser = nil
-            self.musicDetector?.close()
-            self.musicDetector = nil
             self.didAttemptLoadingHelpers = false
             self.hasReportedDenoiseFailure = false
             // 停止时把**尚未识别**的尾部如实报出来：这段音频不会出现在实时字幕里
@@ -632,42 +628,30 @@ final class LiveTranscriptionEngine {
         // 后者会随裁剪产生漂移（与分片时间轴的取舍一致）。
         let startMs = tailStartSample * 1000 / sampleRate
 
-        // 音乐检测 gate（CED）：whisper 对带歌声的音乐只会编造文本，所以先问
-        // "这段是不是音乐"，是就标注「（音乐）」、不送 whisper —— 幻觉从源头消失。
-        // 检测器不可用时 musicProbability 返回 0（视作"不是音乐"，宁可放行也不误杀真话）。
-        if (musicDetector?.musicProbability(tail) ?? 0) >= Self.musicThreshold {
-            appendMusicSegment(startMs: startMs, audioMs: audioMs)
-            finishSegment()
-            return
-        }
-
         // 降噪在这里临时施加（原始音频始终没有被动过）
         let audio = maybeDenoise(tail)
 
         // 计时用**单调时钟**而不是墙钟：耗时是性能指标，
         // 系统对时会让墙钟跳变，而单调时钟不会（与看门狗同一取舍）
         let started = ProcessInfo.processInfo.systemUptime
-        // 自动判定时：首个出字段判出的语言会被**锁定**，之后沿用，不再让
-        // whisper 每个窗口重新决定"这段在说什么语言"（见 pinLanguageIfNeeded）
-        let requested = (language == "auto") ? pinnedLanguage : language
-        let local = engine.transcribe(
-            samples: audio,
-            language: requested,
-            translateToEnglish: false,
-            // 实时字幕过滤幻觉（音乐/噪声处 whisper 会编出"很像真的"短句）。
-            // 终稿不传这个开关 —— 留档要完整，可见性优先于干净。
-            dropLikelySilence: true,
-            // beam search：实时字幕最被诟病的是**错字**（尤其中文同音字），
-            // 而 beam 正是针对错字的手段。理由与代价见 WhisperEngine.DecodeMode。
-            // 终稿保持贪心 —— 终稿本来就慢，且"换模型"对它的提升更直接，
-            // 两个变量一起动会让成效无法归因。
-            decodeMode: Self.realtimeDecodeMode
-        )
-        // **只在真的出了字之后才锁定**：whisper 对一段"VAD 认为有人声、
-        // 但一个词都没听出来"的音频给出的语言判定，可信度是最低的，
-        // 而锁定是一次性的 —— 判错就错一整场（见 pinLanguageIfNeeded 的说明）。
+        // SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），识别时不再传；
+        // auto 模式下每段独立判语言、结果由 recognition.language 给出（见 pinLanguageIfNeeded）。
+        let recognition = engine.transcribe(samples: audio)
+
+        // 音乐事件（SenseVoice 内建，替代原 CED 独立检测）：这段被判为音乐/背景音乐、
+        // 且没有听出任何话时，标注「（音乐）」、不产出文本 —— 音乐幻觉从源头消失。
+        // 有语音内容时以语音为准（即使同时有背景音乐）。
+        if recognition.isMusic && recognition.segments.isEmpty {
+            appendMusicSegment(startMs: startMs, audioMs: audioMs)
+            finishSegment()
+            return
+        }
+
+        let local = recognition.segments
+        // **只在真的出了字之后才锁定**：对一段"VAD 认为有人声、但一个词都没听出来"
+        // 的音频给出的语言判定，可信度最低，而锁定是一次性的（见 pinLanguageIfNeeded）。
         if !local.isEmpty {
-            pinLanguageIfNeeded(afterDetecting: engine.lastDetectedLanguage)
+            pinLanguageIfNeeded(afterDetecting: recognition.language)
         }
         let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
 
@@ -695,9 +679,11 @@ final class LiveTranscriptionEngine {
         let mapped = TranscriptMath.mapToSessionTimeline(
             local: local,
             sessionStartMs: startMs,
-            seqBase: 0,
+            seqBase: segmentSeqBase,
             isProvisional: false
         )
+        // 推进段序号：本场会话内 id 的序号部分单调递增，切语言重启也不回到 0
+        segmentSeqBase += local.count
         assemble(newSegments: mapped)
         finishSegment()
     }
@@ -723,7 +709,7 @@ final class LiveTranscriptionEngine {
         reportLiveStatsIfNeeded()
     }
 
-    /// 产出一个「（音乐）」标注段，**不送 whisper**。
+    /// 产出一个「（音乐）」标注段，**不送识别引擎**。
     ///
     /// 为什么是"标注段"而不是"直接跳过"：音乐不是没有内容 —— 它占据了一段
     /// 时间轴。产出「（音乐）」后，字幕与留档都能如实反映"这段时间是音乐"，
@@ -736,13 +722,14 @@ final class LiveTranscriptionEngine {
             Log.shared.info(
                 .asr,
                 "实时字幕首个音乐标注｜音频 \(audioMs)ms｜时间轴起点 \(startMs)ms"
-                    + "（Music 概率超阈值，跳过 whisper，避免幻觉文本）"
+                    + "（SenseVoice 事件判定为音乐，跳过识别，避免幻觉文本）"
             )
         }
-        // id 用 "music-" 前缀：与 whisper 段的 "seg-" 前缀错开，避免检索/去重碰撞。
-        // seq 用 display.count（display 已被 assemble 连续编号，这里顺延）。
+        // id 用 "music-" 前缀 + 本场段序号：与识别段 "seg-" 前缀错开，且序号部分
+        // 也随 segmentSeqBase 递增 —— 切语言重启后新音乐段 id 不回到 0 碰撞
+        //（与识别段同一条规则，见 start 的 segmentSeqBase 说明）。
         let segment = TranscriptSegment(
-            id: TranscriptSegment.musicMarkerIDPrefix + "\(startMs)",
+            id: TranscriptSegment.musicMarkerIDPrefix + "\(segmentSeqBase)-\(startMs)",
             seq: display.count,
             startMs: startMs,
             endMs: startMs + audioMs,
@@ -750,6 +737,7 @@ final class LiveTranscriptionEngine {
             speakerId: nil,
             isProvisional: false
         )
+        segmentSeqBase += 1
         display.append(segment)
         onSegments?(display)
     }
@@ -762,26 +750,19 @@ final class LiveTranscriptionEngine {
         reportLiveStatsIfNeeded()
     }
 
-    /// 语言锁定：自动判定只做**一次**，之后沿用。
+    /// 记录首个出字段检测到的语言，并回调界面（语言胶囊显示 + 实时翻译源语言）。
     ///
-    /// ## 为什么必须锁（真机问题）
-    /// whisper 的语言判定是**每个窗口独立做的**。原先实时路径对每个 15 秒窗口
-    /// 都传 `nil`（自动判定），于是一段本来只用一种语言的对话，会因为窗口间
-    /// 音频内容的差异反复改变判定结果 —— 用户看到的就是
-    /// 「实时识别有的扯淡，出现各种语言」。
-    ///
-    /// **这不是模型的问题，是我们让它每 15 秒重新决定一次在说什么语言。**
-    /// 一段对话几乎总是同一门语言，判一次就够了。
-    ///
-    /// 锁错也有出路：界面会把锁定的语言显示出来并提供一键更改（见 RecordView）——
-    /// **看得见才可能被纠正**。
+    /// ## 与 whisper 时代的不同
+    /// whisper 时代语言是**每个窗口独立判定**的，锁定的作用是"防窗口间来回跳"
+    /// （那会让实时字幕出现各种语言）。SenseVoice 的语言在引擎创建时固定（auto 或
+    /// 具体语言），识别时不再逐段传语言 —— 所以这里**只记录与回调，不再回传引擎**。
+    /// auto 模式下每段仍由模型各自判语言，但 SenseVoice 判定足够稳定，无需再锁。
     private func pinLanguageIfNeeded(afterDetecting detected: String?) {
         guard language == "auto", pinnedLanguage == nil, let detected else { return }
         pinnedLanguage = detected
         Log.shared.info(
             .asr,
-            "实时字幕语言已锁定｜\(detected)"
-                + "（由首个出字窗口自动判定，后续窗口不再重判 —— 避免窗口间来回跳）"
+            "实时字幕检测语言｜\(detected)（首个出字段判定，用于界面显示与翻译源语言）"
         )
         onLanguagePinned?(detected)
     }
@@ -812,7 +793,6 @@ final class LiveTranscriptionEngine {
 
         var summary = "实时字幕统计｜识别段 \(utteranceCount) 个"
             + "（其中切于长度上限 \(cappedUtteranceCount) 个）"
-            + "｜解码 \(Self.realtimeDecodeMode.text)"
             + "｜音乐标注 \(musicSegmentsCount) 段"
             + "｜丢弃长静音 \(droppedSilenceCount) 次"
             + "｜平均音频 \(avgAudioMs)ms｜最长音频 \(maxUtteranceAudioMs)ms"
@@ -1006,35 +986,38 @@ final class LiveTranscriber: ObservableObject {
     /// 开始实时字幕。需要调用方（录音页）先确认模型已下载。
     /// - Parameters:
     ///   - sessionId: 本次录音的会话 id。停止时据此把实时稿落盘。
-    ///   - modelId: 实际使用的实时模型 id（写进实时稿的元信息）。
     func start(
         sessionId: String,
-        modelId: String,
         modelURL: URL,
         language: String,
         denoiseEnabled: Bool = false
     ) {
         // 换会话就清空累计；**同一会话内因切语言而重启时要保留** ——
         // 这正是"切识别语言不该丢掉已识别内容"的落点。
-        if self.sessionId != sessionId {
-            accumulated = []
-            didSwitchLanguage = false
-        } else {
+        let isSameSession = self.sessionId == sessionId
+        if isSameSession {
             // 同一场会话再次 start ⇒ 用户在录音中改了识别语言（见 restartLiveTranscription）
             didSwitchLanguage = true
+        } else {
+            accumulated = []
+            didSwitchLanguage = false
         }
         self.sessionId = sessionId
-        self.modelId = modelId
+        self.modelId = SenseVoiceModel.id
         self.usedLanguage = language
 
         segments = []
         // 上一次会话锁定的语言不该带到这一次（换个语言/重开录音都要重判）
         pinnedLanguage = ""
         statusText = "正在启动…"
+        // 段序号偏移：同一场会话切语言重启时，把「重启前累计段数」传给引擎，
+        // 让新段 id 的序号部分继续递增 —— 否则新句 id 与重启前早段碰撞、
+        // 被 publish 按 id 去重静默丢弃（切语言后实时稿丢失的根因）。
         LiveTranscriptionEngine.shared.start(
             modelURL: modelURL,
             language: language,
-            denoiseEnabled: denoiseEnabled
+            denoiseEnabled: denoiseEnabled,
+            segmentSeqBase: isSameSession ? accumulated.count : 0
         )
     }
 

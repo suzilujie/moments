@@ -25,14 +25,11 @@ jobs:
   build:
     name: Build unsigned ipa
     runs-on: macos-15
-    # 120 分钟：两个 C/C++ 大依赖（whisper.cpp、sherpa-onnx）的**首次**构建
-    # 各自都需要数分钟到十几分钟；命中缓存后才会回落到几分钟。
-    # 原为 60 分钟，M3 加入 sherpa-onnx 后上调。
+    # 120 分钟：C/C++ 大依赖（sherpa-onnx）的**首次**构建需要数分钟到十几分钟；
+    # 命中缓存后才会回落到几分钟。原为 60 分钟，M3 加入 sherpa-onnx 后上调。
     timeout-minutes: 120
 
     env:
-      # whisper.cpp 固定 tag（官方已移除 SwiftPM 支持，只能自建 xcframework）
-      WHISPER_TAG: v1.9.4
       # sherpa-onnx 固定 tag。
       # 注意：其 release 里只有 Android / Windows / macOS / WASM 产物，
       # **没有 iOS**，官方只提供构建脚本，因此必须自建（M3）。
@@ -51,61 +48,6 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
-
-      # ═══════════════════════════════════════════════════════════════
-      # whisper.cpp → xcframework
-      #
-      # 为什么要在 CI 里自己构建：whisper.cpp 官方已经移除了 SwiftPM 支持
-      # （仓库根目录没有 Package.swift 了），第三方封装 SwiftWhisper 也已停更。
-      # 官方唯一支持的集成方式是 build-xcframework.sh，它会把 ggml 与 Metal
-      # 着色器一并处理，产出可直接链接的 xcframework（本项目用静态形式，
-      # 免去签名与嵌入步骤）。
-      #
-      # 缓存整个 third_party/whisper.cpp（源码 + 产物）：key 绑定 tag，
-      # 这样日常改动不会重复编译 C++，只有升级 whisper 版本时才重编。
-      # ═══════════════════════════════════════════════════════════════
-      - name: Cache whisper.cpp (source + xcframework)
-        id: whisper-cache
-        uses: actions/cache@v4
-        with:
-          path: third_party/whisper.cpp
-          key: whisper-${{ env.WHISPER_TAG }}-${{ runner.os }}
-
-      - name: Build whisper.xcframework
-        if: steps.whisper-cache.outputs.cache-hit != 'true'
-        run: |
-          set -e
-          mkdir -p third_party
-          if [ ! -d third_party/whisper.cpp/.git ]; then
-            git clone --depth 1 --branch "${WHISPER_TAG}" \
-              https://github.com/ggml-org/whisper.cpp third_party/whisper.cpp
-          fi
-          cd third_party/whisper.cpp
-          # 静态 xcframework：不产生动态库，链接进 App，无需签名与嵌入
-          BUILD_STATIC_XCFRAMEWORK=ON ./build-xcframework.sh
-          echo "=== 构建完成，产物 ==="
-          ls -la build-apple || true
-
-      # 产物结构诊断：本机是 Windows、无法预先查看 xcframework 内部布局，
-      # 因此把关键路径以【注解】形式输出 —— 注解可匿名读取，而 Actions 原始
-      # 日志需要认证（403）。这样即使链接配置写错，也能立刻看到真实结构。
-      - name: Report whisper artifact layout
-        if: always()
-        run: |
-          if [ -d third_party/whisper.cpp/build-apple ]; then
-            echo "::notice::whisper 产物目录已生成"
-            find third_party/whisper.cpp/build-apple -maxdepth 2 -name "*.xcframework" | head -10 | while IFS= read -r p; do
-              echo "::warning::whisper-xcframework ${p}"
-            done
-            find third_party/whisper.cpp/build-apple -maxdepth 4 -name "whisper.h" | head -10 | while IFS= read -r p; do
-              echo "::warning::whisper-header ${p}"
-            done
-            find third_party/whisper.cpp/build-apple -maxdepth 4 -name "module.modulemap" | head -5 | while IFS= read -r p; do
-              echo "::warning::whisper-modulemap ${p}"
-            done
-          else
-            echo "::warning::third_party/whisper.cpp/build-apple 不存在，xcframework 未生成"
-          fi
 
       # ═══════════════════════════════════════════════════════════════
       # sherpa-onnx（M3）→ 合并静态库
@@ -235,9 +177,8 @@ jobs:
             > "$LOGS/05-libtool-merge.log" 2>&1 || emit_fail "05-libtool-merge"
           ls -lh build/os64/libsherpa-onnx-all.a
 
-      # 与 whisper 同样的理由（见下）：本机看不到 Actions 原始日志，
-      # 注解是唯一观测通道。这里把三个关键产物路径直接报出来 ——
-      # 链接失败时，"路径到底存不存在"是第一个要排除的可能。
+      # 本机看不到 Actions 原始日志，注解是唯一观测通道。这里把关键产物路径
+      # 直接报出来 —— 链接失败时，"路径到底存不存在"是第一个要排除的可能。
       - name: Report sherpa-onnx artifact layout
         if: always()
         run: |
@@ -252,30 +193,30 @@ jobs:
           fi
 
       # ═══════════════════════════════════════════════════════════════
-      # sherpa-onnx 模型 —— **内置随包**，不做运行时下载
+      # sherpa-onnx 模型与 SenseVoice tokens —— **内置随包**，不做运行时下载
       #
-      # 与 whisper 模型刻意做成相反的两种策略，判据是「体积 + 可靠性」：
-      #   · 这三个模型合计约 7 MB（VAD 0.6 + 降噪 0.5 + CED 5.86），
-      #     远低于蜂窝下载 200 MB 的上限；
+      # 与 SenseVoice 识别模型刻意做成相反的两种策略，判据是「体积 + 可靠性」：
+      #   · VAD + 降噪合计约 1.1 MB，tokens 约 308 KB，远低于蜂窝 200 MB 上限；
       #   · 它们的原始托管在 GitHub Releases / HuggingFace，而交付环境实测
       #     github.com 不可达（见工作日志阶段十一、十四）。若做成运行时下载，
-      #     「VAD / 降噪 / 音乐检测」就会在用户手上直接不可用 ——
-      #     那是把一个可用的功能做成不可用。
+      #     「VAD / 降噪」就会在用户手上直接不可用 —— 那是把一个可用的功能做成不可用。
       # 内置之后，这些能力永久可用、不依赖任何网络。
       #
-      # 2026-10-17：说话人分割（pyannote，6.6 MB）与声纹嵌入（CAM++，27 MB）
-      # 已随「说话人」功能一并移除（用户确认不需要），ipa 因此减少约 34 MB。
-      # 同日新增 CED 音乐检测（约 5.86 MB），随包内置 —— 见 SherpaBundledModel.ced。
+      # SenseVoice 识别模型（model.int8.onnx，约 226 MB）**不走这里**：超过蜂窝
+      # 200 MB 上限，只能运行时下载（见 SenseVoiceModel / ModelManager）。
+      # tokens.txt（词表）必须随包内置 —— 识别器的词表才不依赖网络、且与模型版本固定配对。
+      #
+      # 2026-10-17：说话人分割 / 声纹嵌入已随「说话人」功能移除；CED 音乐检测
+      # 被 SenseVoice 的事件检测取代（见 SenseVoiceEngine 的音乐事件解析）。
       # ═══════════════════════════════════════════════════════════════
-      - name: Fetch sherpa-onnx models (bundled into ipa)
+      - name: Fetch sherpa-onnx models & SenseVoice tokens (bundled into ipa)
         run: |
           DEST=Resources/SherpaModels
           mkdir -p "$DEST"
           BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download"
-          # CED 音乐检测模型：sherpa-onnx 在 GitHub Releases 里以 .tar.bz2 压缩包分发，
-          # 而 HuggingFace 提供单文件直链，下载更简单、无需解包。
-          # 本地重命名为 ced.int8.onnx / ced_labels.csv，与 SherpaBundledModel.files 对齐。
-          CED_BASE="https://huggingface.co/k2-fsa/sherpa-onnx-ced-tiny-audio-tagging-2024-04-19/resolve/main"
+          # SenseVoice tokens：从模型仓库拉取，与 SenseVoiceModel.bundledTokensURL 对齐。
+          # 它与识别模型（model.int8.onnx）同仓库同 tag，保证词表与模型版本一致。
+          TOKENS_BASE="https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main"
 
           fetch() {
             name="$1"; url="$2"
@@ -290,11 +231,10 @@ jobs:
 
           fetch silero_vad.onnx "$BASE/asr-models/silero_vad.onnx"
           fetch gtcrn_simple.onnx "$BASE/speech-enhancement-models/gtcrn_simple.onnx"
-          fetch ced.int8.onnx "$CED_BASE/model.int8.onnx"
-          fetch ced_labels.csv "$CED_BASE/class_labels_indices.csv"
-          echo "=== 内置模型清单 ==="
+          fetch tokens.txt "$TOKENS_BASE/tokens.txt"
+          echo "=== 内置模型与 tokens 清单 ==="
           ls -lh "$DEST"
-          for f in silero_vad.onnx gtcrn_simple.onnx ced.int8.onnx ced_labels.csv; do
+          for f in silero_vad.onnx gtcrn_simple.onnx tokens.txt; do
             if [ -f "$DEST/$f" ]; then
               echo "::notice::bundled-model $f $(stat -f%z "$DEST/$f") bytes"
             else
@@ -388,9 +328,9 @@ jobs:
           #
           # 上面的正则只抓 `文件:行:列: error:` 这一种格式。但构建失败最常见的形态是
           # 【链接错误】，它长这样：
-          #   ld: Undefined symbols: _whisper_init_from_file_with_params
-          #   ld: framework 'whisper' not found
-          #   error: Build input file cannot be found: .../whisper.xcframework
+          #   ld: Undefined symbols: _SherpaOnnxCreateOfflineRecognizer
+          #   ld: library 'sherpa-onnx-all' not found
+          #   error: Build input file cannot be found: .../libsherpa-onnx-all.a
           #   clang: error: linker command failed with exit code 1
           # 全都不带行列号 —— 于是"构建失败却一条错误注解都没有"。
           # 本机是 Windows、看不到 Actions 原始日志（需认证），注解是唯一观测通道，
@@ -506,12 +446,12 @@ jobs:
             echo "::warning::产物中存在 NSSpeechRecognitionUsageDescription —— 本项目不使用该框架，应移除"
           fi
 
-          # 内置模型（VAD / 降噪）必须真的进了包。
-          # 否则这两项会在设备上**静默降级**到 M2 的行为
-          # （代码里刻意做了失败降级），而用户完全不知道为什么 ——
-          # 这种"功能没生效但不报错"的情况，必须在这一步拦住。
+          # 内置模型（VAD / 降噪）与 SenseVoice tokens 必须真的进了包。
+          # 否则会在设备上**静默降级**（代码里刻意做了失败降级，VAD 缺失回退到
+          # 固定切窗 + 能量门限；tokens 缺失则识别引擎无法创建），
+          # 而用户完全不知道为什么 —— 这种"功能没生效但不报错"的情况，必须在这一步拦住。
           APP_DIR="verify/Payload/Moments.app"
-          for f in silero_vad.onnx gtcrn_simple.onnx ced.int8.onnx ced_labels.csv; do
+          for f in silero_vad.onnx gtcrn_simple.onnx tokens.txt; do
             if [ ! -f "$APP_DIR/$f" ]; then
               echo "::error::内置模型未打进包：$f"
               exit 1

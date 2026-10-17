@@ -33,7 +33,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-      # 资源目录：目前只有内置的 sherpa 模型（CI 下载后随包打包）。
+      # 资源目录：内置的 sherpa 模型（VAD / 降噪）与 SenseVoice tokens（CI 下载后随包打包）。
       # 排除 Info.plist —— 它由 INFOPLIST_FILE 单独引用，
       # 若再被当作普通资源拷进包内会产生重复与告警。
       # 注意资源会被**平铺到包根目录**，因此代码里可以直接用
@@ -53,36 +53,16 @@ targets:
         embed: true
       # RPSystemBroadcastPickerView（主 App 弹出系统录制入口）来自 ReplayKit
       - sdk: ReplayKit.framework
-      # ═══ whisper.cpp（M2 转写引擎）═══
-      # 官方已移除 SwiftPM 支持，因此由 CI 用官方 build-xcframework.sh
-      # 构建成【静态】xcframework 后在此链接。third_party/ 不入版本控制。
-      # 静态而非动态的理由：免去签名与嵌入步骤，对未签名构建更省事。
-      - framework: third_party/whisper.cpp/build-apple/whisper.xcframework
-        embed: false
       # ═══ 系统翻译框架（M5）═══
       # 端侧翻译、免费、零模型体积，语言包由系统管理。
       # 显式声明而不依赖自动链接：本项目已经因为漏了 CoreML 而失败过一次
       # （whisper 静态库里含 CoreML 目标文件），系统框架宁可写全。
       - sdk: Translation.framework
       # ═══ Network（首次使用自动准备模型：区分 Wi-Fi 与移动网络）═══
-      # 用于判断当前是否"不计流量"（NWPathMonitor），决定要不要静默下载 57 MB 的模型。
+      # 用于判断当前是否"不计流量"（NWPathMonitor），决定要不要静默下载 226 MB 的模型。
       # 与 Translation.framework 同理**显式声明**：漏链接的失败形态是链接错误，
       # 不带行列号，在无 Xcode 的环境里极难定位。
       - sdk: Network.framework
-      # ggml（whisper 的底层张量库）依赖这些系统框架：BLAS 走 Accelerate，GPU 走 Metal
-      - sdk: Accelerate.framework
-      - sdk: Metal.framework
-      - sdk: MetalKit.framework
-      # ═══ CoreML（由 CI 实测补入，不是猜的）═══
-      # whisper.cpp 的静态库里包含 CoreML 编码器路径的目标文件
-      # （whisper-encoder.o / whisper-encoder-impl.o，源自 whisper-encoder.mm），
-      # 它们引用了 Objective-C 类 MLMultiArray 与 MLPredictionOptions。
-      # 即便我们不使用 CoreML 编码器，这些目标文件也已经在库里，
-      # 链接时必须能解析到符号，否则报：
-      #   Undefined symbols for architecture arm64:
-      #     "_OBJC_CLASS_$_MLMultiArray", referenced from whisper-encoder.o
-      #   ld: symbol(s) not found for architecture arm64
-      - sdk: CoreML.framework
     settings:
       base:
         PRODUCT_NAME: Moments
@@ -98,11 +78,10 @@ targets:
         # 未签名构建下 entitlement 不参与签名，由 Sideloadly 侧载时注入；
         # 若侧载不支持 App Group，探针自动降级为只看"麦克风计数"（仍可判互斥）。
         CODE_SIGN_ENTITLEMENTS: Resources/Moments.entitlements
-        # 桥接头：把两个第三方 C 库（whisper.cpp、sherpa-onnx）暴露给 Swift。
-        # 注意 Xcode 只能指定**一个**桥接头，因此收口到 Bridges.h，
-        # 由它分别 include WhisperBridge.h 与 SherpaBridge.h。
+        # 桥接头：把 sherpa-onnx（SenseVoice 识别 + VAD + 降噪）的 C API 暴露给 Swift。
+        # 注意 Xcode 只能指定**一个**桥接头，因此收口到 Bridges.h。
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/Bridges.h
-        # ggml 与 sherpa-onnx 都是 C++ 实现，需要 C++ 标准库；
+        # sherpa-onnx 是 C++ 实现，需要 C++ 标准库；
         # -lz 是 onnxruntime 静态库的常见依赖；
         # -lsherpa-onnx-all 是 CI 合并出的「sherpa-onnx + onnxruntime」单一静态库。
         # -lsqlite3：M4 的存储与检索用系统 SQLite（含 FTS5 全文索引）。

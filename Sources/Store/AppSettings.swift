@@ -56,17 +56,7 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(realtimeTranscriptionEnabled, forKey: Keys.realtime) }
     }
 
-    /// 实时字幕使用的模型（默认 base —— 速度与准确率的平衡点，见 WhisperModelCatalog）
-    @Published var realtimeModelId: String {
-        didSet { defaults.set(realtimeModelId, forKey: Keys.realtimeModel) }
-    }
-
-    /// 终稿使用的模型（默认 small —— 准确优先，跑在闲置时段，速度不是约束）
-    @Published var finalModelId: String {
-        didSet { defaults.set(finalModelId, forKey: Keys.finalModel) }
-    }
-
-    /// 转写语言。取值见 `WhisperModelCatalog.languageOptions`，**默认 "auto"（自动判定）**。
+    /// 转写语言。取值见 `SenseVoiceModel.languageOptions`，**默认 "auto"（自动判定）**。
     ///
     /// ## 两个选项各自的定位（2026-09-24 与用户确认）
     ///
@@ -90,7 +80,7 @@ final class AppSettings: ObservableObject {
     /// 实时字幕是否先对音频降噪（M3）。
     ///
     /// 默认**关**。理由必须说清楚：降噪会引入失真伪影（artifact），
-    /// 而 whisper 本身对噪声已相当鲁棒 —— 降噪有可能反而让字错误率上升。
+    /// 而 SenseVoice 本身对噪声已相当鲁棒 —— 降噪有可能反而让字错误率上升。
     /// 因此它是"可对照、可验证的选项"，不是默认开启的"增强"。
     /// 原始音频始终保存，降噪只在转写时临时施加，随时可关掉重来。
     @Published var realtimeDenoiseEnabled: Bool {
@@ -104,12 +94,11 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(preferModelMirror, forKey: Keys.modelMirror) }
     }
 
-    /// 首次使用时是否**自动**下载默认的实时模型（Base）。
+    /// 首次使用时是否**自动**下载识别模型（SenseVoice）。
     ///
     /// 默认**开**。这条推翻了原先"一律由用户显式点击下载"的决定 ——
-    /// 原因是真机验收暴露的事实：用户面对 Tiny/Base/Small/Medium 四个名字
-    /// 根本不知道该下哪个，结果不是"省了流量"，而是**核心功能一直不可用**
-    ///（设备日志里 32 分钟零字节，界面也没有任何进度）。
+    /// 原因是真机验收暴露的事实：用户根本不知道该下哪个模型，
+    /// 结果不是"省了流量"，而是**核心功能一直不可用**。
     @Published var autoPrepareModel: Bool {
         didSet { defaults.set(autoPrepareModel, forKey: Keys.autoPrepareModel) }
     }
@@ -119,8 +108,7 @@ final class AppSettings: ObservableObject {
     /// 关闭时只在非计费网络（Wi-Fi / 有线）下自动下载。
     /// 理由：上百 MB 不该由 App 替用户决定花在移动流量上 ——
     /// 静默下载的边界必须止于"可能让用户多付钱"这一条。
-    /// （2026-09-24 默认实时模型改为 Small 后，静默下载体量由 57 MB 变为 190 MB，
-    ///   这条边界因此更重要，而不是更不重要。）
+    /// （SenseVoice 模型约 226 MB，这条边界因此更重要，而不是更不重要。）
     @Published var autoPrepareOnCellular: Bool {
         didSet { defaults.set(autoPrepareOnCellular, forKey: Keys.autoPrepareOnCellular) }
     }
@@ -195,18 +183,6 @@ final class AppSettings: ObservableObject {
         minFreeDiskGB = defaults.object(forKey: Keys.minFreeDiskGB) as? Double ?? 1.0
 
         realtimeTranscriptionEnabled = defaults.object(forKey: Keys.realtime) as? Bool ?? true
-        // 模型 id 会随上游文件名变化（2026-09-24：base-q5_0 → base-q5_1，
-        // 因为上游根本没有 q5_0 那个文件）。存下来的旧 id 若已不在清单里，
-        // 必须回落到默认值 —— 否则会留下"设置里记着某模型、清单里查不到"的状态：
-        // 界面表现为「模型目录不可用」，而且用户自己无法恢复（下哪个都不对）。
-        realtimeModelId = Self.resolveModelId(
-            stored: defaults.string(forKey: Keys.realtimeModel),
-            fallback: WhisperModelCatalog.realtimeDefaultId
-        )
-        finalModelId = Self.resolveModelId(
-            stored: defaults.string(forKey: Keys.finalModel),
-            fallback: WhisperModelCatalog.finalDefaultId
-        )
         // 默认 "auto"（用户 2026-09-24 确认）：理由见 transcriptionLanguage 的说明
         transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLang) ?? "auto"
         preferModelMirror = defaults.object(forKey: Keys.modelMirror) as? Bool ?? false
@@ -255,12 +231,6 @@ final class AppSettings: ObservableObject {
             + "｜磁盘下限=\(minFreeDiskGB)GB"
     }
 
-    /// 把存储的模型 id 解析成清单里**真实存在**的 id（不存在则回落默认）。
-    private static func resolveModelId(stored: String?, fallback: String) -> String {
-        guard let stored, WhisperModelCatalog.model(id: stored) != nil else { return fallback }
-        return stored
-    }
-
     private enum Keys {
         static let source = "moments.capture.source"
         static let mode = "moments.capture.sessionMode"
@@ -270,8 +240,6 @@ final class AppSettings: ObservableObject {
         static let retentionDays = "moments.storage.retentionDays"
         static let minFreeDiskGB = "moments.storage.minFreeDiskGB"
         static let realtime = "moments.asr.realtimeEnabled"
-        static let realtimeModel = "moments.asr.realtimeModel"
-        static let finalModel = "moments.asr.finalModel"
         static let transcriptionLang = "moments.asr.language"
         static let modelMirror = "moments.model.preferMirror"
         static let autoPrepareModel = "moments.model.autoPrepare"

@@ -162,38 +162,22 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             Picker("识别语言", selection: $settings.transcriptionLanguage) {
-                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
+                ForEach(SenseVoiceModel.languageOptions, id: \.code) { item in
                     Text(item.name).tag(item.code)
                 }
             }
-            Text("「自动判定」（默认）由模型在开头判一次并锁定整场 —— 不再每个窗口重判，"
-                + "那会让语言来回跳。它的代价是「猜一次」：万一开头判错，整场都会按错的"
-                + "语言重拼。锁定结果会显示在录音页，随时可以改。")
+            Text("「自动判定」（默认）由模型自己判断语言。它的代价是「猜一次」："
+                + "万一开头判错，整场都会按错的语言识别。检测到的语言会显示在录音页，随时可以改。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text("想更确定就直接指定你实际说的语言。指定中文时，夹在里面的英文词照样会"
-                + "照原样输出（例如「这个 deadline 有点紧」）—— 语言参数只决定解码的起手"
-                + "语言，不限制它写出别的语言的词；只有整段外语才会明显退化，那时切过去即可。")
+                + "照原样输出（例如「这个 deadline 有点紧」）。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-
-            Picker("实时字幕模型", selection: $settings.realtimeModelId) {
-                ForEach(WhisperModelCatalog.realtimeCandidates) { model in
-                    Text("\(model.displayName)（\(model.sizeText)）").tag(model.id)
-                }
-            }
-            Picker("终稿模型", selection: $settings.finalModelId) {
-                ForEach(WhisperModelCatalog.finalCandidates) { model in
-                    Text("\(model.displayName)（\(model.sizeText)）").tag(model.id)
-                }
-            }
         } header: {
             Text("转写")
         } footer: {
-            // 2026-09-24 起默认两边都是 Small（实测实时余量足够），
-            // 所以这里不能再写"实时求快、终稿求准"——那是旧默认下的说法。
-            Text("实时与终稿分开选模型：可以让实时用更小更快的、终稿用更大更准的，"
-                + "也可以两边都用同一个（默认两边都是 Small）。"
+            Text("实时字幕与终稿共用同一个 SenseVoice 模型，无需分开选择。"
                 + "终稿在充电或息屏时执行，不占用你使用手机的时段。")
         }
     }
@@ -211,12 +195,9 @@ struct SettingsView: View {
             }
 
             Toggle("首次使用自动准备模型", isOn: $settings.autoPrepareModel)
-            // 模型名与体积**从清单读，不写死**：2026-09-24 默认由 Base（57 MB）
-            // 改成 Small（190 MB）时，写死的文案立刻变成错误信息
-            //（界面说 57 MB，实际下 190 MB）。
-            Text("开启后，首次使用时自动下载默认的实时模型"
-                + "（\(defaultRealtimeModelText)），不需要你自己挑哪个。"
-                + "其余模型仍由你按需下载。")
+            Text("开启后，首次使用时自动下载识别模型"
+                + "（\(SenseVoiceModel.displayName)，约 \(SenseVoiceModel.sizeText)），"
+                + "不需要你自己操心。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -231,9 +212,7 @@ struct SettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            ForEach(WhisperModelCatalog.all) { model in
-                modelRow(model)
-            }
+            modelRow
 
             HStack {
                 Text("模型占用")
@@ -252,38 +231,32 @@ struct SettingsView: View {
         }
     }
 
-    private func modelRow(_ model: WhisperModelDescriptor) -> some View {
-        let state = models.states[model.id] ?? .notInstalled
-        return VStack(alignment: .leading, spacing: 4) {
+    /// 单模型下载行。SenseVoice 只有一个模型、实时与终稿通用，因此不再按模型遍历。
+    @ViewBuilder
+    private var modelRow: some View {
+        let state = models.state
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(model.displayName).bold()
-                        // 型号名对用户没有含义，必须紧跟一句"它用来干什么"。
-                        // 真机验收的反馈正是「用户可能根本不知道这几个模型是干嘛用的」。
-                        Text(model.role.purposeTitle)
+                        Text(SenseVoiceModel.displayName).bold()
+                        Text("实时与终稿通用")
                             .font(.caption2)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(Color.secondary.opacity(0.14), in: Capsule())
                             .foregroundStyle(.secondary)
-                        if isInUse(model) {
-                            Text("当前使用中")
-                                .font(.caption2)
-                                .foregroundStyle(.green)
-                        }
                     }
-                    Text(model.note)
+                    Text("中文优化的端到端模型，同音字更准，音乐自动识别。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                modelAction(for: model, state: state)
+                modelAction(state: state)
             }
             if case .downloading(let progress) = state {
                 // 服务器给了总大小才画确定进度；否则用不确定动画 ——
-                // 后者的意义是"确实在动"，而不是一条永远停在 0% 的死线
-                //（真机上那条 0% 的线看起来与"什么都没发生"没有区别）。
+                // 后者的意义是"确实在动"，而不是一条永远停在 0% 的死线。
                 if progress.isProportional {
                     ProgressView(value: progress.fraction)
                         .progressViewStyle(.linear)
@@ -311,32 +284,24 @@ struct SettingsView: View {
         }
     }
 
-    /// 这个模型是否是当前配置正在用的（实时 / 终稿各一个）。
-    ///
-    /// 用户最需要知道的就是"我到底要下哪个" —— 直接把答案标出来，
-    /// 而不是让他从四个名字里自己推。
-    private func isInUse(_ model: WhisperModelDescriptor) -> Bool {
-        model.id == settings.realtimeModelId || model.id == settings.finalModelId
-    }
-
     @ViewBuilder
-    private func modelAction(for model: WhisperModelDescriptor, state: ModelDownloadState) -> some View {
+    private func modelAction(state: ModelDownloadState) -> some View {
         switch state {
         case .installed:
             Button("删除", role: .destructive) {
-                try? models.delete(model.id)
+                try? models.delete()
             }
             .font(.footnote)
 
         case .downloading:
             Button("取消") {
-                models.cancelDownload(model.id)
+                models.cancelDownload()
             }
             .font(.footnote)
 
         case .notInstalled, .failed:
-            Button("下载 \(model.sizeText)") {
-                models.download(model.id, preferMirror: settings.preferModelMirror)
+            Button("下载 \(SenseVoiceModel.sizeText)") {
+                models.download(preferMirror: settings.preferModelMirror)
             }
             .font(.footnote)
         }
@@ -369,14 +334,6 @@ struct SettingsView: View {
                 + "），不需要下载 —— 它们的原始托管地址在交付环境实测不可达，"
                 + "做成下载会让这些功能直接不可用。")
         }
-    }
-
-    /// 默认实时模型的"名字（体积）"文案。**读清单，不写死** ——
-    /// 默认值一改，写死的文案就会变成错误信息（界面说 57 MB、实际下 190 MB）。
-    private var defaultRealtimeModelText: String {
-        let id = WhisperModelCatalog.realtimeDefaultId
-        guard let model = WhisperModelCatalog.model(id: id) else { return id }
-        return "\(model.displayName)，约 \(model.sizeText)"
     }
 
     private var languageSection: some View {

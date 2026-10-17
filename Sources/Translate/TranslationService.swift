@@ -476,6 +476,8 @@ final class TranslationService: ObservableObject {
         }
 
         let missing = segments.filter { segment in
+            // 音乐标注段不是真实语音内容，不送翻译（与实时翻译路径同一条规则）
+            guard !segment.isMusicMarker else { return false }
             guard let cached = existing[segment.id] else { return true }
             return cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }

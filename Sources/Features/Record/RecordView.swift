@@ -378,7 +378,7 @@ struct RecordView: View {
     private var languagePill: some View {
         Menu {
             Section("识别语言") {
-                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
+                ForEach(SenseVoiceModel.languageOptions, id: \.code) { item in
                     Button(item.name) { restartLiveTranscription(language: item.code) }
                 }
             }
@@ -413,7 +413,7 @@ struct RecordView: View {
             : live.pinnedLanguage
         let sourceName = sourceCode == "auto"
             ? "自动"
-            : WhisperModelCatalog.languageName(sourceCode)
+            : SenseVoiceModel.languageName(sourceCode)
 
         let target = settings.liveTranslationTargetLanguage
         guard !target.isEmpty else { return sourceName }
@@ -571,10 +571,8 @@ struct RecordView: View {
                     row("音频会话", settings.sessionMode.title)
                     row("识别语言", settings.transcriptionLanguage == "auto"
                         ? "自动判定"
-                        : WhisperModelCatalog.languageName(settings.transcriptionLanguage))
-                    row("实时模型",
-                        WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
-                            ?? settings.realtimeModelId)
+                        : SenseVoiceModel.languageName(settings.transcriptionLanguage))
+                    row("识别模型", SenseVoiceModel.displayName)
                 } header: {
                     Text("录音配置")
                 }
@@ -679,7 +677,7 @@ struct RecordView: View {
             liveHint = nil
             return
         }
-        guard let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId) else {
+        guard let modelURL = ModelManager.shared.modelURL, ModelManager.shared.isInstalled else {
             // **这里刻意一个字都不写**：模型相关的提示（尚未下载 / 正在下载及其进度 /
             // 下载完成后提示自动消失）统一由 `subtitleStatusText` 动态计算。
             //
@@ -700,7 +698,6 @@ struct RecordView: View {
         liveHint = nil
         live.start(
             sessionId: sessionId,
-            modelId: settings.realtimeModelId,
             modelURL: modelURL,
             language: settings.transcriptionLanguage,
             denoiseEnabled: settings.realtimeDenoiseEnabled
@@ -718,13 +715,13 @@ struct RecordView: View {
         settings.transcriptionLanguage = language
         guard live.isActive,
               let sessionId = session.snapshot.sessionId,
-              let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId)
+              let modelURL = ModelManager.shared.modelURL,
+              ModelManager.shared.isInstalled
         else { return }
         // 传同一个 sessionId：引擎据此知道"这是同一场录音的重启"，
         // 于是**不清空留档累计** —— 切识别语言不该把已识别的内容从落盘里抹掉。
         live.start(
             sessionId: sessionId,
-            modelId: settings.realtimeModelId,
             modelURL: modelURL,
             language: language,
             denoiseEnabled: settings.realtimeDenoiseEnabled
@@ -843,7 +840,7 @@ struct RecordView: View {
     ///
     /// ## 唯一的权威来源是"模型现在到底在不在"
     /// 全部文案都在这里**现算**，不存快照：判断依据永远是
-    /// `ModelManager.installedURL` 与当前的下载进度，因此
+    /// `ModelManager.isInstalled` 与当前的下载进度，因此
     /// 「尚未下载 → 正在下载（带进度）→ 提示自动消失」是一条连续状态，
     /// 用户在本次录音中途把模型下完，界面会立刻跟上。
     ///
@@ -854,11 +851,10 @@ struct RecordView: View {
     private var subtitleStatusText: String? {
         if let liveHint { return liveHint }
 
-        let modelId = settings.realtimeModelId
-        guard ModelManager.shared.installedURL(for: modelId) == nil else { return nil }
+        guard !ModelManager.shared.isInstalled else { return nil }
 
-        let name = WhisperModelCatalog.model(id: modelId)?.displayName ?? modelId
-        if let progress = models.states[modelId]?.progress {
+        let name = SenseVoiceModel.displayName
+        if let progress = models.state.progress {
             return "模型「\(name)」正在下载：\(progress.summary)。"
                 + "下载完成后，下次开始录音会自动启用实时字幕。"
         }

@@ -135,7 +135,7 @@ struct RootView: View {
 
     private var asrSection: some View {
         Section("离线引擎（M2 / M3）") {
-            row("whisper 后端", model.whisperBackend)
+            row("识别引擎", "SenseVoice")
             row("sherpa-onnx", model.sherpaVersion)
             row("内置模型（M3）", model.bundledModelsText)
             row("已安装模型", model.installedModelsText)
@@ -150,8 +150,8 @@ struct RootView: View {
             }
 
             note(
-                "「whisper 后端」与「sherpa-onnx」非空即证明两个第三方静态库都已真正链接"
-                    + "（而不是编译通过的空壳）—— 这是集成类里程碑最硬的验收依据。"
+                "「sherpa-onnx」非空即证明第三方静态库已真正链接（而不是编译通过的空壳）"
+                    + "—— SenseVoice 识别、VAD、降噪都运行在它上面。"
                     + "转写覆盖率 = 已有文字稿的会话数 / 总会话数。",
                 color: .secondary
             )
@@ -250,9 +250,8 @@ final class SelfCheckModel: ObservableObject {
     @Published var logFileError: String?
     @Published var mode: AudioSessionMode = .coexistent
 
-    // M2 转写
-    @Published var whisperBackend = "-"
-    /// M3 语音处理（sherpa-onnx）—— 版本号能取到即证明静态库已链接
+    /// M3 语音处理（sherpa-onnx）—— 版本号能取到即证明静态库已链接。
+    /// SenseVoice 离线识别器就运行在 sherpa-onnx 上，版本号即识别引擎的运行时版本。
     @Published var sherpaVersion = "-"
     /// M3 内置模型（VAD / 降噪）的齐备情况
     @Published var bundledModelsText = "-"
@@ -281,12 +280,7 @@ final class SelfCheckModel: ObservableObject {
 
     /// 刷新转写相关信息。
     ///
-    /// 其中 `WhisperEngine.systemInfo` 是 M2a 的**验收依据**：
-    /// 它调用的是 whisper.cpp 的 C 接口，能返回后端信息就说明
-    /// CI 构建的静态 xcframework 确实被链接进来了 ——
-    /// 这比"编译通过"强得多（编译通过也可能只是没引用而已）。
     func refreshASR() {
-        whisperBackend = WhisperEngine.systemInfo
         sherpaVersion = SherpaOnnxEngine.summary
         bundledModelsText = SherpaBundledModel.summary
 
@@ -301,10 +295,9 @@ final class SelfCheckModel: ObservableObject {
             + "｜\(entryCount) 条译文"
 
 
-        let installed = ModelManager.shared.installedModels
-        installedModelsText = installed.isEmpty
-            ? "（无）"
-            : installed.map { $0.displayName }.joined(separator: "、")
+        installedModelsText = ModelManager.shared.isInstalled
+            ? SenseVoiceModel.displayName
+            : "（无）"
         modelBytesText = ByteCountFormatter.string(
             fromByteCount: ModelManager.shared.installedBytes,
             countStyle: .file
