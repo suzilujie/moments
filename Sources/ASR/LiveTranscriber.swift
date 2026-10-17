@@ -204,8 +204,10 @@ final class LiveTranscriptionEngine {
     /// 一行分桶文案，供统计日志使用。
     private var bucketText: String {
         let labels = ["<1s", "1~3s", "3~6s", "6~10s", "≥10s"]
+        // 注意 `zip` 的元素是**一个元组**，闭包只接收一个参数，
+        // 不能写成 `{ "\($0)=\($1)" }`（Swift 3 起元组不再自动展开为多参数）。
         return zip(labels, audioBuckets)
-            .map { "\($0)=\($1)" }
+            .map { "\($0.0)=\($0.1)" }
             .joined(separator: " ")
     }
     /// 其中**推断**为"说话不停顿、到长度上限"被切开的段数。

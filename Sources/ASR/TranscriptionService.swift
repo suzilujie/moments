@@ -252,7 +252,7 @@ final class TranscriptionWorker {
     /// 只在本 worker 自己的串行队列上读写，不需要锁（与其它 worker 状态一致）。
     private var pinnedLanguage: String?
     /// 语言投票箱（与实时路径同一规则：单片判定不决定全场）
-    private var languageVotes: [String: Int] = []
+    private var languageVotes: [String: Int] = [:]
 
     var onStage: ((TranscriptionStage) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
