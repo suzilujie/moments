@@ -952,3 +952,33 @@
   · read_lints：LiveTranscriber.swift / ModelManager.swift 两文件 0 诊断。
   · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。待用户确认后 commit → push 触发 CI。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十六次] 修复：transcribe 参数标签残留（CI 第二次失败根因）
+--------------------------------------------------------------------------------
+
+■ 背景
+  「同日十五次」修复 unload()→close() 后 commit/push（5fb8a49）触发 CI run #61，
+  Build for device (unsigned) 步骤失败（exit code 65）。经 check-run annotations 定位，
+  另有 2 处编译错误：`extraneous argument label 'samples:' in call`。
+
+■ 根因
+  SenseVoiceEngine.transcribe(_ samples: [Float])（SenseVoiceEngine.swift:117）参数标签
+  为 `_`（无外部标签），但两处调用点仍带 whisper 时代残留的 `samples:` 标签：
+  - TranscriptionService.swift:362  engine.transcribe(samples: audio)
+  - LiveTranscriber.swift:639      engine.transcribe(samples: audio)
+  属替换遗漏的第二批错误（unload 已修好，本轮不再报）。
+
+■ 修复（2 处）
+  两处统一删除多余标签：engine.transcribe(samples: audio) → engine.transcribe(audio)。
+  纯标签修正、语义零变化。全库 engine.transcribe 仅此 2 处调用点（另 3 处
+  asr.transcribe(sessionId:) 为 TranscriptionService 公开接口、参数不同，不受影响）。
+
+■ 影响范围
+  · 仅 Sources/ASR/TranscriptionService.swift 与 Sources/ASR/LiveTranscriber.swift 各 1 行。
+  · 不涉及签名改动、C 封装、UI、跨模块。
+
+■ 验证
+  · read_lints：两文件 0 诊断。
+  · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。待用户确认后 commit → push 触发 CI。
+================================================================================

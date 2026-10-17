@@ -636,7 +636,7 @@ final class LiveTranscriptionEngine {
         let started = ProcessInfo.processInfo.systemUptime
         // SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），识别时不再传；
         // auto 模式下每段独立判语言、结果由 recognition.language 给出（见 pinLanguageIfNeeded）。
-        let recognition = engine.transcribe(samples: audio)
+        let recognition = engine.transcribe(audio)
 
         // 音乐事件（SenseVoice 内建，替代原 CED 独立检测）：这段被判为音乐/背景音乐、
         // 且没有听出任何话时，标注「（音乐）」、不产出文本 —— 音乐幻觉从源头消失。

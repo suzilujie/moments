@@ -359,7 +359,7 @@ final class TranscriptionWorker {
                     if hasSpeech {
                         // 降噪只在对照稿里施加；失败时回退原始音频（见 SherpaDenoiser）
                         let audio = denoiser?.denoise(samples) ?? samples
-                        let recognition = engine.transcribe(samples: audio)
+                        let recognition = engine.transcribe(audio)
                         // SenseVoice 的语言在引擎创建时已固定（auto 或具体语言），不能在
                         // 每次识别时改。auto 模式下每片独立判语言、结果由 recognition.language
                         // 给出 —— 这里只锁定一次用于日志，不再回传（SenseVoice 语言判定足够稳定）。
