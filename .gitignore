@@ -38,11 +38,12 @@ __pycache__/
 third_party/
 
 # ---- 内置模型（CI 构建时下载，随 ipa 打包）----
-# sherpa-onnx 的四个模型（VAD / 降噪 / 说话人分割 / 声纹，合计约 35 MB）
+# sherpa-onnx 的两个模型（VAD / 降噪，合计约 1.2 MB）
 # 由 CI 下载到此目录并打进 ipa。不纳入版本控制：二进制文件不适合进 git，
 # 且它们与 CI 中固定的 sherpa tag 是一组，应当一起演进。
+# 2026-10-17：说话人分割与声纹模型、以及 Resources/WordLists（词频表）
+# 已随对应功能移除，CI 不再下载它们。
 Resources/SherpaModels/
-Resources/WordLists/
 # 设备导出的日志存放处（真机验收/排错用）。
 # **刻意不入库**：日志里含设备名、路由端口名、Bundle ID 等信息，
 # 而概念文档里已明确"本项目日志不出本机" —— 放这里只是便于分析，不进版本历史。

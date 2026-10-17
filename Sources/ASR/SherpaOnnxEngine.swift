@@ -11,14 +11,17 @@ import Foundation
 /// 因此按与 M2（whisper.cpp）相同的策略推进：**先把集成本身做成可验证的一件事** ——
 /// 能取到版本号，就证明静态库真的被链接进来了，比"编译通过"强得多
 /// （编译通过也可能只是没引用而已）。ver 通过之后，再往上叠加
-/// 降噪 / VAD / 说话人分离这些真正有业务价值的能力。
+/// 降噪 / VAD 这些真正有业务价值的能力（两者分别封装在
+/// `SherpaDenoiser` / `SherpaVad`，本类只负责版本与链接自检）。
 ///
-/// ## M3 后续会在这个类里补齐的能力（已核实 C API 名称）
+/// ## 已核实的 C API 名称（供后续查阅）
 ///   · 语音活动检测 VAD：`SherpaOnnxCreateVoiceActivityDetector`
 ///     （配置结构 `SherpaOnnxVadModelConfig` / `SherpaOnnxSileroVadModelConfig`）
 ///   · 语音增强（GTCRN 降噪）：`SherpaOnnxCreateOfflineSpeechDenoiser`
-///   · 说话人分离：`SherpaOnnxCreateOfflineSpeakerDiarization`
-///     （结果结构 `SherpaOnnxOfflineSpeakerDiarizationSegment`：start/end/speaker/confidence）
+///
+/// ## 2026-10-17：说话人分离相关能力已移除
+/// `SherpaOnnxCreateOfflineSpeakerDiarization` 这一路（含 pyannote 分割与
+/// CAM++ 声纹两个内置模型）随「说话人」功能一并删除，本类不再涉及。
 enum SherpaOnnxEngine {
 
     /// 库版本号。取不到即说明静态库未被真正链接。

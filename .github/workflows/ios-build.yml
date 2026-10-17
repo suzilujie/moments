@@ -255,15 +255,15 @@ jobs:
       # sherpa-onnx 模型 —— **内置随包**，不做运行时下载
       #
       # 与 whisper 模型刻意做成相反的两种策略，判据是「体积 + 可靠性」：
-      #   · 这四个模型合计约 35 MB，远低于蜂窝下载 200 MB 的上限；
+      #   · 这两个模型合计约 1.2 MB，远低于蜂窝下载 200 MB 的上限；
       #   · 它们的原始托管在 GitHub Releases，而交付环境实测 github.com
       #     不可达（见工作日志阶段十一、十四）。若做成运行时下载，
-      #     「降噪 / VAD / 说话人分离」就会在用户手上直接不可用 ——
+      #     「VAD / 降噪」就会在用户手上直接不可用 ——
       #     那是把一个可用的功能做成不可用。
-      # 内置之后，M3 的全部能力永久可用、不依赖任何网络。
+      # 内置之后，这两项能力永久可用、不依赖任何网络。
       #
-      # 注意 tag 名 speaker-recongition-models 里的拼写错误是上游原样，
-      # 不是本项目的笔误 —— 改成正确拼写反而会 404。
+      # 2026-10-17：说话人分割（pyannote，6.6 MB）与声纹嵌入（CAM++，27 MB）
+      # 已随「说话人」功能一并移除（用户确认不需要），ipa 因此减少约 34 MB。
       # ═══════════════════════════════════════════════════════════════
       - name: Fetch sherpa-onnx models (bundled into ipa)
         run: |
@@ -284,23 +284,9 @@ jobs:
 
           fetch silero_vad.onnx "$BASE/asr-models/silero_vad.onnx"
           fetch gtcrn_simple.onnx "$BASE/speech-enhancement-models/gtcrn_simple.onnx"
-          fetch campplus_zh_en_16k.onnx \
-            "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
-
-          # pyannote 分割模型是 tar.bz2 包，解出其中的 model.onnx 并改名
-          if [ ! -f "$DEST/pyannote_segmentation_3_0.onnx" ]; then
-            curl -fL --retry 3 -o /tmp/seg.tar.bz2 \
-              "$BASE/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2" \
-              || { echo "::error::下载 pyannote 分割模型失败"; exit 1; }
-            tar -xjf /tmp/seg.tar.bz2 -C /tmp
-            cp /tmp/sherpa-onnx-pyannote-segmentation-3-0/model.onnx \
-               "$DEST/pyannote_segmentation_3_0.onnx" \
-              || { echo "::error::解包 pyannote 分割模型失败"; exit 1; }
-          fi
-
           echo "=== 内置模型清单 ==="
           ls -lh "$DEST"
-          for f in silero_vad.onnx gtcrn_simple.onnx pyannote_segmentation_3_0.onnx campplus_zh_en_16k.onnx; do
+          for f in silero_vad.onnx gtcrn_simple.onnx; do
             if [ -f "$DEST/$f" ]; then
               echo "::notice::bundled-model $f $(stat -f%z "$DEST/$f") bytes"
             else
@@ -308,57 +294,8 @@ jobs:
             fi
           done
 
-      # ═══════════════════════════════════════════════════════════════
-      # 英语词频表（M6 生词判定）—— 同样内置随包
-      #
-      # 为什么内置：它就是"生词判定"的判据本身，必须**固定不变**。
-      # 若做成联网获取，词表会随上游更新而变 —— 同一句话昨天不是生词、
-      # 今天变成生词，复习计划就毁了。74 KB，没有任何理由做成下载。
-      #
-      # 行数下限校验是刻意加的：词表被截断/换源时若静默通过，
-      # 后果是**大面积误判**（几乎所有词都成了"词表之外"的生词），
-      # 而这类错误在真机上看起来只是"标得有点多"，很难追查。
-      # ═══════════════════════════════════════════════════════════════
-      - name: Fetch word frequency list (bundled into ipa)
-        run: |
-          DEST=Resources/WordLists
-          mkdir -p "$DEST"
-          if [ ! -f "$DEST/en_top10k.txt" ]; then
-            curl -fL --retry 3 -o "$DEST/en_top10k.txt" \
-              "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa.txt" \
-              || { echo "::error::下载英语词频表失败"; exit 1; }
-          fi
-          LINES=$(wc -l < "$DEST/en_top10k.txt" | tr -d ' ')
-          echo "词频表行数 = $LINES"
-          if [ "$LINES" -lt 5000 ]; then
-            echo "::error::词频表行数异常（$LINES 行），生词判定会大面积误判"
-            exit 1
-          fi
-          echo "::notice::wordlist en_top10k.txt $LINES 行 $(stat -f%z "$DEST/en_top10k.txt") bytes"
-
-          # ── 中文词表（M6）──
-          #
-          # 源是 jieba 的词典（词 + 词频 + 词性，约 4.8 MB）。
-          #
-          # 关键：**在 CI 里显式按词频降序重排，再取前 2 万词**。
-          # 不直接信上游文件顺序，因为上游并未承诺 dict.txt 是按词频排序的；
-          # 一旦它变了顺序，我们的"行号即排名"就整体失效 ——
-          # 那会让生词判定静默地全错（每个词都标成生词，或全都不标），
-          # 而真机上看起来只是"标得有点多"，极难追查。
-          # 重排之后还顺带把体积从 4.8 MB 压到几百 KB。
-          if [ ! -f "$DEST/zh_top20k.txt" ]; then
-            curl -fL --retry 3 -o /tmp/jieba_dict.txt \
-              "https://raw.githubusercontent.com/fxsjy/jieba/master/jieba/dict.txt" \
-              || { echo "::error::下载中文词典失败"; exit 1; }
-            sort -k2 -nr /tmp/jieba_dict.txt | head -n 20000 | awk '{print $1}' > "$DEST/zh_top20k.txt"
-          fi
-          ZH_LINES=$(wc -l < "$DEST/zh_top20k.txt" | tr -d ' ')
-          echo "中文词表行数 = $ZH_LINES"
-          if [ "$ZH_LINES" -lt 10000 ]; then
-            echo "::error::中文词表行数异常（$ZH_LINES 行），中文生词判定会大面积误判"
-            exit 1
-          fi
-          echo "::notice::wordlist zh_top20k.txt $ZH_LINES 行 $(stat -f%z "$DEST/zh_top20k.txt") bytes"
+      # 2026-10-17：词频表（M6 生词判定，Resources/WordLists）这一步已整段删除 ——
+      # 生词本功能移除后它没有任何消费者，CI 因此少一次下载与两段行数校验。
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -561,26 +498,17 @@ jobs:
             echo "::warning::产物中存在 NSSpeechRecognitionUsageDescription —— 本项目不使用该框架，应移除"
           fi
 
-          # M3 内置模型必须真的进了包。
-          # 否则 VAD / 降噪 / 说话人分离会在设备上**静默降级**到 M2 的行为
+          # 内置模型（VAD / 降噪）必须真的进了包。
+          # 否则这两项会在设备上**静默降级**到 M2 的行为
           # （代码里刻意做了失败降级），而用户完全不知道为什么 ——
           # 这种"功能没生效但不报错"的情况，必须在这一步拦住。
           APP_DIR="verify/Payload/Moments.app"
-          for f in silero_vad.onnx gtcrn_simple.onnx pyannote_segmentation_3_0.onnx campplus_zh_en_16k.onnx; do
+          for f in silero_vad.onnx gtcrn_simple.onnx; do
             if [ ! -f "$APP_DIR/$f" ]; then
               echo "::error::内置模型未打进包：$f"
               exit 1
             fi
             echo "内置模型已打包 $f ($(stat -f%z "$APP_DIR/$f") bytes)"
-          done
-
-          # M6 词表同理：它是生词判定的判据，缺了会让该功能静默失效
-          for LIST in en_top10k.txt zh_top20k.txt; do
-            if [ ! -f "$APP_DIR/$LIST" ]; then
-              echo "::error::词表未打进包：$LIST"
-              exit 1
-            fi
-            echo "词表已打包 $LIST ($(stat -f%z "$APP_DIR/$LIST") bytes)"
           done
 
           # ── 图标（P29）──

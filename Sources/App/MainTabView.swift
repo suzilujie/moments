@@ -2,30 +2,29 @@ import SwiftUI
 
 /// 应用主框架。
 ///
-/// 五个标签页的分工：
-///   · **录音**：M1 的主角，一键开始 / 停止，实时状态与关键指标
-///   · **记录**：历史录音、断口、分片回放、文字稿、说话人、双语对照与生词
-///   · **说话人**：声纹库维护（M3c）。单独成页的理由是它是跨会话的长期资产，
-///     不属于任何一次录音；放在会话详情里会导致"想改个名字得先找到某次录音"
-///   · **生词本**：M6 的学习资产，同理是跨会话的
+/// 两个标签页的分工：
+///   · **录音**：这个 App 的主体，一键开始 / 停止，实时字幕、实时翻译、录音健康度。
+///     历史录音与全局检索也在这一页里（右上角「历史」按钮），不再单独占一个 Tab
 ///   · **自检**：M0 建立的能力验证页。它没有因为有了正式界面就被删掉 ——
 ///     后续每加一层都会在这里补上对应的验证项，
 ///     因为"关键状态必须在设备上直接可见"是本项目的排错基础（设计文档 4.14）。
+///
+/// ## 2026-10-17 的两次收缩
+/// 1) 「说话人」与「生词本」两个功能**整条链路**移除（不只是 Tab）：
+///    说话人分离（pyannote + CAM++ 两个内置模型）、声纹库、生词提取与词频表、
+///    学习模式、跟读比对、朗读语音 —— 一并删除。
+/// 2) 「记录」Tab 移除，历史列表与全局检索改为**录音页右上角的一个入口**。
+///    能力没丢（列表 / 检索 / 删除 / 进详情页都在），只是不再占一个 Tab。
+///
+/// 结果：五个标签 → 两个。与这个 App 的定位一致：
+/// **一键录音 → 实时识别 → 实时翻译 → 结束即保存**。
+/// 详见 work-2026-10-17.log 与设计文档 16 章。
 struct MainTabView: View {
 
     var body: some View {
         TabView {
             RecordView()
                 .tabItem { Label("录音", systemImage: "mic.circle.fill") }
-
-            SessionListView()
-                .tabItem { Label("记录", systemImage: "list.bullet.rectangle") }
-
-            SpeakerListView()
-                .tabItem { Label("说话人", systemImage: "person.2.circle.fill") }
-
-            VocabularyView()
-                .tabItem { Label("生词本", systemImage: "character.book.closed.fill") }
 
             RootView()
                 .tabItem { Label("自检", systemImage: "stethoscope") }

@@ -191,6 +191,15 @@ final class RecordingSession: ObservableObject {
         pipeline.onSamples = { samples in
             LiveTranscriptionEngine.shared.feed(samples)
         }
+
+        // 输入电平（录音页的实时声波）。同样在管线队列上回调，切回主线程再写 ——
+        // 写进独立的 AudioLevelMonitor 而不是 snapshot：后者每变一次就整页重绘，
+        // 而真正需要跟着动的只有那 32 根柱子（见该类的说明）。
+        pipeline.onLevel = { level in
+            Task { @MainActor in
+                AudioLevelMonitor.shared.update(level)
+            }
+        }
         try pipeline.start(
             sourceFormat: nativeFormat,
             sessionId: sessionId,
@@ -266,24 +275,35 @@ final class RecordingSession: ObservableObject {
         pipeline = nil
         audioSession.deactivate()
 
-        // 顺带收掉实时字幕：会话结束后引擎再持有滑窗与模型上下文纯属浪费。
-        // 放在这里而不是只交给界面，是因为会话也可能因失败/磁盘告警而自行结束，
-        // 那种路径下界面不一定有机会做清理。
-        //
-        // 这一句同时承担**把实时稿落盘**（见 LiveTranscriber.persistLiveTranscript）——
-        // 用户的预期是"结束时会自动保留识别内容"。
-        LiveTranscriber.shared.stop()
-
-        // 实时翻译同样在这里收尾，理由与上一条完全相同：它顺带承担
-        // **把实时译文落盘**（见 TranslationService.persistLiveTranslations）。
-        // 若只由录音页的 onChange 触发，会话自行结束的那条路径就会把当场的双语对照丢掉。
-        // 界面侧那次调用在这条路径下会退化成空操作（configuration 已为 nil），不会重复落盘。
-        TranslationService.shared.stopLive()
+        tearDownRealtime()
 
         setState(.idle, reason: "会话已结束")
 
         // 顺带按保留期清理过期音频（文本永久、音频有限）
         library.purgeExpiredAudio(retentionDays: settings.retentionDays)
+    }
+
+    /// 收掉实时链路（字幕 + 翻译 + 波形），并**顺带把当场内容落盘**。
+    ///
+    /// ## 为什么必须抽成独立方法，而不是写在 `finishStop` 里
+    /// 会话有**两条**退出路径：
+    ///   · 正常停止（用户点停止 / 时长上限 / 磁盘告警）走 `finishStop`
+    ///   · 异常结束（准备阶段失败 / 恢复次数超限 / 自愈连续失败）走 `tearDownAfterFailure`
+    ///
+    /// 这两个 `stop()` 不只是"清内存"—— 它们同时承担
+    /// `transcript-live.json` 与 `translations.json`（`pass: .live`）的落盘。
+    /// 原先只挂在正常路径上，于是**异常结束那一场会丢掉已经识别出来的全部文字与译文**，
+    /// 而界面上的摘要卡仍会显示「已保存 · 0 句」—— 把"丢了"伪装成"没识别到"，
+    /// 这是比丢失本身更糟的一种失败方式。
+    ///
+    /// 幂等性：两个 `stop()` 各自在首行判断"是否真的在跑"，重复调用是空操作；
+    /// 准备阶段失败时字幕与翻译从未启动，这里也不会产生任何副作用
+    ///（`persistLiveTranscript` 在 `sessionId == nil` 时直接返回）。
+    private func tearDownRealtime() {
+        LiveTranscriber.shared.stop()
+        TranslationService.shared.stopLive()
+        // 波形归零：否则页面会定格在最后一次的高度上，看起来像还在收音
+        AudioLevelMonitor.shared.reset()
     }
 
     private func tearDownAfterFailure() {
@@ -292,6 +312,9 @@ final class RecordingSession: ObservableObject {
         engine.stop()
         pipeline = nil
         audioSession.deactivate()
+        // 与正常停止走同一条收尾：把当场已识别的实时稿与实时译文落盘。
+        // 缺这一句时，恢复超限 / 自愈连续失败这两条路径会把内容丢光（见 tearDownRealtime）。
+        tearDownRealtime()
         if var current = manifest {
             current.state = .failed
             current.endedAtMs = Int64(Date().timeIntervalSince1970 * 1000)

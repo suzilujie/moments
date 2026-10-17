@@ -32,7 +32,7 @@ struct SettingsView: View {
                 modelSection
                 bundledModelSection
                 languageSection
-                learningSection
+                exportSection
                 aboutSection
             }
             .navigationTitle("设置")
@@ -362,7 +362,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("内置模型（M3：VAD / 降噪 / 说话人分离）")
+            Text("内置模型（VAD / 降噪）")
         } footer: {
             Text("这些模型随安装包一起提供（合计约 "
                 + ByteCountFormatter.string(fromByteCount: SherpaBundledModel.totalBytes, countStyle: .file)
@@ -381,11 +381,9 @@ struct SettingsView: View {
 
     private var languageSection: some View {
         Section("语言") {
-            Picker("我正在学", selection: $settings.learningLanguage) {
-                ForEach(TranslationLanguageCatalog.all) { language in
-                    Text(language.name).tag(language.code)
-                }
-            }
+            // 「我正在学」这一项已随语言学习功能移除（2026-10-17）。
+            // 它原本兼作实时翻译默认目标语言的兜底来源，现在该角色由
+            // AppSettings.learningLanguage 内部承担，不再暴露给用户。
             Picker("默认翻译成", selection: $settings.defaultTargetLanguage) {
                 ForEach(TranslationLanguageCatalog.all) { language in
                     Text(language.name).tag(language.code)
@@ -402,7 +400,7 @@ struct SettingsView: View {
             }
             Text("「默认翻译成」决定打开会话时默认的目标语言。"
                 + "「实时翻译成」决定**录音时**把每句字幕实时翻成哪门语言（显示在原文下方），"
-                + "选「关闭」就不做实时翻译。默认跟随「我正在学」。"
+                + "选「关闭」就不做实时翻译。"
                 + "实时翻译依赖系统翻译的语言包：首次使用需要联网下载一次，"
                 + "录音页会在字幕下方提示缺少语言包或正在下载；"
                 + "也可以在这里先把它准备好，就省掉那次下载。")
@@ -454,39 +452,22 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 学习
+    // MARK: - 导出
 
-    private var learningSection: some View {
+    /// 导出开关。
+    ///
+    /// 2026-10-17：「生词本」功能已移除，本区因此只剩文字稿导出；
+    /// 原「学习语言」「生词水平档」两个设置项随之删除
+    ///（`AppSettings.vocabularyLevel` 与对应持久化键一并清掉）。
+    private var exportSection: some View {
         Section {
-            Picker("学习语言", selection: $settings.learningLanguage) {
-                Text("英语").tag("en")
-                Text("中文").tag("zh")
-            }
-            Text("决定生词判定用哪一份词表。目前备好了英语与中文两份 ——"
-                + "选到缺词表的语言时判定会关闭并明确提示，而不是拿另一门语言的词表乱标。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            Picker("生词水平档", selection: $settings.vocabularyLevel) {
-                ForEach(VocabularyLevel.allCases, id: \.self) { level in
-                    Text(level.title).tag(level)
-                }
-            }
-
-            Text(settings.vocabularyLevel.detail)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
             Toggle("允许导出", isOn: $settings.exportEnabled)
-            Text("导出的是生词本（Anki 表格 / Markdown）与会话文字稿。"
+            Text("导出的是会话文字稿（Markdown）。"
                 + "关掉它只是不生成导出文件，数据本身不受影响。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {
-            Text("学习")
-        } footer: {
-            Text("水平档决定「哪个词算生词」：选得越低，标出来的生词越多。"
-                + "它只影响标注与生词本，不改变转写与翻译的结果。")
+            Text("导出")
         }
     }
 
@@ -502,8 +483,8 @@ struct SettingsView: View {
                 Spacer()
                 Text(BuildInfo.commit).foregroundStyle(.secondary)
             }
-            Text("当前为 M2（转写）阶段：录音内核（M1）已完成，正在接入离线转写"
-                + "（实时字幕 + 终稿）；说话人分离、翻译、语言学习尚未实现。")
+            Text("一键录音 → 实时字幕 → 实时翻译 → 结束即保存"
+                + "（音频、文字稿、译文三件都在）。转写全程离线完成，音频不离开设备。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

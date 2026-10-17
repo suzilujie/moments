@@ -5,7 +5,16 @@ import SwiftUI
 // —— 这条错误与"框架没链接"无关，纯粹是模块可见性问题。
 import Translation
 
-/// 记录列表：按时间浏览所有录音。
+/// 记录列表：按时间浏览所有录音，并提供全局检索。
+///
+/// ## 入口变更（2026-10-17）
+/// 原先它是底部第二个 Tab（「记录」）；用户确认不需要那个 Tab，于是改为
+/// **录音页右上角的「历史」按钮** push 进来。能力一条没少：历史列表、
+/// 全局检索、左滑删除、点进会话详情页。
+///
+/// **这个入口不能省**：会话详情页（回听 / 双语稿 / 终稿转写 / 导出）只能从这里进 ——
+/// 录音页里那条「查看这次记录」只对**刚录完的那一次**有效，
+/// App 重启后 `snapshot` 里没有 sessionId，历史就再也打不开了。
 struct SessionListView: View {
 
     @State private var sessions: [SessionManifest] = []
@@ -17,26 +26,29 @@ struct SessionListView: View {
     @State private var isSearching = false
 
     var body: some View {
-        NavigationStack {
-            List {
-                if isSearchActive {
-                    searchResultSection
-                } else if sessions.isEmpty {
-                    ContentUnavailableView(
-                        "还没有录音",
-                        systemImage: "waveform",
-                        description: Text("到「录音」标签页点开始，录到的内容会出现在这里。")
-                    )
-                } else {
-                    sessionSection
-                }
+        // **不再自带 NavigationStack**（2026-10-17）：它原先是一个 Tab 根视图、
+        // 自带栈；现在改为从录音页 push 进来，外层已经有栈 ——
+        // 再套一层会出现双层导航栏与错乱的返回键。
+        List {
+            if isSearchActive {
+                searchResultSection
+            } else if sessions.isEmpty {
+                ContentUnavailableView(
+                    "还没有录音",
+                    systemImage: "waveform",
+                    description: Text("回到录音页点「开始录音」，录到的内容会出现在这里。")
+                )
+            } else {
+                sessionSection
             }
-            .navigationTitle("记录")
-            .searchable(text: $searchQuery, prompt: "搜索转写内容")
-            .task(id: searchQuery) { await runSearch() }
-            .onAppear(perform: reload)
-            .refreshable { reload() }
         }
+        .navigationTitle("记录")
+        // 检索跟着列表一起搬进来：它本来就是"在历史里找一句话"，
+        // 与列表是同一个使用场景，不该拆成两处入口。
+        .searchable(text: $searchQuery, prompt: "搜索转写内容")
+        .task(id: searchQuery) { await runSearch() }
+        .onAppear(perform: reload)
+        .refreshable { reload() }
     }
 
     private var isSearchActive: Bool {
@@ -81,7 +93,9 @@ struct SessionListView: View {
                         NavigationLink {
                             SessionDetailView(
                                 manifest: target,
-                                focusSegmentId: hit.id,
+                                // 用裸片段 id 而非行 id：译文命中的行 id 带 "@目标语言" 后缀，
+                                // 用它定位会把播放高亮匹配到不存在的句子（见 SearchHit.segmentId）
+                                focusSegmentId: hit.segmentId,
                                 focusStartMs: hit.startMs,
                                 focusEndMs: hit.endMs
                             )
@@ -209,21 +223,15 @@ struct SessionDetailView: View {
     var focusEndMs: Int? = nil
     @StateObject private var player = SentencePlayer()
     @ObservedObject private var asr = TranscriptionService.shared
-    @ObservedObject private var diarization = DiarizationService.shared
-    @ObservedObject private var profiles = SpeakerProfileStore.shared
-    /// 本视图要用到设置里的：导出开关、生词水平档、学习语言、默认源语言。
+    /// 本视图要用到设置里的两项：导出开关、默认源语言。
     /// 必须声明成属性才能参与 SwiftUI 的变更通知 ——
     /// 直接写 `AppSettings.shared.x` 读到的值在设置变化时不会触发重算
-    ///（水平档改了但生词标注不刷新，就会被当成"设置没生效"）。
+    ///（改了设置但界面没反应，就会被当成"设置没生效"）。
     @ObservedObject private var settings = AppSettings.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var transcript: TranscriptDocument?
     @State private var selectedPass: TranscriptPass = .final
-    @State private var speakerTimeline: SpeakerTimeline?
-    /// 正在命名哪个说话人（弹窗）
-    @State private var namingSpeakerIndex: Int?
-    @State private var draftSpeakerName = ""
 
     // M5 翻译
     @ObservedObject private var translation = TranslationService.shared
@@ -245,15 +253,6 @@ struct SessionDetailView: View {
     /// 各语言对的可用性（前置校验结果，界面必须显示出来）
     @State private var languageStatus: [String: String] = [:]
 
-    // M6 生词
-    @ObservedObject private var vocabulary = VocabularyStore.shared
-    /// 每句的生词候选（按片段 id 索引）
-    @State private var segmentVocabulary: [String: [VocabularyCandidate]] = [:]
-    @State private var highlightsVocabulary = true
-    /// 跟读比对的目标句（非 nil 时弹出跟读页）
-    @State private var practiceTarget: TranscriptRow?
-    /// 学习模式（M6 收尾）
-    @State private var showingStudyMode = false
     /// 文字稿导出文件的 URL（受「允许导出」开关控制，文字稿载入时生成一次）
     @State private var transcriptExportURL: URL?
 
@@ -271,7 +270,6 @@ struct SessionDetailView: View {
     var body: some View {
         List {
             transcriptSection
-            speakerSection
             overviewSection
             if manifest.hasGap { gapSection }
             if let note = manifest.note { noteSection(note) }
@@ -298,7 +296,6 @@ struct SessionDetailView: View {
         }
         .onAppear {
             initializePass()
-            reloadSpeakerTimeline()
             if targetLanguage.isEmpty {
                 targetLanguage = AppSettings.shared.defaultTargetLanguage
             }
@@ -322,7 +319,6 @@ struct SessionDetailView: View {
             reloadTranslationMap()
         }
         .onChange(of: asr.stage) { reloadTranscript() }
-        .onChange(of: diarization.stage) { reloadSpeakerTimeline() }
         .onChange(of: targetLanguage) { reloadTranslationMap() }
         // 源语言变了，所有语言对的可用性都会变，必须重查
         .onChange(of: sourceLanguage) {
@@ -330,36 +326,16 @@ struct SessionDetailView: View {
             AppSettings.shared.defaultSourceLanguage = sourceLanguage
             Task { await refreshLanguageStatus() }
         }
-        // 关掉生词高亮后不必重算，但重新打开必须重算（之前的结果已被清空）
-        .onChange(of: highlightsVocabulary) { reloadVocabulary() }
-        // 水平档变了必须重算：否则"改了设置但标注没变化"会被当成没生效
-        .onChange(of: settings.vocabularyLevel) { reloadVocabulary() }
         .onChange(of: translation.stage) { reloadTranslationMap() }
         // 系统翻译框架要求由**视图**拿到 TranslationSession，
         // 因此把真正的执行挂在这里（见 TranslationService 里对两段式设计的说明）
         .translationTask(translation.configuration) { session in
             await translation.execute(with: session)
         }
-        .task { await refreshLanguageStatus() }
-        .alert("命名说话人", isPresented: namingBinding) {
-            TextField("姓名", text: $draftSpeakerName)
-            Button("取消", role: .cancel) { namingSpeakerIndex = nil }
-            Button("保存") { commitSpeakerName() }
-        } message: {
-            Text("命名后，这个人的声纹会存入声纹库；以后再录到他，会自动标出名字。")
-        }
+        // 语言包可用性统一由 `.onChange(of: sourceLanguage)` 刷新；首次进入时 onAppear 里的
+        // `sourceLanguage = settings.defaultSourceLanguage` 会触发那次 onChange，无需再挂一个 `.task`
+        //（两者并存会让首次进入并发查两遍，属冗余开销）。
         .onDisappear { player.stop() }
-        // M6b：跟读比对。用 sheet(item:) 而不是 sheet(isPresented:) ——
-        // 前者把"要读的是哪一句"作为数据带过去，不必再维护一份"当前选中句"的状态
-        .sheet(item: $practiceTarget) { row in
-            PracticeView(referenceText: row.text)
-        }
-        // 学习模式整屏进入。不做成"原地重组会话详情页"的开关：
-        // 这一页已经承载了文字稿 / 说话人 / 双语 / 播放 / 生词 / 检索入口，
-        // 再塞一套重组逻辑的收益远小于改坏它的风险（详见 StudyModeView 的说明）
-        .fullScreenCover(isPresented: $showingStudyMode) {
-            StudyModeView(manifest: manifest)
-        }
     }
 
     private var overviewSection: some View {
@@ -443,6 +419,9 @@ struct SessionDetailView: View {
         Section {
             Button(role: .destructive) {
                 try? RecordingLibrary.shared.deleteSession(manifest.id)
+                // 与列表页删除保持一致：同步移除检索索引，否则删完后全局搜索
+                // 仍会命中这个会话，点进去落到"找不到这次录音"
+                SearchIndex.shared.remove(sessionId: manifest.id)
                 dismiss()
             } label: {
                 Text("删除这次录音")
@@ -450,183 +429,6 @@ struct SessionDetailView: View {
         } footer: {
             Text("将同时删除音频分片与这份记录，不可恢复。")
         }
-    }
-
-    // MARK: - 说话人（M3c）
-
-    private var namingBinding: Binding<Bool> {
-        Binding(
-            get: { namingSpeakerIndex != nil },
-            set: { if !$0 { namingSpeakerIndex = nil } }
-        )
-    }
-
-    private var speakerSection: some View {
-        Section {
-            if diarization.runningSessionId == manifest.id {
-                diarizingView
-            } else if let speakerTimeline, !speakerTimeline.isEmpty {
-                speakerList(speakerTimeline)
-            } else {
-                emptySpeakerView
-            }
-        } header: {
-            HStack {
-                Text("说话人")
-                Spacer()
-                if let speakerTimeline, !speakerTimeline.isEmpty {
-                    Text(speakerTimeline.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } footer: {
-            Text(speakerFooterText)
-        }
-    }
-
-    private var diarizingView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(diarization.stage.text)
-                .font(.subheadline)
-                .bold()
-            ProgressView(value: diarization.progress)
-                .progressViewStyle(.linear)
-            Text("已处理 \(diarization.processedChunks) / \(diarization.totalChunks) 块音频")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("长录音会分段处理，再用声纹把各段的「说话人1」接续成同一个人。可随时取消。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("取消分析", role: .destructive) {
-                diarization.cancel()
-            }
-            .font(.footnote)
-        }
-        .padding(.vertical, 2)
-    }
-
-    @ViewBuilder
-    private func speakerList(_ timeline: SpeakerTimeline) -> some View {
-        ForEach(speakerRows(timeline)) { row in
-            Button {
-                guard !row.isNamed else { return }
-                draftSpeakerName = ""
-                namingSpeakerIndex = row.index
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.displayName)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                        Text(row.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if row.isNamed {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        Text("命名")
-                            .font(.caption)
-                            .foregroundStyle(.tint)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var emptySpeakerView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(emptySpeakerHint)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Button("识别说话人") {
-                diarization.analyze(sessionId: manifest.id)
-            }
-            .disabled(!hasAnyAudio || !SherpaBundledModel.isReady)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var emptySpeakerHint: String {
-        guard hasAnyAudio else {
-            return "音频已按保留期清理，无法再做说话人分离。"
-        }
-        if !SherpaBundledModel.isReady {
-            let missing = SherpaBundledModel.missingModels.map { $0.displayName }.joined(separator: "、")
-            return "缺少内置模型（\(missing)），说话人分离不可用。"
-        }
-        return "尚未分析。全程在本机离线完成，音频不会离开设备。"
-    }
-
-    private var speakerFooterText: String {
-        "重叠说话（多人同时讲）准确率会明显下降，这类片段标注为「可能重叠」，"
-            + "而不是假装判断正确。未命名的说话人可点一下命名 —— 命名后声纹入库，以后再录到会自动认出。"
-    }
-
-    private struct SpeakerRow: Identifiable {
-        let id: Int
-        let index: Int
-        let displayName: String
-        let detail: String
-        let isNamed: Bool
-    }
-
-    private func speakerRows(_ timeline: SpeakerTimeline) -> [SpeakerRow] {
-        let grouped = Dictionary(grouping: timeline.turns, by: { $0.speakerIndex })
-        return grouped.keys.sorted().map { index in
-            let turns = grouped[index] ?? []
-            let durationMs = turns.reduce(0) { $0 + $1.durationMs }
-            var detail = "\(turns.count) 段｜共 \(durationMs / 1000) 秒"
-            if turns.contains(where: { $0.mayOverlap }) { detail += "｜含可能重叠" }
-            return SpeakerRow(
-                id: index,
-                index: index,
-                displayName: timeline.displayName(for: index),
-                detail: detail,
-                isNamed: turns.contains { $0.personName != nil }
-            )
-        }
-    }
-
-    private func commitSpeakerName() {
-        defer { namingSpeakerIndex = nil }
-        guard let index = namingSpeakerIndex, let name = normalizedSpeakerName() else { return }
-        guard var timeline = speakerTimeline,
-              let centroids = timeline.centroids,
-              index >= 0, index < centroids.count else {
-            Log.shared.warn(.asr, "无法命名说话人 \(index)：时间轴里没有声纹质心")
-            return
-        }
-
-        // 命名即入库：质心早就随时间轴存下了，不需要重新录音或重跑分离
-        SpeakerProfileStore.shared.upsert(name: name, centroid: centroids[index], source: "session")
-
-        for position in timeline.turns.indices where timeline.turns[position].speakerIndex == index {
-            timeline.turns[position].personName = name
-        }
-        speakerTimeline = timeline
-        try? SpeakerTimelineStore.shared.save(timeline)
-    }
-
-    private func normalizedSpeakerName() -> String? {
-        let trimmed = draftSpeakerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func reloadSpeakerTimeline() {
-        speakerTimeline = SpeakerTimelineStore.shared.load(sessionId: manifest.id)
-    }
-
-    /// 转写片段的说话人：取**时间重叠最多**的那一段。
-    /// 不用"起点落在谁里面"是因为两个时间轴边界不会对齐，用重叠量更稳。
-    private func speakerName(fromMs: Int, toMs: Int) -> String? {
-        guard let speakerTimeline else { return nil }
-        guard let turn = speakerTimeline.dominantTurn(fromMs: fromMs, toMs: toMs) else { return nil }
-        return speakerTimeline.displayName(for: turn.speakerIndex)
     }
 
     // MARK: - 翻译（M5）
@@ -733,23 +535,22 @@ struct SessionDetailView: View {
         guard !targetLanguage.isEmpty else { return }
         translationMap = TranslationStore.shared
             .load(sessionId: manifest.id)
-            .texts(for: targetLanguage)
+            // 必须按当前稿（selectedPass）读取：同一 segmentId 在实时稿与终稿里
+            // 指向不同句子，混着读会串稿、还会让终稿翻译误判"已有译文"而漏译
+            .texts(for: targetLanguage, pass: selectedPass)
+        // 译文变了，导出的文字稿要跟着重生成。
+        // 否则首次进入时（initializePass 在填 map 之前就生成了导出文件）导出会缺译文。
+        generateTranscriptExport()
     }
 
-    // MARK: - 学习模式与导出（M6 收尾）
+    // MARK: - 导出
 
-    /// 学习模式入口 + 文字稿导出。
-    private var studyModeRow: some View {
+    /// 文字稿导出。
+    ///
+    /// 学习模式与跟读入口已随「生词本」一并移除（用户确认不需要），
+    /// 这一行原本与它们并排，现在只剩导出。
+    private var exportRow: some View {
         HStack(spacing: 12) {
-            Button {
-                showingStudyMode = true
-            } label: {
-                Label("学习模式", systemImage: "text.book.closed")
-            }
-            .font(.footnote)
-
-            Spacer()
-
             if !settings.exportEnabled {
                 Text("导出已在设置中关闭")
                     .font(.caption2)
@@ -816,47 +617,6 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - 生词（M6）
-
-    /// 一句里的生词 chips。点一下即收录 —— 收录动作必须**零成本**：
-    /// 若要点进另一个页面才能存词，用户就会放弃存词，
-    /// 而"存不下来"等于这个功能不存在。
-    @ViewBuilder
-    private func vocabularyChips(_ candidates: [VocabularyCandidate], sentence: String) -> some View {
-        let shown = Array(candidates.prefix(4))
-        HStack(spacing: 6) {
-            ForEach(shown) { candidate in
-                let inBook = vocabulary.contains(candidate.word)
-                Button {
-                    guard !inBook else { return }
-                    vocabulary.add(
-                        word: candidate.word,
-                        displayWord: candidate.surface,
-                        sourceSessionId: manifest.id,
-                        sourceSentence: sentence,
-                        rank: candidate.rank
-                    )
-                } label: {
-                    Text(candidate.word)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background((inBook ? Color.green : Color.blue).opacity(0.14), in: Capsule())
-                        .foregroundStyle(inBook ? Color.green : Color.blue)
-                }
-                .buttonStyle(.borderless)
-            }
-
-            if candidates.count > shown.count {
-                Text("+\(candidates.count - shown.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
-    }
-
     // MARK: - 文字稿（M2）
 
     private var transcriptSection: some View {
@@ -866,7 +626,7 @@ struct SessionDetailView: View {
             } else if let transcript, !transcript.isEmpty {
                 passPicker
                 transcriptActions
-                studyModeRow
+                exportRow
                 playbackControls
                 translationControls
                 if let error = player.lastError {
@@ -881,17 +641,6 @@ struct SessionDetailView: View {
                         transcriptRowView(row)
                     }
                     .buttonStyle(.plain)
-                    // M6b：跟读入口放在左滑。不挤进行内，是因为一行里已经有
-                    // 时间、识别中标记、播放、生词 chips —— 再加图标会让主操作
-                    //（点句子听音频）变得难以点准。
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button {
-                            practiceTarget = row
-                        } label: {
-                            Label("跟读", systemImage: "mic.fill")
-                        }
-                        .tint(.orange)
-                    }
                 }
                 if let note = transcript.note {
                     Text(note)
@@ -964,11 +713,6 @@ struct SessionDetailView: View {
             }
             .buttonStyle(.borderless)
 
-            // M6：生词高亮开关。放在这一排是因为它和倍率、循环同属
-            // "读这段材料时的辅助手段"，不该藏进设置。
-            Toggle("生词", isOn: $highlightsVocabulary)
-                .font(.footnote)
-                .fixedSize()
 
             Spacer()
 
@@ -1037,8 +781,8 @@ struct SessionDetailView: View {
             //
             // 真机日志给出了直接证据：用户连续 4 次点转写都被拒
             //（「转写被拒：模型未下载｜Small」），说明"再去设置里找下载按钮"
-            // 这一步实际上把人挡住了。这与生词收录是同一条原则 ——
-            // **关键动作必须零成本**：多一次跳转，就等于没有这个入口。
+            // 这一步实际上把人挡住了。**关键动作必须零成本**：
+            // 多一次跳转，就等于没有这个入口。
             if hasAnyAudio && !isFinalModelInstalled {
                 finalModelDownloadRow
             }
@@ -1101,10 +845,9 @@ struct SessionDetailView: View {
     }
 
     private var transcriptFooterText: String {
-        "点句子播放这一句。左滑句子可进入「跟读比对」——"
-            + "它比的是「模型听成了哪些词」，不是音素级发音评分。"
-            + "句子下方的蓝色词是该句的生词，点一下就收进生词本。"
-            + "实时稿是「先出、再改对」的，准确文本以终稿为准。"
+        "点句子播放这一句。"
+            + "实时稿在录音过程中实时生成、停止录音时自动保存；"
+            + "最准确的文本以终稿为准。"
     }
 
     private var hasAnyAudio: Bool {
@@ -1114,7 +857,7 @@ struct SessionDetailView: View {
     private struct TranscriptRow: Identifiable {
         let id: String
         let startMs: Int
-        /// 结束时间：用于按**时间重叠**回填说话人（见 speakerName(fromMs:toMs:)）
+        /// 结束时间：点句回听时作为播放终点（见 playSentence）
         let endMs: Int
         let timeText: String
         let text: String
@@ -1150,11 +893,6 @@ struct SessionDetailView: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                if let speaker = speakerName(fromMs: row.startMs, toMs: row.endMs) {
-                    Text(speaker)
-                        .font(.caption2)
-                        .foregroundStyle(.blue)
-                }
                 Spacer()
                 Image(systemName: player.playingSegmentId == row.id
                     ? "stop.circle.fill" : "play.circle")
@@ -1177,9 +915,6 @@ struct SessionDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-            if let candidates = segmentVocabulary[row.id], !candidates.isEmpty {
-                vocabularyChips(candidates, sentence: row.text)
             }
         }
         .padding(.vertical, 2)
@@ -1226,45 +961,8 @@ struct SessionDetailView: View {
 
     private func reloadTranscript() {
         transcript = TranscriptStore.shared.load(sessionId: manifest.id, pass: selectedPass)
-        reloadVocabulary()
         generateTranscriptExport()
     }
-
-    /// 逐句提取生词。
-    ///
-    /// **在文本加载时算一次**，而不是每行渲染时算：一份转写可能有几百句，
-    /// 放进 View 的 body 会导致每次滚动、每次状态变化都重算一遍分词与查表。
-    /// 提取本身很轻（切词 + 字典查询），一次算完即可。
-    private func reloadVocabulary() {
-        let language = settings.learningLanguage
-        // 词表是懒加载的（首次查询时才读文件），这里主动触发一次
-        WordFrequencyTable.shared.load(language: language)
-
-        guard highlightsVocabulary else {
-            segmentVocabulary = [:]
-            return
-        }
-
-        // 阈值**跟随设置里的水平档**：不传的话提取器会用写死的 3000，
-        // 那样设置页里改水平档就不会生效 —— 等于那个开关是假的。
-        var options = VocabularyExtractor.Options()
-        options.rankThreshold = settings.vocabularyLevel.rankThreshold
-        // 该语言必须有词表，否则判定整体关闭 ——
-        // 拿一门语言的词表去判另一门语言，会把每个词都标成生词。
-        options.enabled = WordFrequencyTable.shared.isReady(language: language)
-
-        var result: [String: [VocabularyCandidate]] = [:]
-        for segment in transcriptSegments {
-            let candidates = VocabularyExtractor.extract(
-                from: segment.text,
-                language: language,
-                options: options
-            )
-            if !candidates.isEmpty { result[segment.id] = candidates }
-        }
-        segmentVocabulary = result
-    }
-
     // MARK: - 播放
 
     private func toggle(_ segment: SessionManifest.SegmentEntry) {

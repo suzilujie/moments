@@ -206,7 +206,13 @@ li{margin:6px 0}
 <article>
 
 <h1>时刻（Moments）· iOS 全时录音转写 App 设计文档</h1>
-<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.6（新增 11.7 / 11.8：结束即保留三件产物、录音页主按钮常驻与字幕吸底；此前 v1.5 新增 B.10 App 图标设计） ｜ 日期 2026-09-22 ｜ 最近更新 2026-10-16 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 说话人分离 → 多语言输出 → 辅助语言学习</p>
+<p class="meta">项目代号 Moments ｜ Bundle ID <code>com.xfish.moments</code> ｜ 版本 v1.7（新增 16. 功能收缩记录：移除说话人与生词本；同日再移除「记录」Tab，历史改为录音页入口；v1.6 新增 11.7 / 11.8；v1.5 新增 B.10 App 图标设计） ｜ 日期 2026-09-22 ｜ 最近更新 2026-10-17 ｜ 目标设备 iPhone 17 Pro Max ／ iPhone 17（均 iOS 26）｜ 分发：未签名 ipa + USB 侧载 ｜ 形态：两种录制模式（环境 / 会议）→ 后台常驻录音 → 离线转写 → 实时字幕 → 多语言输出（实时翻译 + 事后翻译）</p>
+
+<blockquote>
+<p><b>2026-10-17 功能收缩（Scope Reduction）：「说话人」与「生词本」两条功能链路已从 App 中整体删除。</b>
+用户确认这两个功能不需要，实现按「删干净」执行：说话人分离（pyannote 分割 + CAM++ 声纹两个内置模型）、声纹库、生词提取与词频表、生词本、学习模式、跟读比对、朗读语音 —— 全部移除。</p>
+<p>因此本文档 <b>1、2、6.3、8、11.6</b> 章里与这两条链路相关的段落<b>已作废</b>，仅保留为历史设计记录（其中关于"重叠说话""词频表为何内置"等推导过程仍有参考价值，但不再描述当前实现）。当前功能边界以 <a href="#scope-trim">16. 功能收缩记录</a> 为准。</p>
+</blockquote>
 
 <div class="card">
 <b>一句话定义</b>：在 iPhone 上实现一个「点一下就一直在录」的随身语音记录器 —— 锁屏、切 App 都不中断，全程<b>纯离线</b>（无任何网络请求、无服务器、无 API 费用）把周围说话人的声音转成文字、区分「谁在说」、<b>翻成任意目标语言</b>，并把真实录音变成可跟读、可收藏生词的<b>语言学习材料</b>。
@@ -968,7 +974,11 @@ li{margin:6px 0}
 <p><b>反直觉但重要</b>：降噪并不必然提升识别准确率。降噪算法会引入<b>失真伪影（artifact / musical noise）</b>，而 Whisper 这类在大规模含噪数据上训练的模型本身已具备较强抗噪能力——过度降噪可能抹掉模型所需的语音细节，使 WER 反而上升。<b>因此"降噪"在本项目中的定位是「可验证的选项」，而不是「无条件的改进」</b>。这也是双轨架构存在的唯一理由。</p>
 </blockquote>
 
-<h3 id="speech-diar">6.3 说话人分离链路（Speaker Diarization）</h3>
+<h3 id="speech-diar">6.3 说话人分离链路（Speaker Diarization）—— <span class="warn">已作废</span></h3>
+
+<blockquote>
+<p><b>本节已作废（2026-10-17）</b>：说话人分离已随「说话人」功能整体删除，pyannote 分割与 CAM++ 声纹两个内置模型已不再下载、不再打包。本节保留为历史设计记录 —— 它解释过"为什么用 sherpa-onnx 一个库覆盖 VAD / 降噪 / 分离"，其中 <b>VAD 与降噪部分仍然有效</b>（见 6.1 / 6.2 与 <a href="#scope-trim">16. 功能收缩记录</a>）。</p>
+</blockquote>
 
 <p>说话人分离回答的是「<b>哪一段是谁说的</b>」。它由三步组成，缺一不可：</p>
 
@@ -1210,7 +1220,11 @@ li{margin:6px 0}
 <b>对语言学习的额外价值</b>：逐段语言检测能直接标出「这段录音里哪几句是外语」，这正是学习者最关心的部分 —— 它可以自动过滤出「值得反复听的目标语言句子」，而不需要用户手工翻找。这一能力见 8.5。
 </div>
 
-<h2 id="learn">8. 语言学习层（Language Learning）</h2>
+<h2 id="learn">8. 语言学习层（Language Learning）—— <span class="warn">已作废</span></h2>
+
+<blockquote>
+<p><b>本章已作废（2026-10-17）</b>：生词本、学习模式、跟读比对、朗读语音、词频表已全部移除（用户确认不需要）。整章保留为历史设计记录，不再描述当前实现。当前功能边界见 <a href="#scope-trim">16. 功能收缩记录</a>。</p>
+</blockquote>
 
 <h3 id="learn-stance">8.1 设计立场</h3>
 
@@ -1955,6 +1969,81 @@ protocol TaskScheduling {
 </tbody>
 </table>
 
+<h2 id="scope-trim">16. 功能收缩记录（Scope Reduction，2026-10-17）</h2>
+
+<div class="card">
+<b>决策</b>：用户明确「说话人和生词本不需要」。执行方式选的是<b>删干净（remove the whole chain）</b>，而不是「只把入口藏起来」——
+把两个 Tab 拿掉、底层代码与内置模型仍留在包里的做法，会让 34 MB 的模型永远占着安装体积、每次改动都得照顾一批没人用的代码。
+判据是：<b>这两条链路与要保留的功能（录音 / 实时字幕 / 实时翻译 / 终稿转写 / 检索 / 播放）几乎零耦合</b>，
+因此删除是外科式的，编译器能兜住所有引用。
+</div>
+
+<h3 id="scope-trim-removed">16.1 删掉了什么</h3>
+
+<table>
+<thead><tr><th>类别</th><th>内容</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td>源文件</td><td><b>17 个 Swift 文件</b>整文件删除</td><td><code>Features/Speakers</code>(1)、<code>Features/Learn</code>(3)、<code>Sources/Learn</code>(7)、<code>ASR</code>(3：DiarizationService / SherpaDiarizer / SherpaSpeakerEmbedder)、<code>Store</code>(3：SpeakerProfileStore / SpeakerTimeline / VocabularyStore)</td></tr>
+<tr><td>内置模型</td><td>pyannote 分割（6.6 MB）+ CAM++ 声纹（27 MB）</td><td>CI 不再下载、不再做字节与打包断言；安装包减少约 <b>33.6 MB</b></td></tr>
+<tr><td>词频表</td><td><code>Resources/WordLists</code>（英/中两份）</td><td>CI 整段删除（含两段行数下限校验）</td></tr>
+<tr><td>界面</td><td>「说话人」「生词本」两个 Tab；会话详情页的说话人时间轴 / 命名弹窗 / 行内说话人标签；行内生词标签与「生词」开关；「学习模式」入口与整屏页；左滑「跟读」；设置页「学习」区（学习语言、生词水平档）与「我正在学」</td><td>会话详情页因此少一个 Section、少一个左滑动作、少一行控制条开关</td></tr>
+<tr><td>自检页</td><td>说话人覆盖率 / 声纹库 / 生词 / 朗读语音 四行</td><td>启动日志里对应的两条也删除</td></tr>
+</tbody>
+</table>
+
+<h3 id="scope-trim-kept">16.2 刻意保留的四样东西</h3>
+
+<table>
+<thead><tr><th>保留项</th><th>为什么不能顺手删</th></tr></thead>
+<tbody>
+<tr><td><code>AppSettings.learningLanguage</code></td><td>它<b>同时是实时翻译默认目标语言的兜底来源</b>（<code>liveTranslationTargetLanguage</code> 的初始化链）。删掉会连带拆掉那条链 —— 而那条链踩过「used before being initialized」，CI 编译失败过一次。界面入口已移除，属性留作内部兜底。</td></tr>
+<tr><td><code>AppSettings.exportEnabled</code></td><td>它管的是<b>会话文字稿导出</b>，不只是生词本导出。生词本走了，这个开关仍然有效。</td></tr>
+<tr><td><code>TranscriptSegment.speakerId</code></td><td>全项目不再写入，但<b>字段必须留</b>：老用户的 <code>transcript-*.json</code> 带着这个键，删属性会让那些文件解码失败。用「一个字段」换「老录音打不开」不划算。</td></tr>
+<tr><td>VAD 与降噪两个内置模型</td><td>它们是<b>实时字幕与对照转写</b>的前提，与说话人功能无关（合计 1.2 MB，继续随包）。</td></tr>
+<tr><td>老用户设备上的 <code>Speakers/</code>、<code>Vocabulary/</code> 目录</td><td>里面是用户过去积累的数据。<b>不再读写、也不替用户删除</b> —— 没有理由因为一次功能收缩就销毁用户的历史资料。</td></tr>
+</tbody>
+</table>
+
+<h3 id="scope-trim-impact">16.3 影响与代价</h3>
+
+<ul>
+<li><b>包体</b>：约 −33.8 MB（33.6 MB 模型 + 约 0.2 MB 词表）。这对「未签名 ipa + 侧载」的分发方式直接可感</li>
+<li><b>CI</b>：少三段下载（其中一段还要 tar 解包）、少三段断言 —— 构建更快，也少三个可能因上游 404 而失败的点</li>
+<li><b>首屏</b>：Tab 从 5 个回到 <b>2 个</b>（录音 / 自检），与「一键录音 → 实时识别 → 实时翻译 → 结束即保存」的定位一致（「记录」Tab 的移除见 16.4）</li>
+<li><b>数据</b>：新录音不再产生 <code>speakers.json</code> / <code>vocabulary.json</code>；旧文件原样保留，无迁移动作</li>
+<li><b>不可逆</b>：删掉的 17 个文件只在 git 历史里（提交 <code>b970aba</code> 之前）。若日后要恢复，应<b>从历史重新取回并重新设计</b>，而不是指望"代码还在"。这是本次明确接受的代价</li>
+</ul>
+
+<blockquote>
+<p><b>一个反面参照</b>：如果当初只藏入口（A 层方案），今天的结果会是"Tab 少了两个，但包里仍躺着 34 MB 没人用的模型、CI 仍为它们下载、每次重构仍要保证它们能编译"。功能收缩的价值有一半在于<b>把成本也一起收掉</b>。</p>
+</blockquote>
+
+<h3 id="scope-trim-sessions">16.4 附加收缩：「记录」Tab 移除（同日）</h3>
+
+<div class="card">
+<b>用户提出</b>：「记录好像也不需要」。核对后发现这个 Tab 不只是列表 —— 它同时是
+<b>历史录音</b>与<b>全局检索</b>的唯一入口；而录音页里那条「查看这次记录」只对
+<b>刚录完的那一次</b>有效（依赖内存里的 sessionId，App 重启即失效，不构成历史入口）。
+因此「删 Tab」必须同时回答一个问题：<b>历史录音以后还要不要能打开？</b>
+用户选的是 <b>B 方案</b>：删 Tab，但把入口降级到录音页右上角 —— 能力一条不丢，只是不再占一个 Tab。
+</div>
+
+<table>
+<thead><tr><th></th><th>改前</th><th>改后</th></tr></thead>
+<tbody>
+<tr><td>入口</td><td>底部 Tab「记录」</td><td>录音页右上角「历史」按钮（<code>clock.arrow.circlepath</code>）</td></tr>
+<tr><td>导航栈</td><td><code>SessionListView</code> 自带 <code>NavigationStack</code>（作为 Tab 根视图）</td><td><b>去掉自带的栈</b>，改为被录音页 push 进来 —— 两层栈会导致双层导航栏与错乱的返回键</td></tr>
+<tr><td>检索</td><td>列表页的 <code>.searchable</code></td><td>跟随列表一起搬走（它本来就是"在历史里找一句话"，与列表是同一个使用场景）</td></tr>
+<tr><td>能力</td><td>列表 / 全局检索 / 左滑删除 / 进会话详情页</td><td><b>四项全保留</b></td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><b>为什么不选"只删 Tab、代码全留"</b>：那会留下一条没有任何入口的死 UI —— 列表视图还在编译、还能被误用，而用户永远打不开它；历史录音也就真的丢了。既然这个 Tab 不需要，就把它变成<b>一个有入口的二级页</b>，而不是一根断掉的线头。</p>
+</blockquote>
+
+<p><b>这条改动的真正价值不在界面</b>：它把"历史"从「和录音并列的一件事」降级为「录音页里的一个动作」。界面只剩一件事可做（录音），而回看历史仍然可达 —— 这正是这个 App 想要的形状。</p>
+
 <h2 id="glossary">附录 A：术语表（中英对照）</h2>
 
 <table>
@@ -2382,6 +2471,11 @@ protocol TaskScheduling {
 <a href="#milestones">13. 里程碑</a>
 <a href="#risks">14. 风险登记册</a>
 <a href="#open">15. 待确认事项</a>
+<a href="#scope-trim">16. 功能收缩记录</a>
+<a class="sub" href="#scope-trim-removed">16.1 删掉了什么</a>
+<a class="sub" href="#scope-trim-kept">16.2 刻意保留</a>
+<a class="sub" href="#scope-trim-impact">16.3 影响与代价</a>
+<a class="sub" href="#scope-trim-sessions">16.4 附加收缩：「记录」Tab</a>
 <a href="#glossary">附录 A 术语表</a>
 <a href="#impl-notes">附录 B 实现偏差记录</a>
 <a class="sub" href="#impl-build">B.1 构建与依赖</a>

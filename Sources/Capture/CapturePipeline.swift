@@ -42,6 +42,17 @@ final class CapturePipeline {
     /// 为 nil 时（未开实时字幕）整条路径零开销。
     var onSamples: (([Float]) -> Void)?
 
+    /// 输入电平回调（实时声波用，0…1）。**在 queue 上调用**，约每 100 ms 一次，
+    /// 取值方需自行切回主线程。
+    ///
+    /// ## 为什么电平在这里算，而不是在实时音频回调里
+    /// `AudioCaptureEngine` 的 installTap 里写死了一条纪律：**只允许读指针与 memcpy**，
+    /// 禁止任何额外计算与可能阻塞的调用。而本类每 100 ms 本来就握着
+    /// 一批已转成 16 kHz 的样本（`drainOnce` 里），顺手算一次均方根
+    /// 只是几千次乘加，既不分配内存也不碰 I/O。
+    /// 代价是波形比声音晚约 100 ms —— 对"它在听我说话"这件事毫无影响。
+    var onLevel: ((Float) -> Void)?
+
     /// 最近一次消费耗时（供界面判断落盘是否吃紧）。
     private(set) var lastTickCostMs = 0
     /// 累计转出的 16 kHz 帧数。
@@ -252,6 +263,9 @@ final class CapturePipeline {
         // 字幕侧也已经拿到这段音频，不会因为落盘异常而整段没有字幕。
         onSamples?(samples)
 
+        // 电平：同一批样本顺手算一次均方根（纯算术，不分配、不阻塞）
+        onLevel?(Self.rmsLevel(samples))
+
         do {
             let segments = try writer.append(samples)
             finished.append(contentsOf: segments)
@@ -275,5 +289,28 @@ final class CapturePipeline {
                 "单次消费耗时 \(lastTickCostMs)ms 已超过消费间隔 \(tickIntervalMs)ms，落盘可能跟不上采集"
             )
         }
+    }
+
+    // MARK: - 电平
+
+    /// 均方根电平 → 0…1 的显示区间。
+    ///
+    /// ## 为什么不能直接把 RMS 乘个系数
+    /// 人对响度的感知是对数的，而线性 RMS 在"对方小声说话"时几乎贴地 ——
+    /// 波形会看起来像根本没在收音，用户就会以为麦克风坏了。
+    /// 这里先转成 dB，再按 **60 dB 动态范围**线性映射到 0…1：
+    /// -60 dB（约 0.001，安静房间底噪）→ 0，0 dB（满量程）→ 1。
+    /// 低于 -60 dB 一律压在 0，避免静音时柱子抖动。
+    private static func rmsLevel(_ samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Float = 0
+        for sample in samples {
+            sum += sample * sample
+        }
+        let rms = (sum / Float(samples.count)).squareRoot()
+        // 1e-7 兜底：log10(0) 是 -inf，会把整条波形变成 NaN
+        let db = 20 * log10(max(rms, 1e-7))
+        let normalized = (db + 60) / 60
+        return min(max(normalized, 0), 1)
     }
 }

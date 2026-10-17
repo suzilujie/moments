@@ -35,23 +35,15 @@ enum AppPaths {
         try ensureDirectory(try appRoot().appendingPathComponent("Models", isDirectory: true))
     }
 
-    /// 声纹库目录（M3c 起使用）。
-    ///
-    /// 刻意与音频目录**分开**存放：声纹库是跨会话的长期资产，
-    /// 而音频会按保留期被清理。若混在一起，清理音频时就可能连带
-    /// 把声纹库一起删掉 —— 那是用户最不可接受的损失（录音可重录，声纹积累不可重建）。
-    static func speakersDirectory() throws -> URL {
-        try ensureDirectory(try appRoot().appendingPathComponent("Speakers", isDirectory: true))
-    }
+    // MARK: - 已移除的两个目录（2026-10-17）
 
-    /// 生词本目录（M6 起使用）。
+    /// `Speakers/`（声纹库）与 `Vocabulary/`（生词本）随对应功能一并删除
+    /// （用户确认不需要），不再创建、也不再读写。
     ///
-    /// 与声纹库同理，**刻意与音频目录分开**：生词本是长期积累的学习资产，
-    /// 而音频会按保留期被清理。混在一起就会出现"清理音频时把生词本一起删掉" ——
-    /// 这正是用户最不可接受的损失。
-    static func vocabularyDirectory() throws -> URL {
-        try ensureDirectory(try appRoot().appendingPathComponent("Vocabulary", isDirectory: true))
-    }
+    /// **老用户设备上这两个目录仍然存在** —— 里面是用户过去积累的数据，
+    /// 没有理由替他删掉；它们不再被任何代码引用，占用也很小。
+    /// 今后若再引入"跨会话长期资产"，仍应遵循原来那条判据：
+    /// **长期资产必须与音频目录分开**，否则按保留期清理音频时会连带删掉它。
 
     /// 目录的简短显示形式（完整路径太长，且沙盒路径对用户无意义）。
     static func shortPath(_ url: URL) -> String {
@@ -64,7 +56,7 @@ enum AppPaths {
     ///
     /// 为什么值得收口：调用方大量使用 `try?`（"拿不到目录就算了"），
     /// 于是目录创建失败会退化成**静默不落盘** ——
-    /// 用户看到的现象是"数据丢了 / 设置没保存 / 声纹没记住"，
+    /// 用户看到的现象是"数据丢了 / 设置没保存 / 日志断了"，
     /// 而日志里一条线索都没有，真正的原因（沙盒异常、磁盘满、权限）
     /// 就永远查不出来了。
     ///

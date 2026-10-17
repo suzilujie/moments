@@ -7,31 +7,31 @@ import Foundation
 ///
 /// | | whisper 模型 | sherpa 模型（本文件） |
 /// |---|---|---|
-/// | 单个体积 | 32 MB ～ 539 MB | 0.5 MB ～ 27 MB（合计约 35 MB）|
+/// | 单个体积 | 32 MB ～ 539 MB | 0.5 ～ 0.6 MB（合计约 1.2 MB）|
 /// | 处理方式 | 运行时下载 | **打进 ipa** |
 /// | 原因 | 打包则超蜂窝 200 MB 上限，部分用户**装不上** | 体积小；且原始托管在 GitHub Releases，而交付环境实测 github.com 不可达 |
 ///
-/// 关键在最后一条：若把 VAD / 降噪 / 说话人分离做成运行时下载，
+/// 关键在最后一条：若把 VAD / 降噪做成运行时下载，
 /// 它们就会因网络问题而不可用 —— 那是**把一个可用的功能做成不可用**。
-/// 内置之后，M3 的全部能力**永久可用，不依赖任何网络**。
+/// 内置之后，这两项能力**永久可用，不依赖任何网络**。
+///
+/// ## 2026-10-17 收缩到两个模型
+/// 「说话人分割（pyannote，6.6 MB）」与「声纹嵌入（CAM++，27 MB）」已随
+/// 「说话人」功能一并移除（用户确认不需要），安装包因此减少约 34 MB，
+/// CI 也少两段下载与两段字节断言。VAD 与降噪**保留** —— 它们是实时字幕
+/// 与对照转写的前提，与说话人功能无关。
 enum SherpaBundledModel: String, CaseIterable {
 
     /// 语音活动检测（Silero VAD，0.6 MB）
     case sileroVad
     /// 语音增强 / 降噪（GTCRN，0.5 MB）
     case gtcrn
-    /// 说话人分割（pyannote segmentation 3.0，6.6 MB）
-    case pyannoteSegmentation
-    /// 声纹嵌入（3D-Speaker CAM++ 中英通用版，27 MB）
-    case speakerEmbedding
 
     /// App 包内的文件名（CI 下载时即按此命名，见 .github/workflows/ios-build.yml）
     var fileName: String {
         switch self {
         case .sileroVad: return "silero_vad.onnx"
         case .gtcrn: return "gtcrn_simple.onnx"
-        case .pyannoteSegmentation: return "pyannote_segmentation_3_0.onnx"
-        case .speakerEmbedding: return "campplus_zh_en_16k.onnx"
         }
     }
 
@@ -39,8 +39,6 @@ enum SherpaBundledModel: String, CaseIterable {
         switch self {
         case .sileroVad: return "语音活动检测（Silero VAD）"
         case .gtcrn: return "语音增强 / 降噪（GTCRN）"
-        case .pyannoteSegmentation: return "说话人分割（pyannote 3.0）"
-        case .speakerEmbedding: return "声纹嵌入（CAM++ 中英）"
         }
     }
 
@@ -48,8 +46,6 @@ enum SherpaBundledModel: String, CaseIterable {
         switch self {
         case .sileroVad: return 640_000
         case .gtcrn: return 534_000
-        case .pyannoteSegmentation: return 6_960_000
-        case .speakerEmbedding: return 28_280_000
         }
     }
 
@@ -59,10 +55,6 @@ enum SherpaBundledModel: String, CaseIterable {
             return "判断「这段到底是不是人声」。替代 M2 的均方根能量门限 —— 后者分不清人声与稳定噪声"
         case .gtcrn:
             return "降噪模型。注意：降噪会引入失真伪影，可能让识别更差，因此做成可开关的对照实验"
-        case .pyannoteSegmentation:
-            return "把音频切成「可能换人了」的片段，是说话人分离的第一步"
-        case .speakerEmbedding:
-            return "把一段语音压成声纹向量，用于判断「是不是同一个人」"
         }
     }
 

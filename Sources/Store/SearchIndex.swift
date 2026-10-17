@@ -18,6 +18,16 @@ struct SearchHit: Identifiable {
 
     var isTranslation: Bool { !lang.isEmpty }
 
+    /// 命中所属的**转写片段 id**（裸 id，用于详情页定位与播放）。
+    ///
+    /// 译文行在索引里的行 id 是 `"\(segmentId)@\(targetLang)"`（见 `index(sessionId:)`），
+    /// 那只是为了"原文与译文同表存储时保持行 id 唯一"。但详情页要定位到的是**句子本身**，
+    /// 不是这条译文行 —— 用带后缀的 id 会让播放高亮永远匹配不上句子。
+    /// 因此这里把 `@目标语言` 后缀剥掉，供 `SessionDetailView(focusSegmentId:)` 使用。
+    var segmentId: String {
+        isTranslation ? String(id.dropLast(lang.count + 1)) : id
+    }
+
     var languageText: String {
         isTranslation ? "\(TranslationLanguageCatalog.name(for: lang))译文" : ""
     }
@@ -231,8 +241,7 @@ final class SearchIndex: ObservableObject, @unchecked Sendable {
 
     // MARK: - 写入
 
-    /// 索引（或重新索引）一次会话。
-    /// 转写完成、或说话人时间轴更新后调用。
+    /// 索引（或重新索引）一次会话。转写完成（终稿或实时稿）后调用。
     func index(sessionId: String) {
         guard let manifest = RecordingLibrary.shared.loadManifest(sessionId: sessionId) else { return }
         queue.async { [weak self] in

@@ -43,11 +43,18 @@ struct TranslationDocument: Codable {
     var updatedAtMs: Int64
     var entries: [TranslationEntry]
 
-    /// 某语言已翻好的片段映射（segmentId → 译文）。
+    /// 某语言、某一稿已翻好的片段映射（segmentId → 译文）。
     /// 刻意不叫 `map` —— 那会与 Swift 标准库的 `map` 在阅读时混淆。
-    func texts(for targetLang: String) -> [String: String] {
+    ///
+    /// ## 为什么必须按 `pass` 过滤
+    /// 同一个 `segmentId` 在实时稿与终稿里可能指向**不同的句子文本**（两稿由不同
+    /// 引擎/参数生成），因此译文也必须按稿分开存（见 `TranslationEntry.pass` 与
+    /// `merge` 的三维键 `segmentId + targetLang + pass`）。若读取时只按语言过滤、
+    /// 以 `segmentId` 为键，两稿的同 id 条目会互相覆盖，表现为"切到终稿却看到
+    /// 实时稿的译文"，或"终稿翻译误以为已有译文而跳过"。
+    func texts(for targetLang: String, pass: TranscriptPass) -> [String: String] {
         var result: [String: String] = [:]
-        for entry in entries where entry.targetLang == targetLang {
+        for entry in entries where entry.targetLang == targetLang && entry.pass == pass {
             result[entry.segmentId] = entry.text
         }
         return result
@@ -104,24 +111,16 @@ final class TranslationStore {
         try data.write(to: target, options: .atomic)
     }
 
-    func saveAsync(_ document: TranslationDocument) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            do {
-                try self.save(document)
-            } catch {
-                Log.shared.error(
-                    .storage,
-                    "译文写入失败｜\(document.sessionId)｜\(error.localizedDescription)"
-                )
-            }
-        }
-    }
-
     /// 合并写入一批译文。
     ///
     /// **已有的人工修正不会被覆盖** —— 用户改过的译文优先级最高，
     /// 否则重跑一次翻译就会把他的手改成果抹掉，那是最让人恼火的一类 bug。
+    ///
+    /// ## 读-改-写必须原子（2026-10-17 修复）
+    /// 本类此前是"调用线程同步 `load` + 串行队列异步 `save`"。两次 `merge` 并发时，
+    /// 各自读到同一份旧 JSON、各自改、后写的覆盖先写的 —— 丢掉的正是前一次的译文。
+    /// 修复后 `load → modify → save` 整体放进同一条串行队列（`queue.sync`），
+    /// 一次 `merge` 结束即代表译文已落盘；后续读（如检索索引重建）不再踩到半写状态。
     /// - Returns: (新增或更新的条数, 因人工修正而被保留的条数)
     @discardableResult
     func merge(
@@ -132,48 +131,61 @@ final class TranslationStore {
         engine: String,
         engineVersion: String
     ) -> (updated: Int, keptManual: Int) {
-        var document = load(sessionId: sessionId)
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        var updated = 0
-        var keptManual = 0
+        var result: (updated: Int, keptManual: Int) = (0, 0)
+        queue.sync {
+            var document = load(sessionId: sessionId)
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            var updated = 0
+            var keptManual = 0
 
-        for (segmentId, text) in translations {
-            if let index = document.entries.firstIndex(where: {
-                $0.segmentId == segmentId && $0.targetLang == targetLang && $0.pass == pass
-            }) {
-                if document.entries[index].editedByUser {
-                    keptManual += 1
-                    continue
-                }
-                if document.entries[index].text == text { continue }
-                document.entries[index].text = text
-                document.entries[index].createdAtMs = now
-                document.entries[index].engine = engine
-                document.entries[index].engineVersion = engineVersion
-                updated += 1
-            } else {
-                document.entries.append(
-                    TranslationEntry(
-                        segmentId: segmentId,
-                        targetLang: targetLang,
-                        text: text,
-                        pass: pass,
-                        engine: engine,
-                        engineVersion: engineVersion,
-                        editedByUser: false,
-                        createdAtMs: now
+            for (segmentId, text) in translations {
+                if let index = document.entries.firstIndex(where: {
+                    $0.segmentId == segmentId && $0.targetLang == targetLang && $0.pass == pass
+                }) {
+                    if document.entries[index].editedByUser {
+                        keptManual += 1
+                        continue
+                    }
+                    if document.entries[index].text == text { continue }
+                    document.entries[index].text = text
+                    document.entries[index].createdAtMs = now
+                    document.entries[index].engine = engine
+                    document.entries[index].engineVersion = engineVersion
+                    updated += 1
+                } else {
+                    document.entries.append(
+                        TranslationEntry(
+                            segmentId: segmentId,
+                            targetLang: targetLang,
+                            text: text,
+                            pass: pass,
+                            engine: engine,
+                            engineVersion: engineVersion,
+                            editedByUser: false,
+                            createdAtMs: now
+                        )
                     )
-                )
-                updated += 1
+                    updated += 1
+                }
             }
-        }
 
-        document.updatedAtMs = now
-        saveAsync(document)
-        return (updated, keptManual)
+            document.updatedAtMs = now
+            do {
+                try save(document)
+            } catch {
+                Log.shared.error(
+                    .storage,
+                    "译文写入失败｜\(sessionId)｜\(error.localizedDescription)"
+                )
+            }
+            result = (updated, keptManual)
+        }
+        return result
     }
 
     /// 用户手动修正一条译文。
+    ///
+    /// 同样走串行队列的原子读-改-写，理由见 `merge` 的说明。
     func overrideTranslation(
         sessionId: String,
         segmentId: String,
@@ -181,38 +193,49 @@ final class TranslationStore {
         pass: TranscriptPass,
         text: String
     ) {
-        var document = load(sessionId: sessionId)
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        queue.sync {
+            var document = load(sessionId: sessionId)
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
 
-        if let index = document.entries.firstIndex(where: {
-            $0.segmentId == segmentId && $0.targetLang == targetLang && $0.pass == pass
-        }) {
-            document.entries[index].text = text
-            document.entries[index].editedByUser = true
-            document.entries[index].createdAtMs = now
-        } else {
-            document.entries.append(
-                TranslationEntry(
-                    segmentId: segmentId,
-                    targetLang: targetLang,
-                    text: text,
-                    pass: pass,
-                    engine: "manual",
-                    engineVersion: "",
-                    editedByUser: true,
-                    createdAtMs: now
+            if let index = document.entries.firstIndex(where: {
+                $0.segmentId == segmentId && $0.targetLang == targetLang && $0.pass == pass
+            }) {
+                document.entries[index].text = text
+                document.entries[index].editedByUser = true
+                document.entries[index].createdAtMs = now
+            } else {
+                document.entries.append(
+                    TranslationEntry(
+                        segmentId: segmentId,
+                        targetLang: targetLang,
+                        text: text,
+                        pass: pass,
+                        engine: "manual",
+                        engineVersion: "",
+                        editedByUser: true,
+                        createdAtMs: now
+                    )
                 )
-            )
+            }
+            document.updatedAtMs = now
+            do {
+                try save(document)
+            } catch {
+                Log.shared.error(
+                    .storage,
+                    "译文写入失败｜\(sessionId)｜\(error.localizedDescription)"
+                )
+            }
         }
-        document.updatedAtMs = now
-        saveAsync(document)
         Log.shared.info(.storage, "译文已人工修正｜\(sessionId)｜\(segmentId)｜\(targetLang)")
     }
 
     func deleteAll(sessionId: String) {
-        let target = url(sessionId: sessionId)
-        guard FileManager.default.fileExists(atPath: target.path) else { return }
-        try? FileManager.default.removeItem(at: target)
+        queue.sync {
+            let target = url(sessionId: sessionId)
+            guard FileManager.default.fileExists(atPath: target.path) else { return }
+            try? FileManager.default.removeItem(at: target)
+        }
         Log.shared.info(.storage, "已删除译文｜\(sessionId)")
     }
 

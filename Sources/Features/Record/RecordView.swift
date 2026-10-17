@@ -4,53 +4,73 @@ import SwiftUI
 // "some View has no member 'translationTask'"）。
 import Translation
 
-/// 录音页（M1 主界面）。
+/// 录音页。
 ///
-/// 三条界面原则来自设计文档 11.2：
-///   1. **状态必须一眼可辨**：正在录 / 已中断 / 已降档 / 有断口，四种情况要能立刻分清
-///   2. **不假装连续**：断口必须显示出来，而不是让用户以为全程都录到了
-///   3. **关键数字要可见**：已录时长、分片数、落盘耗时、丢弃帧数 —— 这些是判断
-///      "录音是否健康"的唯一依据，藏起来等于没有
+/// ## 一屏三段式（2026-10-17 重设计）
+/// 这个 App 是商业应用，录音页只该回答三个问题：
+/// **录多久了、它在听什么、怎么停**。因此：
+///   · **待机**：居中大圆按钮 = 唯一的视觉重心，下面是"上一次录音"的摘要卡
+///   · **识别中**：顶部计时 + 声波带，中间到下面整块给字幕（停止在右上角）
+///   · **刚停止**：回到待机，摘要卡贴底
+///
+/// ## 为什么不再是 List
+/// 之前这页是一个 `List` + 分组标题 + 解释性小字 —— 那是**设置页的形状**：
+/// 最显眼的元素是 Section 标题，而"正在录"只靠一个 14pt 的圆点表示。
+/// 改成固定布局后，信息按重要性从大到小排：计时 > 声波 > 字幕 > 其他。
+///
+/// ## 工程指标去哪了
+/// 分片数 / 落盘耗时 / 丢弃帧数 / 断口从主界面移进「诊断」。
+/// **判据没变、呈现方式变了**：正常时界面不出现数字，异常时在计时下方
+/// 自动弹一条橙色横幅（见 `alertBanner`）—— 让"出问题"比"看数字"更早被注意到。
+/// 这条例外是刻意推翻设计文档 11.2 第 3 条的，理由写在 11.9。
 struct RecordView: View {
+
+    // MARK: - 依赖
 
     @ObservedObject private var session = RecordingSession.shared
     @ObservedObject private var settings = AppSettings.shared
     /// 实时字幕（非终稿）。两稿分离是设计文档 5.4 的核心：
     /// 这一份会被不断改写，只求当场可读；准确版本由终稿负责。
     @ObservedObject private var live = LiveTranscriber.shared
-    /// 必须观察：实时字幕区的提示要能反映"模型正在后台自动下载"及其进度，
+    /// 必须观察：字幕区的提示要能反映"模型正在后台自动下载"及其进度，
     /// 否则首次使用时用户看到的是"尚未下载"，而实际上正在下。
     @ObservedObject private var models = ModelManager.shared
     /// 实时翻译（逐句翻）。与实时字幕是两件事：字幕是本机识别，翻译走系统翻译框架。
     @ObservedObject private var translation = TranslationService.shared
+
+    // MARK: - 界面状态
+
     @State private var showingSettings = false
+    @State private var showingDiagnostics = false
     /// 字幕区是否"贴在底部"。用户主动往上翻看历史时不自动滚 ——
     /// 否则新句子会把他正在看的内容拽走（那会变成新的烦人点）。
     @State private var isSubtitlePinnedToBottom = true
     /// 实时字幕未启动时的原因提示（模型未下载等），必须显式给出，不能静默无反应
     @State private var liveHint: String?
     /// 实时翻译语言包的可用性。
-    /// **主动查**：用户要求"缺语言包 / 正在下载"这类状态出现在字幕下方，
+    /// **主动查**：缺语言包 / 正在下载这类状态要出现在字幕下方，
     /// 而等到开始准备才知道缺，中间那段时间他只能干等。
     @State private var livePackStatus: LanguageAvailability.Status?
 
+    // MARK: - 骨架
+
     var body: some View {
         NavigationStack {
-            List {
-                statusSection
-                // 刚停下的那一次录音留下了什么（时长 / 识别 / 译文 + 进详情的入口）。
-                // 放在最靠上：按下停止之后用户第一个想问的就是"东西存哪了"。
-                savedSection
-                // 正在自动准备模型时也要显示字幕区：用户需要知道"还在准备什么"，
-                // 而不是打开 App 看到一片空白、以为功能坏了
-                if session.snapshot.state.isActive || isPreparingModel { subtitleSection }
-                metricsSection
-                if session.snapshot.totalGapMs > 0 { gapSection }
-                if let error = session.snapshot.lastError { errorSection(error) }
+            ZStack {
+                Color(uiColor: .systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                if session.snapshot.state.isActive {
+                    recordingLayout
+                } else {
+                    idleLayout
+                }
             }
-            // 主按钮常驻底部，不随内容滚动（理由见 controlBar）
-            .safeAreaInset(edge: .bottom) { controlBar }
-            .navigationTitle("时刻")
+            .animation(.easeInOut(duration: 0.25), value: session.snapshot.state.isActive)
+            // 标题留空：待机页在内容里显示「时刻」，录音页上方是计时，
+            // 导航栏再写一遍标题只会抢视觉重心。
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { sessionId in
                 // 会话详情按需加载清单（放在这里而不是算进 body：
                 // 在 body 里读磁盘会让每一次刷新都解一遍 manifest.json）
@@ -64,17 +84,12 @@ struct RecordView: View {
                     )
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                }
-            }
+            .toolbar { toolbarContent }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showingDiagnostics) {
+                diagnosticsSheet
             }
             // 实时翻译：configuration 非 nil 时这个 translationTask 就开始工作，
             // 并一直跑到 stopLive() 把它置回 nil（见 TranslationService.runLive 的说明）。
@@ -98,7 +113,7 @@ struct RecordView: View {
             .onChange(of: session.snapshot.state.isActive) {
                 if !session.snapshot.state.isActive { translation.stopLive() }
             }
-            // 设置里（或本页菜单里）改了目标语言要立刻生效，而不是等下次录音
+            // 设置里改了目标语言要立刻生效，而不是等下次录音
             .onChange(of: settings.liveTranslationTargetLanguage) {
                 syncLiveTranslation()
                 Task { await refreshLivePackStatus() }
@@ -106,29 +121,120 @@ struct RecordView: View {
         }
     }
 
-    // MARK: - 状态
+    // MARK: - 待机
 
-    private var statusSection: some View {
-        Section {
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(stateColor)
-                    .frame(width: 14, height: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.snapshot.state.title)
-                        .font(.title3)
-                        .bold()
-                    Text(stateHint)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+    private var idleLayout: some View {
+        VStack(spacing: 0) {
+            Text("时刻")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            Spacer(minLength: 12)
+
+            startButton
+
+            Text("开始录音")
+                .font(.headline)
+                .padding(.top, 18)
+
+            Text("点一下即可，锁屏也能录")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            // 实时字幕不可用时要在这里说清（模型没下 / 正在下），
+            // 否则用户按下开始后会觉得"识别坏了"
+            if settings.realtimeTranscriptionEnabled, let hint = subtitleStatusText {
+                VStack(spacing: 6) {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    OpenModelSettingsButton(title: "去下载模型")
                 }
-                Spacer()
-                Text(session.snapshot.recordedTimeText)
-                    .font(.system(.title2, design: .monospaced))
-                    .bold()
+                .padding(.top, 16)
+                .padding(.horizontal, 32)
             }
-            .padding(.vertical, 4)
+
+            Spacer(minLength: 12)
+
+            if let error = session.snapshot.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 10)
+            }
+
+            savedCard
+                .padding(.bottom, 8)
         }
+    }
+
+    /// 主按钮：128 的浅色圆 + 104 的实心圆 + 麦克风图标。
+    ///
+    /// 双层圆而不是单层：外层给一点"可按下去"的余地（按下时缩到 0.96），
+    /// 单层实心圆在深色背景下会显得很硬。
+    private var startButton: some View {
+        Button {
+            Task {
+                await session.start()
+                // 录音真正起来之后再启动字幕：会话若在检查阶段就失败，
+                // 提前启动只会留下一个空转的引擎
+                startLiveTranscriptionIfPossible()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.10))
+                    .frame(width: 128, height: 128)
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 104, height: 104)
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("开始录音")
+    }
+
+    // MARK: - 识别中
+
+    private var recordingLayout: some View {
+        VStack(spacing: 0) {
+            timerBlock
+
+            WaveformView()
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+
+            alertBanner
+
+            liveTranscriptArea
+                .padding(.top, 20)
+        }
+    }
+
+    /// 计时 + 状态。**这一页唯一的 44pt 字号**，其余文字都比它小。
+    private var timerBlock: some View {
+        VStack(spacing: 6) {
+            Text(session.snapshot.recordedTimeText)
+                .font(.system(size: 44, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+
+            HStack(spacing: 6) {
+                PulsingDot(color: stateColor)
+                Text(stateTitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 8)
     }
 
     private var stateColor: Color {
@@ -141,241 +247,379 @@ struct RecordView: View {
         }
     }
 
-    private var stateHint: String {
+    /// 状态文案：短句。
+    ///
+    /// 原先每一句都是技术说明（"音频会话被打断（来电 / 其他 App 抢占 / 设备切换），
+    /// 正在等待恢复"）。商业应用这里只该给结论，原因留给「诊断」。
+    ///
+    /// - Note: `.idle` 与 `.failed` 两个分支**在本页走不到** —— `recordingLayout`
+    ///   只在 `state.isActive` 为 true 时渲染，而这两个 case 恰好都是 `isActive == false`
+    ///   （它们由 `idleLayout` 承载）。保留分支只是因为 `switch` 必须穷尽。
+    private var stateTitle: String {
         switch session.snapshot.state {
-        case .idle:
-            return "点下方按钮开始。开始后可锁屏，录音会继续。"
-        case .preparing:
-            return "正在检查权限、磁盘与会话…"
+        case .idle: return "待机"
+        case .preparing: return "正在准备"
         case .recording:
-            return "正在录音。锁屏、切到其他 App 都不会中断。"
-        case .interrupted:
-            return "音频会话被打断（来电 / 其他 App 抢占 / 设备切换），正在等待恢复"
-        case .recovering:
-            return "正在重建采集引擎…"
-        case .stopping, .finalizing:
-            return "正在收尾，请勿关闭 App"
-        case .failed:
-            return "录音已停止，已录内容已保留"
+            // 不能一律写"识别中"：实时字幕被关掉、或模型还没装时，
+            // 这时一个字都不会出，而"识别中"会让用户盯着空白字幕等。
+            if !settings.realtimeTranscriptionEnabled { return "录音中（字幕已关闭）" }
+            return live.isActive ? "识别中" : "录音中"
+        case .interrupted: return "已暂停（来电或设备切换）"
+        case .recovering: return "正在恢复"
+        case .stopping, .finalizing: return "正在保存"
+        case .failed: return "已结束"
         }
     }
 
-    // MARK: - 指标
-
-    private var metricsSection: some View {
-        Section {
-            row("已录时长", session.snapshot.recordedTimeText)
-            row("分片数", "\(session.snapshot.segmentCount)")
-            row("落盘耗时", "\(session.snapshot.lastWriteCostMs) ms")
-            row("丢弃帧数", "\(session.snapshot.droppedSamples)")
-
-            if session.snapshot.droppedSamples > 0 {
-                Text("出现丢弃帧，说明落盘跟不上采集，录音中可能存在空洞——请把这份日志反馈。")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-            }
-        } header: {
-            Text("运行指标")
-        } footer: {
-            // 这三个数字都会被误读，所以把"怎么看"写在这里：
-            Text("「已录时长」按采样计数实时推进（中断期间会停住 —— 那段时间确实没录到，"
-                + "漏了多少由上方「断口」如实显示）。"
-                + "「分片数」每 \(settings.segmentSeconds) 秒收尾一块，"
-                + "因此刚开始录音时它会是 0，这是正常的。"
-                + "「丢弃帧数」为 0 表示没有丢音频 —— 这是判断录音是否健康的唯一依据。")
-                .font(.footnote)
-        }
-    }
-
-    // MARK: - 断口
-
-    private var gapSection: some View {
-        Section("断口（漏录）") {
-            row("断口处数", "\(session.snapshot.gapCount)")
-            row("累计时长", "\(session.snapshot.totalGapMs / 1000) 秒")
-            Text("断口是真实发生过的漏录（来电、其他 App 抢占、设备切换等）。"
-                + "本项目选择如实标注，而不是把时间轴补齐后假装连续。")
-                .font(.footnote)
-                .foregroundStyle(.orange)
-        }
-    }
-
-    private func errorSection(_ message: String) -> some View {
-        Section("提示") {
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.red)
-        }
-    }
-
-    // MARK: - 已保存（停止之后）
-
-    /// 刚结束的那一次录音留下了什么。
+    /// 异常横幅：只有"真的出过问题"才出现，点一下进诊断。
     ///
-    /// ## 为什么必须专门说一句"已保存"
-    /// 原先停止录音后页面直接回到空闲态，**没有任何"录到了什么、存在哪"的反馈**，
-    /// 用户只知道在录、不知道录完在哪看（音频、识别文字、译文三件产物一件都没提）。
-    /// 这里把三件产物一次说清，并给出直达详情页的入口。
-    ///
-    /// 只在"有过一次录音"时出现：`sessionId` 在开始录音时写入、直到下次开始才重置，
-    /// 因此它可以当"上一次录音"的标识用。
+    /// 这是"工程指标移出主界面"的补偿 —— 数字不常驻，但**异常必须自己找上门**。
+    /// 若不做这条，界面干净了、问题也被藏了。
     @ViewBuilder
-    private var savedSection: some View {
-        if let sessionId = session.snapshot.sessionId,
-           !session.snapshot.state.isActive,
-           session.snapshot.recordedMs > 0 {
-            Section {
-                row("录音时长", session.snapshot.recordedTimeText)
-                row("音频分片", "\(session.snapshot.segmentCount) 个")
-                row("实时识别", live.lastSessionSegmentCount > 0
-                    ? "\(live.lastSessionSegmentCount) 句 · 已保存"
-                    : "无（未开启或未出字）")
-                row("实时译文", translation.lastSessionTranslatedCount > 0
-                    ? "\(translation.lastSessionTranslatedCount) 句 · 已保存"
-                    : "无（未开启或未出译文）")
-
-                NavigationLink(value: sessionId) {
-                    Label("查看这次记录", systemImage: "list.bullet.rectangle")
+    private var alertBanner: some View {
+        if let message = alertMessage {
+            Button {
+                showingDiagnostics = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                    Text(message)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Spacer(minLength: 6)
+                    Text("查看")
+                        .font(.caption)
                 }
-            } header: {
-                Text("已保存")
-            } footer: {
-                Text("音频分片、实时识别稿、实时译文都已写进这次会话的目录，可在上面进入查看。"
-                    + "想要更准确的文字，可在详情页点「转写为文字」，用终稿模型对同一段音频重跑一次"
-                    + "（两稿分文件保存、互不覆盖）。")
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+        }
+    }
+
+    private var alertMessage: String? {
+        if let error = session.snapshot.lastError, session.snapshot.state.isActive {
+            return error
+        }
+        if session.snapshot.totalGapMs > 0 {
+            return "检测到 \(session.snapshot.gapCount) 处漏录，累计约 \(session.snapshot.totalGapMs / 1000) 秒"
+        }
+        if session.snapshot.droppedSamples > 0 {
+            return "有音频帧被丢弃，录音可能不完整"
+        }
+        return nil
+    }
+
+    /// 字幕区：表头（含语言胶囊）+ 字幕流。
+    private var liveTranscriptArea: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("实时字幕")
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                languagePill
             }
-        }
-    }
-
-    // MARK: - 控制
-
-    /// 主操作按钮：**常驻屏幕底部**，不随内容滚动。
-    ///
-    /// 原先它在 `List` 的最后一个 Section 里 —— 实时看字幕时要一路滚到底才够得着停止，
-    /// 单手持机时这是个真实的障碍：录音页最该"一秒可达"的就是这个按钮。
-    /// 用 `safeAreaInset(edge: .bottom)` 而不是覆盖层：列表会自动为它让出底部空间，
-    /// 最后一行不会被挡住。
-    private var controlBar: some View {
-        VStack(spacing: 6) {
-            if session.snapshot.state.isActive {
-                Button(role: .destructive) {
-                    session.stop()
-                } label: {
-                    Label("停止录音", systemImage: "stop.circle.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(session.snapshot.state == .stopping || session.snapshot.state == .finalizing)
-            } else {
-                Button {
-                    Task {
-                        await session.start()
-                        // 录音真正起来之后再启动字幕：会话若在检查阶段就失败，
-                        // 提前启动只会留下一个空转的引擎
-                        startLiveTranscriptionIfPossible()
-                    }
-                } label: {
-                    Label("开始录音", systemImage: "mic.circle.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
-
-            Text("当前模式：\(settings.captureSource.title)｜音频会话：\(settings.sessionMode.title)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-        // 让按钮浮在内容之上、而不是和内容混在一起：`.bar` 材质随背景自动取色，
-        // 深色模式下也不会出现"按钮背后透出文字"
-        .background(.bar)
-    }
-
-    // MARK: - 实时字幕
-
-    private var subtitleSection: some View {
-        Section {
-            liveLanguageRow
-            // 实时翻译：**始终显示**，未开启时也要出现（理由见 liveTranslationRow 的说明）
-            liveTranslationRow
+            .padding(.horizontal, 20)
 
             if !settings.realtimeTranscriptionEnabled {
                 Text("实时字幕已在设置中关闭。录音与终稿转写都不受影响 —— 关掉的只是「当场看字」这一项。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 20)
             } else if let hint = subtitleStatusText {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(hint)
                         .font(.footnote)
                         .foregroundStyle(.orange)
-                    // 提示里说"可在设置中下载"，而设置入口只是右上角一枚齿轮 ——
-                    // 用户找不到就会停在这里（真机验收时确实卡在这一步）。
-                    // 入口统一走 OpenModelSettingsButton：它自带设置页弹层，
+                        .fixedSize(horizontal: false, vertical: true)
+                    // 提示里说"可下载"，入口就必须就地给出：这枚按钮自带设置弹层，
                     // 不依赖本页恰好有齿轮（会话详情页此前就没有）。
                     OpenModelSettingsButton(title: "去下载模型")
                 }
+                .padding(.horizontal, 20)
             } else if live.segments.isEmpty {
                 Text(live.statusText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
             } else {
                 liveSubtitleList
 
-                // 实时翻译的状态**贴在源语下方**（用户明确要求的位置）。
-                // 理由：用户正在看的就是字幕，状态必须出现在同一个视野里 ——
-                // 藏在设置里等于没有（这一条本项目已经栽过一次）。
-                // 一切正常时返回 nil，不显示任何东西。
+                // 实时翻译的状态**紧贴字幕区下沿**：用户正在看的就是字幕，
+                // 状态必须出现在同一个视野里（这一条本项目已经栽过一次）。
+                //
+                // 刻意放在 ScrollView **之外**：它不随字幕滚动，因此无论用户往上
+                // 翻到哪一句，这行提示都还在 —— 若跟着字幕滚，"往上翻着看历史时
+                // 正好缺语言包"这件事就又看不见了。
+                // 一切正常时返回 nil，不占任何位置。
                 if let hint = liveTranslationInlineHint {
                     Text(hint)
-                        .font(.footnote)
+                        .font(.caption)
                         .foregroundStyle(.orange)
-                        .padding(.top, 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                 }
             }
-        } header: {
-            Text("实时字幕")
-        } footer: {
-            // 这段文案随 VAD 切窗一起改过：原先写的是「先出、再改对」，
-            // 而现在切点由 VAD 决定、一句话说完才识别，文字出现即定稿。
-            // 文案不跟着改的话，它本身就在误导用户。
-            Text("字幕**成句即定稿**：切点由 VAD 决定，一句话说完才送去识别，"
-                + "所以文字一旦出现就不会再变。录音与音频不受影响，"
-                + "最准确的文本仍以终稿为准。"
-                + "「实时翻译」开启后，每句的译文会显示在原文下方（双行）。")
-                .font(.footnote)
         }
     }
 
-    /// 实时字幕列表：**自带滚动、自动吸底**。
+    /// 语言胶囊：把「识别语言」与「实时翻译成」合并成一个入口。
     ///
-    /// 两个问题一起解决：
-    ///   · 原先只显示最后 12 句、且不能滚 —— 想回看上一句看不到；
-    ///   · 新句子出现在可视区之外，用户必须手动追着滚 ——
-    ///     而"实时字幕要手动追着滚"等于看不了。
+    /// 原先这是字幕区顶部的两行文字 + 两个省略号菜单，吃掉了约 90pt ——
+    /// 而它们决定的是"字幕是什么语言"，属于**设置性信息**，
+    /// 不该和字幕本身抢空间。
+    private var languagePill: some View {
+        Menu {
+            Section("识别语言") {
+                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
+                    Button(item.name) { restartLiveTranscription(language: item.code) }
+                }
+            }
+            Section("实时翻译") {
+                Button("关闭") { settings.liveTranslationTargetLanguage = "" }
+                ForEach(TranslationLanguageCatalog.all) { language in
+                    Button(language.name) { settings.liveTranslationTargetLanguage = language.code }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(languagePillText)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.footnote)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(0.07), in: Capsule())
+        }
+    }
+
+    /// 胶囊文案：`中文 → 英文` / `自动` / `中文`（翻译关闭时只显示识别语言）。
+    ///
+    /// 「自动判定」锁定后会变成具体语言 —— 这里直接反映锁定结果，
+    /// 因此判错时用户能看出来（而不是只觉得"识别很扯"），并可一键改。
+    private var languagePillText: String {
+        let sourceCode = live.pinnedLanguage.isEmpty
+            ? settings.transcriptionLanguage
+            : live.pinnedLanguage
+        let sourceName = sourceCode == "auto"
+            ? "自动"
+            : WhisperModelCatalog.languageName(sourceCode)
+
+        let target = settings.liveTranslationTargetLanguage
+        guard !target.isEmpty else { return sourceName }
+        return "\(sourceName) → \(TranslationLanguageCatalog.name(for: target))"
+    }
+
+    // MARK: - 已保存（贴底）
+
+    /// 刚结束的那一次录音留下了什么。
+    ///
+    /// ## 为什么必须说一句"已保存"
+    /// 停止录音后若直接回到空闲态，**没有任何"录到了什么、存在哪"的反馈** ——
+    /// 用户只知道在录、不知道录完在哪看。
+    /// 这里把三件产物压成一行说清（时长 · 识别 · 译文），并给出进详情的入口。
+    ///
+    /// 只在"有过一次录音"时出现：`sessionId` 在开始录音时写入、
+    /// 直到下次开始才重置，因此它可以当"上一次录音"的标识用。
+    @ViewBuilder
+    private var savedCard: some View {
+        if let sessionId = session.snapshot.sessionId,
+           !session.snapshot.state.isActive,
+           session.snapshot.recordedMs > 0 {
+            VStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                    Text("已保存")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(savedSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                HStack {
+                    Button("诊断") { showingDiagnostics = true }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+
+                    Spacer()
+
+                    NavigationLink(value: sessionId) {
+                        HStack(spacing: 2) {
+                            Text("查看记录")
+                                .font(.footnote.weight(.medium))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(.tint)
+                    }
+                }
+            }
+            .padding(14)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private var savedSummaryText: String {
+        var parts = [session.snapshot.recordedTimeText]
+        parts.append("\(live.lastSessionSegmentCount) 句")
+        if translation.lastSessionTranslatedCount > 0 {
+            parts.append("\(translation.lastSessionTranslatedCount) 句译文")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - 工具栏
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        // 历史入口：原先它是底部第二个 Tab（「记录」），用户确认不需要那个 Tab，
+        // 于是把「历史 + 全局检索」降级为这里的一个按钮。
+        //
+        // **这个入口不能省掉**：会话详情页（回听 / 双语稿 / 终稿转写 / 导出）
+        // 只能从历史列表进 —— 本页摘要卡里的「查看记录」只对**刚录完的那一次**有效，
+        // App 重启后 snapshot 里没有 sessionId，历史就再也打不开了。
+        ToolbarItem(placement: .topBarLeading) {
+            NavigationLink {
+                SessionListView()
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .accessibilityLabel("历史记录")
+        }
+
+        if session.snapshot.state.isActive {
+            // 识别中：只留「停止」。设置齿轮在这一态收起 ——
+            // 录音时改设置本来就不该做，而停止是这一屏唯一需要的动作。
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(role: .destructive) {
+                    session.stop()
+                } label: {
+                    Label("停止", systemImage: "stop.fill")
+                        .font(.footnote.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.small)
+                .disabled(
+                    session.snapshot.state == .stopping
+                        || session.snapshot.state == .finalizing
+                )
+            }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("设置")
+            }
+        }
+    }
+
+    // MARK: - 诊断
+
+    /// 诊断面板：原先直接铺在主界面上的那些数字，全部搬到这里。
+    private var diagnosticsSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    row("已录时长", session.snapshot.recordedTimeText)
+                    row("分片数", "\(session.snapshot.segmentCount)")
+                    row("落盘耗时", "\(session.snapshot.lastWriteCostMs) ms")
+                    row("丢弃帧数", "\(session.snapshot.droppedSamples)")
+                } header: {
+                    Text("运行指标")
+                } footer: {
+                    Text("「已录时长」按采样计数推进，中断期间会停住（那段时间确实没录到）。"
+                        + "「分片数」每 \(settings.segmentSeconds) 秒收尾一块，刚开始录音时是 0 属正常。"
+                        + "「丢弃帧数」为 0 表示没有丢音频。")
+                        .font(.footnote)
+                }
+
+                if session.snapshot.totalGapMs > 0 {
+                    Section {
+                        row("断口处数", "\(session.snapshot.gapCount)")
+                        row("累计时长", "\(session.snapshot.totalGapMs / 1000) 秒")
+                    } header: {
+                        Text("断口（漏录）")
+                    } footer: {
+                        Text("断口是真实发生过的漏录（来电、其他 App 抢占、设备切换）。"
+                            + "本项目如实标注，而不是把时间轴补齐后假装连续。")
+                            .font(.footnote)
+                    }
+                }
+
+                Section {
+                    row("录音模式", settings.captureSource.title)
+                    row("音频会话", settings.sessionMode.title)
+                    row("识别语言", settings.transcriptionLanguage == "auto"
+                        ? "自动判定"
+                        : WhisperModelCatalog.languageName(settings.transcriptionLanguage))
+                    row("实时模型",
+                        WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
+                            ?? settings.realtimeModelId)
+                } header: {
+                    Text("录音配置")
+                }
+
+                if let error = session.snapshot.lastError {
+                    Section("最近一次错误") {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("诊断")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showingDiagnostics = false }
+                }
+            }
+        }
+    }
+
+    // MARK: - 字幕
+
+    /// 实时字幕列表：**自动吸底**。
     ///
     /// 吸底策略是"**只在你本来就在底部时才自动滚**"：用户主动往上翻看历史时，
     /// 新句子不该把他拽回底部。判据用 `onScrollGeometryChange`（iOS 18 起可用），
     /// 阈值给 40 点余量 —— 手指离开后还有惯性在滚，判得太紧会在临界处抖。
+    ///
+    /// 与上一版不同：不再固定 280pt 高度。录音时底部没有按钮了，
+    /// 字幕可以一直铺到屏幕底部，能多看到两三句。
     private var liveSubtitleList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(live.segments) { segment in
                         liveSegmentRow(segment)
                             .id(segment.id)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
                 .padding(.vertical, 2)
             }
-            .frame(height: subtitleAreaHeight)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height - geometry.contentOffset.y
                     - geometry.containerSize.height < 40
@@ -391,44 +635,38 @@ struct RecordView: View {
         }
     }
 
-    /// 字幕区的固定高度。
-    /// 固定而不是自适应：自适应会让新句子不断把整页顶动（按钮跟着跑），
-    /// 而"底部按钮固定 + 字幕区自己滚"才是录音页该有的形态。
-    private var subtitleAreaHeight: CGFloat { 280 }
-
-    /// 一句实时字幕（原文 + 紧贴其下的译文）。
+    /// 一句实时字幕：最新一句 19pt 主色，历史句 16pt 次级。
+    ///
+    /// 用字号而不是背景色区分"最新"：字幕是一段连续的话，
+    /// 给最新一句加底色会把阅读流切断，看起来像一条条通知。
     private func liveSegmentRow(_ segment: TranscriptSegment) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(segment.timeText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                if segment.isProvisional {
-                    Text("识别中")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.orange.opacity(0.18), in: Capsule())
-                        .foregroundStyle(.orange)
-                }
-                Spacer()
-            }
+        let isLatest = segment.id == live.segments.last?.id
+
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(segment.timeText)
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+
             Text(segment.text)
-                .font(.body)
-                .foregroundStyle(segment.isProvisional ? .secondary : .primary)
+                .font(.system(size: isLatest ? 19 : 16))
+                .foregroundStyle(isLatest ? .primary : .secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            // 实时译文贴在原文下方。**没有译文就不显示任何占位** ——
+                .fixedSize(horizontal: false, vertical: true)
+
+            // 译文贴在原文下方。**没有译文就不显示任何占位** ——
             // 占位符会让"还没翻到"看起来像"翻译坏了"。
             if let translated = translation.liveTranslations[segment.id] {
                 Text(translated)
-                    .font(.subheadline)
+                    .font(.system(size: isLatest ? 15 : 14))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 2)
     }
+
+    // MARK: - 业务动作（以下逻辑与上一版一致，只换了外层壳）
 
     /// 启动实时字幕（用户已开启且模型已下载时）。
     ///
@@ -442,19 +680,14 @@ struct RecordView: View {
             return
         }
         guard let modelURL = ModelManager.shared.installedURL(for: settings.realtimeModelId) else {
-            // 模型正在后台自动下载时**不写死**"尚未下载"：那会把动态的下载进度
-            // 盖掉，用户看到的是"没下载"，而实际上正在下。
-            if models.states[settings.realtimeModelId]?.isDownloading ?? false {
-                liveHint = nil
-            } else {
-                let name = WhisperModelCatalog.model(id: settings.realtimeModelId)?.displayName
-                    ?? settings.realtimeModelId
-                // 文案必须指明**入口在哪**："可在设置中下载"没有说设置在哪，
-                // 而它只是一个右上角的齿轮图标 —— 找不到入口的提示等于没有提示。
-                liveHint = "实时字幕未启动：模型「\(name)」尚未下载。"
-                    + "点下方「去下载模型」，或右上角齿轮（设置）→「模型」区下载。"
-                    + "下载后下次录音自动启用；录音本身与终稿转写不受影响。"
-            }
+            // **这里刻意一个字都不写**：模型相关的提示（尚未下载 / 正在下载及其进度 /
+            // 下载完成后提示自动消失）统一由 `subtitleStatusText` 动态计算。
+            //
+            // 曾经在这里写死一句"尚未下载"，后果是：用户在本次录音中途把模型下完了，
+            // 界面却一直说没下 —— 因为 `liveHint` 是静态值，而它在
+            // `subtitleStatusText` 里排在动态判断**之前**直接短路返回。
+            // 同一件事有两个状态源，就一定会有说错话的那一天。
+            liveHint = nil
             return
         }
         // 会话已建立（上面已确认 state.isActive），因此 sessionId 必然存在；
@@ -475,43 +708,6 @@ struct RecordView: View {
         // 识别语言若是明确指定的，这一刻就知道源语言，可以立刻开始翻；
         // 若是「自动判定」，则要等锁定（见 syncLiveTranslation 的说明）。
         syncLiveTranslation()
-    }
-
-    /// 识别语言：显示当前**实际**用的语言，并允许一键更改。
-    ///
-    /// ## 为什么这个入口是必需的，不是锦上添花
-    /// 「自动判定」会被**锁定**（见 `LiveTranscriptionEngine.pinLanguageIfNeeded`）——
-    /// 这是为了消灭"每个窗口重新判一次、结果来回跳"（真机反馈：
-    /// 「实时识别有的扯淡，出现各种语言」）。但锁定意味着**判错一次就会错一整场**，
-    /// 所以必须有可见、可改的出路：
-    ///   · 显示锁定结果 → 判错时用户能看出来（而不是只觉得"识别很扯"）
-    ///   · 一键改语言 → 不必停止录音，立刻重启字幕引擎
-    private var liveLanguageRow: some View {
-        HStack(spacing: 8) {
-            Text("识别语言")
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            if live.isActive, !live.pinnedLanguage.isEmpty {
-                Text("已锁定 \(WhisperModelCatalog.languageName(live.pinnedLanguage))")
-                    .foregroundStyle(.green)
-            } else {
-                Text(settings.transcriptionLanguage == "auto"
-                    ? "自动判定（首个出字窗口后锁定）"
-                    : WhisperModelCatalog.languageName(settings.transcriptionLanguage))
-            }
-
-            Menu {
-                ForEach(WhisperModelCatalog.languageOptions, id: \.code) { item in
-                    Button(item.name) { restartLiveTranscription(language: item.code) }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .disabled(!live.isActive)
-        }
-        .font(.footnote)
     }
 
     /// 切换识别语言并**立即重启字幕引擎**（不必停止录音）。
@@ -535,64 +731,6 @@ struct RecordView: View {
         )
         // 改成明确语言后源语言立刻可知，实时翻译该跟着重启（若在等锁定的话）
         syncLiveTranslation()
-    }
-
-    /// 实时翻译：状态 + 语言选择入口。**始终显示**。
-    ///
-    /// ## 为什么它必须始终显示（真机教训，我自己的设计缺陷）
-    /// 这一项默认关闭 —— 理由是语言包必须先装好，否则用户会在**录音刚开始那一刻**
-    /// 撞上系统下载界面。这个理由本身没错。
-    /// 但我最初只在**开启之后**才显示这一行，于是用户根本不知道有这个功能：
-    /// 真机反馈原话是「没看到双语，只看到源语」。
-    /// **一个默认关闭的功能，必须在它被需要的地方留下可见的入口**——
-    /// "不打断用户"和"用户不知道它存在"是两回事，我当时只处理了前者。
-    ///
-    /// 入口放在这里还有一层好处：录音时想换语言不必再进设置（与「识别语言」同理）。
-    private var liveTranslationRow: some View {
-        HStack(spacing: 8) {
-            Text("实时翻译")
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            Text(liveTranslationStatusText)
-                .foregroundStyle(liveTranslationStatusColor)
-                .multilineTextAlignment(.trailing)
-
-            Menu {
-                Button("关闭") { settings.liveTranslationTargetLanguage = "" }
-                ForEach(TranslationLanguageCatalog.all) { language in
-                    Button(language.name) { settings.liveTranslationTargetLanguage = language.code }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-        }
-        .font(.footnote)
-    }
-
-    /// 实时翻译那行的状态。**它同时就是排查入口**：卡在哪一关，这一行直接说出来，
-    /// 而不是让用户盯着没有译文的界面猜。
-    private var liveTranslationStatusText: String {
-        guard !settings.liveTranslationTargetLanguage.isEmpty else {
-            return "未开启（点右侧选语言）"
-        }
-        if let message = translation.liveMessage { return message }
-        if translation.liveConfiguration != nil {
-            return "\(targetLanguageName)｜已翻 \(translation.liveTranslatedCount) 句"
-        }
-        if session.snapshot.state.isActive {
-            // 自动判定尚未锁定：这时**确实还不能翻**（系统翻译不支持源语言自动判定）
-            return "\(targetLanguageName)｜等识别语言锁定…"
-        }
-        return "\(targetLanguageName)｜录音时生效"
-    }
-
-    private var liveTranslationStatusColor: Color {
-        if settings.liveTranslationTargetLanguage.isEmpty { return .secondary }
-        if translation.liveMessage != nil { return .orange }
-        if translation.liveConfiguration != nil { return .green }
-        return .secondary
     }
 
     private var targetLanguageName: String {
@@ -669,7 +807,7 @@ struct RecordView: View {
     /// 系统翻译**不支持"源语言自动判定"**，而识别侧默认就是「自动判定」——
     /// 所以这条路径下只能**等**：等首个出字把识别语言锁定，才知道要翻的是什么语言。
     /// 等多久取决于用户说第一句话的时间。
-    /// 若希望一开始就能翻，把识别语言设成具体语言即可（本页那行的菜单里可改）。
+    /// 若希望一开始就能翻，把识别语言设成具体语言即可（语言胶囊里可改）。
     private func syncLiveTranslation() {
         let target = settings.liveTranslationTargetLanguage
         guard !target.isEmpty else {
@@ -703,10 +841,16 @@ struct RecordView: View {
 
     /// 实时字幕区的状态说明。
     ///
-    /// `liveHint` 是**开始录音那一刻算一次的静态文本**，它无法反映
-    /// "模型正在后台自动下载" —— 于是首次使用时用户会看到"尚未下载"，
-    /// 而实际上正在下。这里改为动态计算：在下载就显示进度，
-    /// 下载完成后提示自动消失（下一句就不该再提这件事）。
+    /// ## 唯一的权威来源是"模型现在到底在不在"
+    /// 全部文案都在这里**现算**，不存快照：判断依据永远是
+    /// `ModelManager.installedURL` 与当前的下载进度，因此
+    /// 「尚未下载 → 正在下载（带进度）→ 提示自动消失」是一条连续状态，
+    /// 用户在本次录音中途把模型下完，界面会立刻跟上。
+    ///
+    /// ## `liveHint` 只剩下一个用途
+    /// 表示**无法从模型状态推导**的原因（目前只有"会话 id 尚未就绪"）。
+    /// 模型类提示绝不能再写进 `liveHint` —— 那是静态值，会压在这段动态判断
+    /// 前面短路返回，把"下完了"说成"没下"。
     private var subtitleStatusText: String? {
         if let liveHint { return liveHint }
 
@@ -718,12 +862,10 @@ struct RecordView: View {
             return "模型「\(name)」正在下载：\(progress.summary)。"
                 + "下载完成后，下次开始录音会自动启用实时字幕。"
         }
-        return "模型「\(name)」尚未下载。"
-    }
-
-    /// 是否正在准备模型（未录音时也要显示字幕区，让"还在准备"可见）。
-    private var isPreparingModel: Bool {
-        models.states[settings.realtimeModelId]?.isDownloading ?? false
+        // 入口必须写出来：它只是一个右上角的齿轮图标，说"可在设置中下载"
+        // 而不说设置在哪，等于没有提示。
+        return "模型「\(name)」尚未下载。点「去下载模型」，或右上角齿轮（设置）→「模型」区下载；"
+            + "下载后下次录音自动启用。录音本身与终稿转写不受影响。"
     }
 
     private func row(_ title: String, _ value: String) -> some View {
@@ -733,6 +875,95 @@ struct RecordView: View {
             Text(value).monospacedDigit()
         }
         .font(.subheadline)
+    }
+}
+
+// MARK: - 子视图
+
+/// 实时声波带：32 根柱，跟随输入电平。
+///
+/// ## 为什么只观察 `AudioLevelMonitor`
+/// 电平每 100 ms 变一次。若让录音页整体（`RecordingSession`）承载这个值，
+/// 整页每秒会重绘 10 次 —— 而除这 32 根柱子之外没有任何东西在变，
+/// 字幕区还在同时重排布局，叠加起来就是滚动掉帧。
+/// 把"观察电平"收进这个小视图，重绘范围就只有它自己。
+///
+/// ## 波形为什么是"真的"
+/// 数据来自 `CapturePipeline` 在后台消费队列上算出的均方根电平，
+/// 不是在放动画：静音时它必须落成一条细线。
+/// 一条"不说话也在动"的波形会让人以为它在瞎动，比没有波形更糟。
+///
+/// ## 颜色为什么是绿而不是红
+/// 这个 App 里红色已经专属于"出错 / 正在停止"（异常横幅、停止按钮）。
+/// 录音中再拿红色画波峰，会被读成"一直在报警"。
+/// 用绿色与计时旁边那颗状态点同色，含义就统一成"正常工作"。
+private struct WaveformView: View {
+
+    @ObservedObject private var meter = AudioLevelMonitor.shared
+
+    /// 32 个历史电平（越靠右越新）。每来一个新值就整体左移一格，
+    /// 视觉上表现为波峰自右向左流动。
+    ///
+    /// 注意 `ForEach` 用下标作 id（位置固定），所以动画效果是"每根柱子
+    /// 插值到左邻的旧高度"，而不是真正的横向位移 —— 观感近似滚动，成本低得多。
+    @State private var levels = [CGFloat](repeating: 0, count: WaveformView.barCount)
+
+    private static let barCount = 32
+    private let maxHeight: CGFloat = 40
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            ForEach(levels.indices, id: \.self) { index in
+                Capsule()
+                    .fill(Color.green.opacity(0.65))
+                    .frame(width: 3, height: barHeight(levels[index]))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: maxHeight)
+        // 两端淡出：整排柱子在左右边缘硬切会显得像进度条
+        .mask(
+            LinearGradient(
+                colors: [.clear, .black, .black, .clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .onChange(of: meter.level) { _, newValue in
+            levels.removeFirst()
+            levels.append(CGFloat(newValue))
+        }
+        .animation(.linear(duration: 0.1), value: levels)
+        .accessibilityHidden(true)
+    }
+
+    /// 最矮留 3pt：静音时是一排细线，而不是空白（空白会被当成"没在收音"）。
+    private func barHeight(_ level: CGFloat) -> CGFloat {
+        max(3, level * maxHeight)
+    }
+}
+
+/// 状态点：缓慢呼吸，表示"还在工作"。
+///
+/// 只用在状态行（录音中 / 恢复中）。它不承载信息 ——
+/// 真正的信息是旁边的文字与颜色，所以它对辅助功能隐藏。
+private struct PulsingDot: View {
+
+    let color: Color
+
+    @State private var dimmed = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 7, height: 7)
+            .opacity(dimmed ? 0.3 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    dimmed = true
+                }
+            }
+            .accessibilityHidden(true)
     }
 }
 

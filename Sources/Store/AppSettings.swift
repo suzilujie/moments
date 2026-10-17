@@ -125,7 +125,13 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(autoPrepareOnCellular, forKey: Keys.autoPrepareOnCellular) }
     }
 
-    /// 正在学习的语言（用户已确认为英语）
+    /// 学习语言。
+    ///
+    /// ## 「语言学习」功能已移除，但**这个属性必须保留**（2026-10-17）
+    /// 它不再对应任何界面入口，唯一的用途是：首次启动时作为
+    /// `liveTranslationTargetLanguage` 的兜底来源（见 init 里的 `storedLearningLanguage`）。
+    /// 删掉它会连带拆掉那条初始化链 —— 而那条链**踩过"used before being initialized"
+    /// 的坑、CI 编译失败过一次**，改动它的收益为零、风险不为零。
     @Published var learningLanguage: String {
         didSet { defaults.set(learningLanguage, forKey: Keys.learningLang) }
     }
@@ -142,8 +148,8 @@ final class AppSettings: ObservableObject {
     /// 又变回 zh-Hans —— 而"源语言与目标语言相同"是无效组合，界面还会就地纠正一次。
     /// 等于每次都要重选。持久化后只选一次。
     ///
-    /// TTS 读原文也需要这个值：系统合成语音必须显式指定语言，
-    /// 否则会用默认语音把中文按英文读出来（见 SpeechReader）。
+    /// 打开会话详情时「源语言」的默认值（系统翻译不支持源语言自动判定，
+    /// 必须显式指定一个）。
     @Published var defaultSourceLanguage: String {
         didSet { defaults.set(defaultSourceLanguage, forKey: Keys.sourceLang) }
     }
@@ -170,12 +176,7 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(liveTranslationTargetLanguage, forKey: Keys.liveTranslateTarget) }
     }
 
-    /// 生词判定的水平档（设计文档 8.5：按用户自选水平调整分数线）
-    @Published var vocabularyLevel: VocabularyLevel {
-        didSet { defaults.set(vocabularyLevel.rawValue, forKey: Keys.vocabLevel) }
-    }
-
-    /// 是否允许导出（生词本 / 会话文本）
+    /// 是否允许导出（会话文字稿）
     @Published var exportEnabled: Bool {
         didSet { defaults.set(exportEnabled, forKey: Keys.export) }
     }
@@ -240,8 +241,6 @@ final class AppSettings: ObservableObject {
         ) ?? ""
         liveTranslationTargetLanguage = defaults.string(forKey: Keys.liveTranslateTarget)
             ?? liveTargetFallback
-        let rawLevel = defaults.string(forKey: Keys.vocabLevel) ?? ""
-        vocabularyLevel = VocabularyLevel(rawValue: rawLevel) ?? .fallback
         exportEnabled = defaults.object(forKey: Keys.export) as? Bool ?? true
     }
 
@@ -282,7 +281,6 @@ final class AppSettings: ObservableObject {
         static let targetLang = "moments.lang.target"
         static let sourceLang = "moments.lang.source"
         static let liveTranslateTarget = "moments.translate.liveTarget"
-        static let vocabLevel = "moments.learn.vocabularyLevel"
         static let export = "moments.export.enabled"
     }
 }

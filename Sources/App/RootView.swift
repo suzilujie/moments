@@ -141,12 +141,8 @@ struct RootView: View {
             row("模型占用", model.modelBytesText)
             row("转写覆盖率", model.coverageText)
             row("已转写字数", model.characterCountText)
-            row("说话人覆盖率", model.diarizationCoverageText)
-            row("声纹库", model.voiceprintText)
             row("检索索引", model.searchIndexText)
             row("翻译（M5）", model.translationText)
-            row("生词（M6）", model.vocabularyText)
-            row("朗读语音（M6）", model.speechText)
 
             if let message = TranscriptionService.shared.lastMessage {
                 note(message, color: .secondary)
@@ -242,22 +238,14 @@ final class SelfCheckModel: ObservableObject {
     @Published var whisperBackend = "-"
     /// M3 语音处理（sherpa-onnx）—— 版本号能取到即证明静态库已链接
     @Published var sherpaVersion = "-"
-    /// M3 内置模型（VAD / 降噪 / 说话人分割 / 声纹）的齐备情况
+    /// M3 内置模型（VAD / 降噪）的齐备情况
     @Published var bundledModelsText = "-"
-    /// M3c：说话人覆盖率（已分离的会话数 / 总会话数）
-    @Published var diarizationCoverageText = "-"
-    /// M3c：声纹库里已录入的人数
-    @Published var voiceprintText = "-"
     /// M4：检索索引能力与规模
     @Published var searchIndexText = "-"
     /// M4：检索自检的逐行结果
     @Published var searchSelfTestLines: [String] = []
     /// M5：翻译引擎与译文缓存规模
     @Published var translationText = "-"
-    /// M6：词频表状态与生词本规模
-    @Published var vocabularyText = "-"
-    /// M6：系统 TTS 的可用语音规模（语言学习依赖语音包，而"有没有装"只能在设备上看）
-    @Published var speechText = "-"
     @Published var installedModelsText = "-"
     @Published var modelBytesText = "-"
     @Published var coverageText = "-"
@@ -286,9 +274,6 @@ final class SelfCheckModel: ObservableObject {
         sherpaVersion = SherpaOnnxEngine.summary
         bundledModelsText = SherpaBundledModel.summary
 
-        let diarizationCoverage = SpeakerTimelineStore.shared.coverage()
-        diarizationCoverageText = "\(diarizationCoverage.analyzed) / \(diarizationCoverage.total)"
-        voiceprintText = "\(SpeakerProfileStore.shared.profiles.count) 人"
 
         let search = SearchIndex.shared
         searchIndexText = "\(search.capability.title)｜\(search.indexedSessions) 会话 / \(search.indexedSegments) 句"
@@ -299,16 +284,6 @@ final class SelfCheckModel: ObservableObject {
             + "｜已翻 \(translationCoverage.translated)/\(translationCoverage.total) 次会话"
             + "｜\(entryCount) 条译文"
 
-        // 词表是懒加载的，这里把内置的几份都主动载入一次，
-        // 好让"哪门语言可用"如实显示 —— 判定失效时界面不能表现为"这段材料没有生词"
-        for entry in WordFrequencyTable.catalog {
-            WordFrequencyTable.shared.load(language: entry.code)
-        }
-        vocabularyText = "词表 \(WordFrequencyTable.shared.summary)"
-            + "｜学习语言 \(AppSettings.shared.learningLanguage)"
-            + "｜水平档 \(AppSettings.shared.vocabularyLevel.title)"
-            + "｜生词本 \(VocabularyStore.shared.summary())"
-        speechText = SpeechReader.availableVoicesSummary()
 
         let installed = ModelManager.shared.installedModels
         installedModelsText = installed.isEmpty

@@ -1,0 +1,481 @@
+================================================================================
+工作日志 work-2026-10-17.log
+项目：时刻（Moments）· iOS 全时录音转写 App
+================================================================================
+
+※ 衔接：上一份日志 work-2026-10-16.log（结束即保留三件产物 + 录音页主按钮常驻
+  + 字幕自动吸底，已随提交 b970aba 构建 success）。
+
+--------------------------------------------------------------------------------
+[2026-10-17] 功能收缩（Scope Reduction）：移除「说话人」与「生词本」整条链路
+--------------------------------------------------------------------------------
+
+■ 起因（用户原话）
+  「说话人和生词本不需要」
+  → 先做了依赖面勘察，给出 A/B/C 三种删除深度，用户选 **C（彻底删）**。
+
+■ 一、决策与判据
+  选「删干净」而不是「只藏入口」，判据是**耦合度**：
+  这两条链路与要保留的功能（录音 / 实时字幕 / 实时翻译 / 终稿转写 / 检索 / 播放）
+  几乎零耦合 —— 说话人分离只有详情页一个手动按钮、从不在录音时自动触发；
+  `TranscriptSegment.speakerId` 全项目只写 nil、无任何读取点；生词标注只多几个小标签。
+  因此删除是外科式的，编译器能兜住全部引用。
+
+■ 二、删除清单（17 个文件 + 2 个模型 + 词表 + CI 三段）
+  整文件删除（17）：
+    Features/Speakers/SpeakerListView.swift
+    Features/Learn/{VocabularyView, StudyModeView, PracticeView}.swift
+    Learn/{PronunciationPractice, PronunciationScorer, SpeechReader,
+           VocabularyExporter, VocabularyExtractor, VocabularyLevel,
+           WordFrequencyTable}.swift
+    ASR/{DiarizationService, SherpaDiarizer, SherpaSpeakerEmbedder}.swift
+    Store/{SpeakerProfileStore, SpeakerTimeline, VocabularyStore}.swift
+
+  内置模型（CI 不再下载、不再打包）：
+    pyannote_segmentation_3_0.onnx（6.6 MB）
+    campplus_zh_en_16k.onnx（27 MB）        → 安装包约 −33.6 MB
+  词频表：Resources/WordLists（en_top10k / zh_top20k）→ CI 整段删除
+
+■ 三、改动清单（14 个文件）
+  1) Sources/App/MainTabView.swift
+     Tab 5 → 3（录音 / 记录 / 自检）。文件头注释补一节说明这次移除的边界，
+     并把"为什么曾经单独成页"的历史理由保留下来（它是理解为何要"跨会话资产"的线索）。
+  2) Sources/Features/Sessions/SessionListView.swift（−319 行 / 手改 6 处）
+     一次按原始行号裁剪 17 个纯删除区间（脚本见下"操作方式"），再手改 6 处：
+       · 状态区：去掉 diarization / profiles / speakerTimeline / namingSpeakerIndex /
+         draftSpeakerName / vocabulary / segmentVocabulary / highlightsVocabulary /
+         practiceTarget / showingStudyMode
+       · body：去掉 speakerSection；modifiers 去掉 onChange(diarization.stage)、
+         两个生词 onChange、命名说话人 alert、跟读 sheet、学习模式 fullScreenCover
+       · 整段删除「说话人」（namingBinding → speakerName(fromMs:toMs:)）
+       · 整段删除「生词」（vocabularyChips）
+       · 删除左滑「跟读」、播放控制条里的「生词」开关、行内说话人蓝标、行内生词 chips
+       · reloadTranscript 不再调 reloadVocabulary，整段删除 reloadVocabulary
+       · `studyModeRow` → `exportRow`（只剩导出）；transcriptFooterText 重写
+         （原文提到"左滑跟读""蓝色词收进生词本"，已失效）
+  3) Sources/Features/Settings/SettingsView.swift
+     内置模型区标题去掉"说话人分离"；「我正在学」Picker 删除；
+     原「学习」区（学习语言 / 生词水平档 / 允许导出）改为「导出」区，只留导出开关；
+     关于区的过期文案（"当前为 M2 阶段…说话人分离、翻译、语言学习尚未实现"）重写。
+  4) Sources/Store/AppSettings.swift
+     删除 `vocabularyLevel` 属性、其初始化行与持久化键 `Keys.vocabLevel`；
+     `learningLanguage` **保留**（详见"刻意保留"）；`exportEnabled` 注释更正。
+  5) Sources/App/RootView.swift
+     自检页删 4 行（说话人覆盖率 / 声纹库 / 生词 / 朗读语音）+ 4 个 @Published
+     + 两段统计计算。
+  6) Sources/App/AppDelegate.swift
+     删除启动时"朗读语音""生词词表"两条日志；数据规模日志去掉"生词本"字段。
+  7) Sources/ASR/SherpaBundledModel.swift
+     枚举从 4 个 case 收缩到 2 个（sileroVad / gtcrn），四个 switch 分支同步收缩；
+     文档表更新为"0.5~0.6 MB / 合计约 1.2 MB"。
+  8) Sources/Support/AppPaths.swift
+     删除 speakersDirectory / vocabularyDirectory，改为一段说明：
+     这两个目录不再创建也不再读写，**老用户设备上的数据不替用户删**。
+  9) Sources/Store/Transcript.swift
+     `speakerId` **保留**，注释改写为"为什么删功能却要留字段"。
+ 10) Sources/Store/SearchIndex.swift / Sources/ASR/SherpaOnnxEngine.swift /
+     Sources/Features/Settings/OpenModelSettingsButton.swift
+     仅订正过期注释（"说话人时间轴更新后调用""三处入口含跟读页"等）。
+ 11) .github/workflows/ios-build.yml
+     模型下载步骤删 campplus + pyannote（含 tar 解包）；模型清单循环从 4 个改 2 个；
+     整个「Fetch word frequency list」步骤（51 行，含英/中两份下载与两段行数下限校验）删除；
+     打包后断言去掉两个模型与两段词表校验；相关注释同步。
+ 12) .gitignore
+     内置模型注释从"四个模型约 35 MB"改为"两个模型约 1.2 MB"，去掉 WordLists 行。
+
+■ 四、刻意保留的五样东西（这一节是本次最容易被后人误删的部分）
+  1) `AppSettings.learningLanguage`
+     它**同时是实时翻译默认目标语言的兜底来源**（init 里的 storedLearningLanguage）。
+     删它会连带拆掉那条初始化链，而那条链踩过 used-before-initialized、CI 编译失败过一次。
+     界面入口已移除，属性留作内部兜底。
+  2) `AppSettings.exportEnabled`
+     管的是**会话文字稿导出**，不只是生词本导出。
+  3) `TranscriptSegment.speakerId`
+     全项目不再写入，但**老用户的 transcript-*.json 带着这个键**，删属性会让老录音解码失败。
+     用"一个字段"换"老录音打不开"不划算。
+  4) VAD 与降噪两个内置模型
+     它们是实时字幕与对照转写的前提，与说话人功能无关（合计 1.2 MB，继续随包）。
+  5) 老用户设备上的 Speakers/ 与 Vocabulary/ 目录
+     里面是用户过去积累的数据。不再读写，也**不替用户删除**。
+
+■ 五、操作方式（这次踩到并解决的两个坑）
+  1) `SessionListView.swift` 要做 17 处纯删除，逐条 replace 容易错位。
+     改用**一次性按原始行号裁剪**的脚本：把所有区间先标记，再单趟过滤重建，
+     因此不存在"删了上面、下面的行号就变了"的问题。结果 1369 → 1050 行（−319），
+     与手算一致。脚本放在 `.git/trim_sessions.ps1`（.git 内不会被 git 跟踪），用完即删。
+  2) 裁剪后**再用精确类名做一次全库检索**（SpeakerListView / DiarizationService /
+     SpeakerTimelineStore / VocabularyStore / VocabularyExtractor / VocabularyCandidate /
+     WordFrequencyTable / VocabularyLevel / VocabularyExporter / SpeechReader /
+     PronunciationPractice / PronunciationScorer / PracticeView / StudyModeView 等），
+     确认零代码引用，只剩注释里的历史叙述（已一并订正）。
+
+■ 六、验证与未验证
+  已做：
+  · Sources 全目录 lint 零错误
+  · 精确类名全库检索：零代码引用残留
+  · 两端（删除后的接缝）逐段读回：`body` / `onAppear` / modifiers 链 / exportRow /
+    transcriptSection / transcriptRowView / reloadTranscript 均结构完整
+  · `SherpaDenoiser` / `SherpaVad` 两个类确实存在（订正 SherpaOnnxEngine 注释时引用了它们）
+  未做（只能由 CI 与真机回答）：
+  · **Swift 语言语义错误本机查不出来**（本项目前例：009c477「零 lint 但编不过」），
+    本次改动面 31 个文件，能不能编译一律以 CI 为准
+  · 删掉两个 Tab 后的首屏观感、设置页「导出」区是否显得太空，需真机看
+  · 包体实际减少量需在 CI 产物里核对（预期 ipa 从 41.4 MB 降到约 8 MB 上下）
+
+■ 七、影响范围
+  31 个文件（17 删 + 14 改）；无新增文件；无新依赖；无数据模型破坏性变更
+  （speakerId 保留）。工程文件 project.yml 一行未动（sources 按目录通配，
+  删文件不需要改工程）。两份 HTML 文档已同步（见下）。
+
+■ 八、潜在风险
+  1) 改动面大、一次 CI 里混了"删文件 + 改界面 + 改 CI 脚本"三类变量。
+     若构建失败，第一嫌疑是**残留引用**（已用精确检索排过一遍，但 Swift 的
+     隐式依赖——例如某个 extension 里引用了已删类型——检索未必 100% 覆盖）
+  2) CI 脚本改动若语法有误，会在 yml 解析阶段就失败（表现为 run 立刻红）。
+     本次只做删除与两处循环列表收缩，未引入新语法
+  3) 删掉的代码只存在于 git 历史（b970aba 之前）。日后若要恢复，需**从历史重新取回
+     并重新设计**，不能指望"代码还在"
+  4) 老用户已有 `speakers.json` / `vocabulary.json` 仍躺在会话目录里（不再被读）。
+     它们不影响任何功能，占用很小
+
+■ 九、文档同步
+  · docs/设计文档.html → 版本 v1.7；顶部加"功能收缩"警示块；6.3 与第 8 章标题标注
+    「已作废」并加说明；新增 **16. 功能收缩记录**（16.1 删了什么 / 16.2 刻意保留 /
+    16.3 影响与代价）；目录新增对应锚点
+  · docs/concepts.html → 顶部加"全局状态变更"说明（相关条目一律视为已作废）；
+    第 7 章标题标注已作废；工程类新增 2 条概念：
+    「删干净 vs 藏入口」「保留字段以兼容旧数据」
+
+■ 十、下一步
+  1) 待用户确认后 commit → push 触发 CI
+  2) CI 通过后核对两件事：**能不能装**、**ipa 体积是否如预期下降**
+     （这也是"模型真的没再打进包"的间接证据 —— 直接证据是 CI 里那两段断言已删，
+     所以体积是唯一可观测的替代判据）
+  3) 装包后验收：
+     · Tab 只剩三个（录音 / 记录 / 自检）
+     · 会话详情页没有"说话人"Section、行内没有蓝色说话人标签
+     · 左滑句子没有「跟读」；播放控制条上没有「生词」开关
+     · 设置页：内置模型只剩 VAD / 降噪两项；「学习」区变成「导出」区（只有导出开关）
+     · 自检页没有说话人/声纹/生词/朗读语音四行
+     · 老录音仍能打开、文字稿仍能显示（验证 speakerId 字段保留这一判断是对的）
+  4) 待评估：P31（录音被强杀时实时稿/译文会丢，需周期性落盘）
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二次] 「记录」Tab 移除，历史与检索降为录音页入口（B 方案）
+--------------------------------------------------------------------------------
+
+■ 起因（用户原话）
+  「记录好像也不需要」
+  → 先核对了这个 Tab 到底承载什么，发现它不只是列表：
+    · 历史录音 → 会话详情页（回听 / 双语稿 / 终稿转写 / 导出）的唯一入口
+    · 全局检索（跨会话搜原文与译文，命中即跳到那句并播放）的唯一入口
+    · 左滑删除会话的唯一入口
+  → 同时指出一个关键陷阱：录音页那条「查看这次记录」依赖内存里的
+    `session.snapshot.sessionId`，**App 重启后为空**，因此它不构成历史入口。
+  → 给出 A（只删 Tab，代码全留）/ B（删 Tab，入口挪到录音页）/ C（连检索一起删）
+    三选一，用户选 **B**。
+
+■ 改动（3 个文件）
+  1) Sources/App/MainTabView.swift
+     Tab 3 → 2（录音 / 自检）；头注释改写为两次收缩的完整说明。
+  2) Sources/Features/Sessions/SessionListView.swift
+     · **去掉自带的 NavigationStack**：它原先是 Tab 根视图、自带栈，
+       现在改成被录音页 push —— 两层栈会导致双层导航栏与错乱的返回键
+     · 空态文案"到「录音」标签页点开始" → "回到录音页点「开始录音」"
+     · 文件头补「入口变更」一段，写明"这个入口不能省"的理由
+  3) Sources/Features/Record/RecordView.swift
+     toolbar 新增 `.topBarLeading` 的 NavigationLink（`clock.arrow.circlepath`，
+     accessibilityLabel「历史记录」）→ push SessionListView。
+     与既有 `.navigationDestination(for: String.self)`（会话详情）不冲突：
+     一个是直接 destination 的 NavigationLink，一个是值路由。
+
+■ 能力核对（一条没丢）
+  历史列表 ✅ / 全局检索 ✅ / 左滑删除 ✅ / 进会话详情页（回听、双语稿、
+  终稿转写、导出）✅ / 录音页「已保存」区的「查看这次记录」✅
+
+■ 影响与代价
+  · 界面：底部只剩「录音 + 自检」，历史成为录音页的二级页
+  · 多一次点击：看历史要"进录音页 → 点右上角"（原先点一次 Tab）——
+    这是刻意的：历史不再是"和录音并列的一件事"，而是"录音页里的一个动作"
+  · 检索框的展开方式会随"二级页"与"Tab 根视图"的差异略有不同，需真机确认
+
+■ 未验证
+  · 同一句老话：**能不能编译只能以 CI 为准**
+  · `NavigationLink` 放在 `ToolbarItem` 里的点击区域与返回键、二级页上
+    `.searchable` 的展开方式 —— 这三处都是本机看不出来的 SwiftUI 行为
+
+■ 文档同步
+  · 设计文档 v1.7 补充 **16.4 附加收缩：「记录」Tab 移除**（含 A/B/C 对比与
+    "为什么不选 A"的说明）；16.3 的首屏条目由"5 → 3 个 Tab"更正为"5 → 2 个"
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日三次] 录音页重设计为「一屏三段式」（整文件重写 RecordView）
+--------------------------------------------------------------------------------
+
+■ 起因（判据）
+  这页此前是 `List` + Section 标题 + 解释性小字 —— 那是**设置页的形状**：
+  最显眼的元素是分组标题，而"正在录"只靠一个 14pt 圆点表示。
+  商业 App 的录音页只该回答三个问题：**录多久了、它在听什么、怎么停**。
+
+■ 改动文件（1 个，整文件重写）
+  Sources/Features/Record/RecordView.swift（约 950 行）
+
+■ 一、一屏三段式（three-phase layout）
+  1) 待机：居中大圆按钮（128 浅色圈 + 104 实心圆 + 麦克风）= 唯一视觉重心，
+     下面是「上次录音」摘要卡；不再有列表与分组标题
+  2) 识别中：顶部 44pt 等宽计时 + 状态点 → 真实电平声波带 → 异常横幅 →
+     整块字幕区（可一路铺到屏幕底部；停止在右上角）
+  3) 刚停止：动画回落到待机，摘要卡贴底
+  三者由 `session.snapshot.state.isActive` 一个判据切换（0.25s 缓动），
+  不引入新的界面状态变量 —— 界面状态永远从内核状态派生。
+
+■ 二、工程指标移出主界面（刻意推翻设计文档 11.2 第 3 条）
+  · 分片数 / 落盘耗时 / 丢弃帧数 / 断口 / 录音配置 / 最近错误 → 「诊断」弹层
+  · 补偿机制：**异常必须自己找上门** —— 计时下方自动弹橙色横幅
+    （错误 / 断口秒数 / 丢弃帧），点「查看」进诊断
+  · 推翻理由：指标常驻的收益是"人能看见"，代价是主界面每一秒都在报数；
+    而用户真正需要的不是数字，是"出问题时被通知"。只留通知、把数字收进诊断，
+    两个目标才能同时成立。设计文档 11.8 末尾"刻意没做折叠"那条记录已失效。
+
+■ 三、语言胶囊（language pill）
+  原先"识别语言"与"实时翻译成什么"是字幕区顶部两行文字 + 两个省略号菜单，
+  吃掉约 90pt，且与字幕抢空间。合并为表头右侧一枚胶囊：
+    · 文案 `中文 → 英文` / `自动` / `中文`（翻译关闭时只显识别语言）
+    · 一个 Menu 两个 Section（识别语言 / 实时翻译，含「关闭」）
+    · 「自动判定」锁定后直接显示锁定结果 —— 判错时用户能看出来并可一键改
+  改语言会写回设置（下次不该又回到自动再错一遍）。
+
+■ 四、已保存摘要卡（saved card）
+  停止后必须回答"东西存哪了"。压成一行：时长 · N 句 · N 句译文，
+  右侧「查看记录」进详情，左侧「诊断」进弹层。
+  译文计数为 0 时不显示该段（避免"0 句译文"这种噪音）。
+
+■ 五、声波带用真实电平（WaveformView）
+  · 数据源 `AudioLevelMonitor`（RMS 电平，100ms 一次），**不是动画**
+  · 观察点收进这一个小视图：若由 `RecordingSession` 承载，整页每秒重绘 10 次，
+    叠加字幕布局重排就是滚动掉帧
+  · 静音时落成 3pt 细线（`max(3, ...)`）：一条"不说话也在动"的波形比没有更糟
+  · 两端渐变遮罩（否则整排柱子在边缘硬切会像进度条）
+
+■ 六、字幕吸底（判据不变，容器换了）
+  `ScrollViewReader` + `onScrollGeometryChange`，距底 40pt 以内才自动滚。
+  与上一版差别：不再固定 280pt 高度 —— 录音时底部已无按钮，可以铺到底。
+
+■ 七、实时翻译状态必须贴在源语下方
+  `liveTranslationInlineHint` 直接排在字幕列表之后、同一视野内：
+  缺语言包 / 正在准备 / 语言对不支持 / 失败原因；**正常工作时返回 nil**，
+  不显示任何占位（占位会让"还没翻到"看起来像"翻译坏了"）。
+
+■ 八、模型未下载不写死
+  `subtitleStatusText` 动态计算：后台正在下载就显示进度摘要
+  （`ModelDownloadState.progress.summary`），下载完成后提示自动消失。
+  上一版 `liveHint` 只在开始录音那一刻算一次，会把"正在下"写成"没下"。
+  **仍然不自动下载**（上百 MB），未下载时给出「去下载模型」按钮 + 齿轮路径说明。
+
+■ 验证（静态符号级逐个核对，全部存在且签名一致）
+  RecordingSession.snapshot（state / isActive / sessionId / recordedMs /
+    recordedTimeText / segmentCount / lastWriteCostMs / droppedSamples /
+    gapCount / totalGapMs / lastError）、session.start() / stop()
+  LiveTranscriber：segments / pinnedLanguage / statusText / isActive /
+    start(sessionId:modelId:modelURL:language:denoiseEnabled:) /
+    lastSessionSegmentCount
+  TranslationService：liveConfiguration / liveTranslations / liveStage /
+    liveMessage / livePair / lastSessionTranslatedCount / startLive /
+    stopLive / enqueueLive / availability(from:to:)
+  TranslationLanguageCatalog：all / name(for:) / identifier(forWhisperCode:)
+  ModelManager：installedURL(for:) / states[...]?.isDownloading / ?.progress.summary
+  AppSettings：realtimeTranscriptionEnabled / realtimeModelId /
+    realtimeDenoiseEnabled / liveTranslationTargetLanguage /
+    transcriptionLanguage / captureSource / sessionMode / segmentSeconds
+  WhisperModelCatalog：languageOptions / languageName / model(id:)
+  AudioLevelMonitor.shared.level、OpenModelSettingsButton(title:)
+  全目录 lint：零错误
+
+■ 未验证（本机做不到）
+  · **能否编译只能以 CI 为准**（本项目有"零 lint 但编不过"的前例 009c477）
+  · SwiftUI 行为：动画回落观感、`onScrollGeometryChange` 在 LazyVStack 上的
+    触发频率、胶囊 Menu 在录音中的可用性、声波 32 柱在 Pro Max 与 SE 上的宽度
+  · 中文长句在 19pt 下的行高与字幕区实际能容纳的句数
+
+■ 影响范围与风险
+  · 只动 1 个文件，无新增依赖、无接口变更（RecordView 无外部 API）
+  · 风险 1：`List` → 固定 `VStack` 后，**大字号与横屏会挤压字幕区**（未做适配）
+  · 风险 2：异常横幅与诊断弹层的判据重复了一遍（`alertMessage` 与 sheet 同源），
+    若日后加新指标要两处同改
+  · 风险 3：摘要卡依赖 `snapshot.sessionId` 在停止后不被清空 —— 若内核改动此行为，
+    卡片会静默消失
+
+■ 文档待办
+  · RecordView 头注释已引用「设计文档 11.9」，但 11.9 **尚未写入** ——
+    需新增 11.9「一屏三段式与指标移出主界面」，并在 11.2 第 3 条、
+    11.8 末尾 blockquote 处加"已被 11.9 推翻"的指向
+  · 11.1 页面清单仍列着已删页面（说话人管理 / 生词本 / 学习模式），需标注作废
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日四次] 代码 review（review）后的缺陷修复：5 处
+--------------------------------------------------------------------------------
+
+■ 起因
+  用户要求对重写后的 RecordView 做代码 review，审出 2 个 P0 + 4 个 P1，
+  用户确认"修"。本次只修**低风险、纯收益**的 5 处；两处需要改造数据流的
+  （切语言清屏、待机改语言）单列，见「本次刻意不修」。
+
+■ 改动文件（2 个）
+  Sources/Capture/RecordingSession.swift
+  Sources/Features/Record/RecordView.swift
+
+■ P0-1 失败路径丢掉当场内容，且界面撒谎说「已保存 · 0 句」
+  现象：`tearDownAfterFailure`（恢复超限 / 自愈连续失败）只存了 manifest，
+  **不调用** `LiveTranscriber.stop()` 与 `TranslationService.stopLive()` ——
+  而这两句同时承担 `transcript-live.json` / `translations.json` 的落盘。
+  于是异常结束那一场：文字与译文全丢，摘要卡却显示「已保存」+「0 句」，
+  看起来像"没识别到"，而事实是"识别过但没保存"。
+  讽刺的是 `finishStop` 里的注释写着"会话也可能因失败…而自行结束，那种路径下
+  界面不一定有机会做清理" —— 但失败路径根本不走 finishStop。
+
+  改法：把三句收尾（字幕 / 翻译 / 波形归零）抽成 `tearDownRealtime()`，
+  `finishStop` 与 `tearDownAfterFailure` 都调用。
+  幂等性：两个 stop 各自首行判断"是否真的在跑"；准备阶段失败时字幕从未启动，
+  `persistLiveTranscript` 在 `sessionId == nil` 时直接返回，不产生副作用。
+  顺带修掉：失败路径原先不清波形，界面会定格在最后一次高度上（像还在收音）。
+
+■ P0-2 `liveHint` 静态值压过动态判断，"下完了"仍说"没下"
+  现象：`subtitleStatusText` 第一行 `if let liveHint { return liveHint }`。
+  `liveHint` 在开始录音那一刻写死"模型尚未下载"，于是用户在**同一次录音中途**
+  把 190 MB 模型下完，界面仍继续说没下 —— 与同函数注释的承诺正好相反。
+  根因：同一件事有两个状态源（静态快照 + 现算），快照短路了现算。
+
+  改法：`liveHint` 只保留唯一一个用途 —— "会话 id 尚未就绪"（这个原因无法从
+  模型状态推导）。模型类文案一律删掉，全部交由 `subtitleStatusText` 现算；
+  原先写在 `liveHint` 里的入口指引与影响范围，移进 `subtitleStatusText` 的
+  "尚未下载"分支，信息量不减。
+
+■ P1-4 没在识别却说"识别中"
+  `stateTitle` 的 `.recording` 原先恒为「识别中」。实时字幕被关掉、或模型没装时
+  一个字都不会出，用户会盯着空白字幕等。
+  改为：字幕关闭 → 「录音中（字幕已关闭）」；字幕未跑起来 → 「录音中」；
+  真正在跑 → 「识别中」。
+  顺带在注释里标明：`.idle` / `.failed` 两个分支在本页走不到
+  （`recordingLayout` 只在 isActive 时渲染），保留只为 switch 穷尽。
+
+■ P2-3 波形配色：红 → 绿
+  红色在本 App 已专属"出错 / 正在停止"（异常横幅、停止按钮），
+  录音中拿红色画波峰会被读成"一直在报警"。改为与状态点同色系的绿。
+
+■ P2-2 两处注释失真订正
+  1) 波形"像示波器一样向右滚动" → 实为 32 根柱子**原地插值变形**
+     （ForEach 用下标作 id，位置固定），观感近似滚动、不是横向位移。
+     顺带删掉未使用的 `barCount` 实例常量，改为 `static let` 供 `@State` 初值复用。
+  2) 实时翻译状态"贴在源语下方" → 实为放在 ScrollView **之外**（固定字幕区下沿）。
+     行为其实更好（往上翻历史时提示仍可见），把注释改成描述真实实现并说明理由。
+
+■ 本次刻意不修（各有具体障碍，需单独一轮）
+  1) 切识别语言后屏幕字幕清空（P1-3）
+     不只是"显示层清空"：`LiveTranscriptionEngine.start` 里 `tailStartSample = 0`，
+     引擎重启后时间轴从 0 重新计；而 `mapToSessionTimeline` 的 id 是
+     `seg-<seq>-<会话内毫秒>`、实时路径 `seqBase` 恒为 0 ——
+     **新旧句子的 id 有碰撞可能**，一旦撞上，`accumulated` 按 id 去重会把新句
+     静默丢弃（留档少几句，而界面显示正常）。这是既有缺陷、被 review 顺带发现。
+     正解要把 `seqBase` 改成"已累计句数"（需跨线程取累计值）并让显示层也用累计，
+     属数据流改造，不能混在本次修复里。
+  2) 待机态无法改识别语言（P1-5）
+     语言胶囊只存在于录音中的表头。把胶囊移到待机页是**布局调整**，
+     要真机看它与大圆按钮的视觉权重，留到下一轮。
+
+■ 验证与未验证
+  已做：两个文件 lint 零错误；改动的 4 段接缝逐段读回（finishStop 尾部、
+  tearDownRealtime / tearDownAfterFailure、startLiveTranscriptionIfPossible、
+  stateTitle、WaveformView）结构完整。
+  未做：**编译只能以 CI 为准**；波形绿色在深色模式下的亮度、
+  「录音中 → 识别中」那 1 秒切换的观感，需真机确认。
+
+■ 影响范围与风险
+  · 2 个文件、5 处改动，无新增依赖、无接口变更
+  · 风险 1：失败路径现在会多做两次落盘（一次 JSON 读 + 异步写）。
+    失败本来就发生在收尾阶段，可接受；若发生在准备阶段，两者都是空操作
+  · 风险 2：`tearDownRealtime` 让 `LiveTranscriptionEngine.stop()` 在
+    "从未启动"时也被调用 —— 该函数全程用可选链（`engine?.unload()`、
+    `vad?.close()`），安全；代价是日志里会多一条"实时字幕已停止"
+  · 风险 3：`lastSessionSegmentCount` 在失败路径会被置 0（因为 stop 里
+    `accumulated.count` 为空），摘要卡显示"0 句" —— 这正是**期望**语义：
+    失败那一场确实没有保存下来的句子
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日五次] 第二轮 review 后的修复：8 处（4 个文件）
+--------------------------------------------------------------------------------
+
+■ 起因
+  用户"继续 review" → 覆盖 SessionListView / SessionDetailView / TranslationStore /
+  SearchIndex / TranscriptionService / TranslationService 剩余部分，审出 2 P0 + 2 P1
+  + 4 P2，用户确认"全修"。
+
+■ 改动文件（4 个）
+  Sources/Store/TranslationStore.swift
+  Sources/Translate/TranslationService.swift
+  Sources/Store/SearchIndex.swift
+  Sources/Features/Sessions/SessionListView.swift
+
+■ P0-1 译文读取丢失 pass 维度 → 串稿 + 漏译
+  根因：`TranslationStore.texts(for:)` 只按 targetLang 过滤、以 segmentId 为键，
+  而写入是 (segmentId, targetLang, pass) 三维键；实时稿与终稿的 segmentId 同源
+  （都是 seg-<seq>-<绝对毫秒>），高度可能重合。
+  后果：切换实时稿/终稿显示错稿译文；`requestTranslation(existing:)` 把实时稿译文
+  误当终稿缓存 → 终稿翻译跳过 → 终稿译文永久缺失。
+  改法：`texts(for:)` 加 `pass:` 参数按稿过滤；`SessionListView.reloadTranslationMap`
+  传 `selectedPass`。调用点仅此一处，签名直接改。
+
+■ P0-2 首次进入导出文字稿缺译文
+  根因：onAppear 顺序 `initializePass → reloadTranscript → generateTranscriptExport`
+  先生成（此刻 translationMap 空），`reloadTranslationMap` 之后才填 map 且不重新生成。
+  改法：`reloadTranslationMap` 末尾补 `generateTranscriptExport()`。transcript 在
+  onAppear 里已加载，安全；翻译过程中 stage 变化会多写几次临时文件，属可接受的覆盖写。
+
+■ P1-1 详情页删除会话不清理检索索引
+  列表页删除会 `SearchIndex.remove`，详情页删除只 `deleteSession + dismiss`。
+  改法：详情页删除补 `SearchIndex.shared.remove(sessionId:)`。
+
+■ P1-2 译文检索命中的句 id 带 "@目标语言" 后缀
+  索引里译文行的 id 是 "segmentId@lang"（原文行是裸 id），详情页把它当
+  `focusSegmentId` → 播放高亮永远匹配不上句子、点句只能重播不能停止。
+  改法：`SearchHit` 加计算属性 `segmentId`（译文命中时剥掉 "@lang" 后缀），
+  `SessionDetailView(focusSegmentId:)` 改用 `hit.segmentId`。后缀格式知识收在
+  SearchHit 内，不泄漏到页面。
+
+■ P2-1 TranslationStore 读-改-写非原子
+  此前是"调用线程同步 load + 串行队列异步 save"，两次 merge 并发时后写覆盖先写。
+  改法：`merge` / `overrideTranslation` / `deleteAll` 整体放进 `queue.sync`
+  （load → modify → save 原子）；删除不再使用的 `saveAsync`。
+  副作用：merge 变同步写盘（几百 KB，几十 ms），调用方在停止/逐批翻译的收尾阶段，
+  可接受。这同时是 P2-3 的前提（merge 返回即已落盘，索引才读得到）。
+
+■ P2-2 批量翻译失败批也计入进度 → 虚高
+  `completedSegments = upper` 原在 do/catch 之外无条件推进。
+  改法：只对成功批 `completedSegments += batch.count`（成功句数）；`finish(.done)`
+  的 message 在 completedSegments < total 时如实报"成功 X/N 句（部分失败）"。
+
+■ P2-3 实时译文落盘后不更新检索索引
+  只有终稿翻译 `.done` 才 index，实时稿译文落盘后搜不到。
+  改法：`persistLiveTranslations` 末尾 `SearchIndex.index(sessionId:)`。
+  已知残余：实时稿（transcript-live.json）写入是异步的，索引可能读到未完成的稿子，
+  但下一次任何转写/翻译完成会再 index 一次修正（索引先删后插、幂等）。
+
+■ P2-4 详情页 refreshLanguageStatus 首次进入重复触发
+  `.task` 与 onChange(sourceLanguage) 并存，首次进入并发查两遍语言对可用性。
+  改法：删 `.task`，依赖 onAppear 里 `sourceLanguage = defaultSourceLanguage`
+  触发的 onChange（defaultSourceLanguage 有默认值，必然触发）。
+
+■ 验证与未验证
+  已做：4 个文件 lint 零错误；TranslationService.execute 循环接缝读回结构完整；
+  `SearchIndex.remove` / `texts(for:)` / `SearchHit` 相关引用已核对。
+  未做：编译只能以 CI 为准；"切稿串译文/漏译"的修复需真机造一个"实时稿+终稿
+  同句"的会话才能验收（本机做不到）。
+
+■ 影响范围与风险
+  · 4 文件、8 处改动，无新增依赖、无接口破坏（`texts(for:)` 调用点唯一）
+  · 风险 1：merge 改同步后，批量翻译每批多一次同步写盘等待。若未来把 batchSize
+    调得很小、写盘频繁，可能拖慢翻译；当前量级可接受
+  · 风险 2：reloadTranslationMap 现在会顺带重写导出临时文件，翻译进行中若用户
+    恰好导出，拿到的是"当时已有的部分译文"——语义正确（实时反映），非缺陷
+  · 风险 3：P2-3 的索引可能在实时稿异步落盘完成前被触发（低概率读到旧稿），
+    靠后续 index 幂等修正，已注释说明
+================================================================================

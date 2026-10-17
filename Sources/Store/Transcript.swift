@@ -49,8 +49,12 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     var endMs: Int
     var text: String
 
-    /// 说话人编号。M3（说话人分离）之前恒为 nil；
-    /// 字段现在就留出，避免 M3 时再改一遍数据模型与界面。
+    /// 说话人编号。
+    ///
+    /// ## 字段保留、但不再写入（2026-10-17）
+    /// 「说话人」功能已整体移除（用户确认不需要），全项目不再有任何地方写这个字段。
+    /// **但字段必须留着**：老用户的 `transcript-*.json` 里带着 `speakerId` 键，
+    /// 删掉属性会让那些文件解码失败 —— 用删除一个字段换来"老录音打不开"，不值得。
     var speakerId: String?
 
     /// 该句在实时稿里是否**尚未定型**（后续可能被改写）。

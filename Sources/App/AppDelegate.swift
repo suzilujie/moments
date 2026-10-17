@@ -98,14 +98,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 + "｜占用 \(modelBytes)"
         )
 
-        // 学习层依赖的两个外部资源：语音包与词表。两者缺了也都只会"没反应"。
-        Log.shared.info(.app, "朗读语音｜\(SpeechReader.availableVoicesSummary())")
-        Log.shared.info(
-            .app,
-            "生词词表｜\(WordFrequencyTable.shared.summary)"
-                + "｜学习语言 \(settings.learningLanguage)"
-                + "｜水平档 \(settings.vocabularyLevel.title)"
-        )
+        // 「语言学习」层（朗读语音包、生词词表）已随生词本功能移除（2026-10-17），
+        // 它原来在启动时打的那两条自检日志一并删除。
 
         // 数据规模：一眼看出"以前的数据还在不在"（升级/覆盖安装后最关心这个）
         let sessions = RecordingLibrary.shared.listSessions()
@@ -120,7 +114,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             "数据规模｜会话 \(sessions.count) 个（\(sessionBytes)）"
                 + "｜有文字稿 \(transcript.transcribed) 个"
                 + "｜有译文 \(translation.translated) 个（\(TranslationStore.shared.totalEntryCount()) 条）"
-                + "｜生词本 \(VocabularyStore.shared.summary())"
         )
 
         // 注意：此处读到的可能是「尚未探测」—— 索引能力是在后台队列上探测、

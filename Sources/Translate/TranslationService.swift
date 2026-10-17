@@ -277,6 +277,13 @@ final class TranslationService: ObservableObject {
             "实时译文已落盘｜\(sessionId)｜\(target)｜新增或更新 \(result.updated) 条"
                 + (result.keptManual > 0 ? "｜保留人工修正 \(result.keptManual) 条" : "")
         )
+
+        // 实时译文也要进检索索引，否则"搜译文"会漏掉实时稿的译文。
+        // merge 现在是同步落盘（见 TranslationStore.merge 的说明），到这里译文已在盘上，
+        // 索引能读到它；索引本身"先删后插"且幂等，重复刷新无害。
+        // 已知残余：实时稿（transcript-live.json）的写入是异步的，索引可能读到一个
+        // 尚未完成的稿子 —— 但下一次任何转写/翻译完成都会再 index 一次修正，故可接受。
+        SearchIndex.shared.index(sessionId: sessionId)
     }
 
     /// 清掉一次会话内的临时状态。**开始与停止都要调**。
@@ -556,6 +563,9 @@ final class TranslationService: ObservableObject {
                         engine: Self.engineIdentifier,
                         engineVersion: Self.engineVersion
                     )
+                    // 进度只计**成功返回**的句子。失败的一批不得推进进度 ——
+                    // 否则进度条会走到 100%，而实际上有句子没翻出来，虚高比没有更误导。
+                    completedSegments += batch.count
                     if result.keptManual > 0 {
                         Log.shared.info(.translate, "保留了 \(result.keptManual) 条人工修正的译文")
                     }
@@ -568,7 +578,6 @@ final class TranslationService: ObservableObject {
                 )
             }
 
-            completedSegments = upper
             index = upper
         }
 
@@ -586,7 +595,13 @@ final class TranslationService: ObservableObject {
 
         switch state {
         case .done:
-            message = "翻译完成｜\(request.missing.count) 句 → \(TranslationLanguageCatalog.name(for: request.target))"
+            // 若存在失败批次，completedSegments 会小于 missing.count ——
+            // 如实报出，而不是"翻译完成 N 句"（那会把没翻出来的也算进去）。
+            let total = request.missing.count
+            message = completedSegments >= total
+                ? "翻译完成｜\(total) 句 → \(TranslationLanguageCatalog.name(for: request.target))"
+                : "翻译结束｜成功 \(completedSegments)/\(total) 句 → "
+                    + "\(TranslationLanguageCatalog.name(for: request.target))（部分批次失败，已翻部分保留）"
             // 译文的最终落盘在 TranslationStore.merge 里已逐批完成，这里只刷新检索索引
             SearchIndex.shared.index(sessionId: request.sessionId)
         case .cancelled:
