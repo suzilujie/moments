@@ -64,12 +64,39 @@ final class LiveTranscriptionEngine {
     /// VAD 内部缓冲容量（秒）。必须 > maxSpeech，留 10 秒余量给"停在段尾未切出"的部分。
     private var vadBufferSeconds: Double { Double(vadMaxSpeechSeconds) + 10 }
 
-    /// 多久还没切就提醒一次：**只记录，不切**。
-    /// 用户明确不要强切，所以这里保留观测能力（否则卡住时日志一片空白），
-    /// 但绝不因为超时就切断一句话。
-    private let longUtteranceWarnSeconds = 60
-    /// 已提醒过"超长未切"（每次会话只提醒一次，避免刷屏）
-    private var hasReportedLongUtterance = false
+    // MARK: - 软切（soft cut）
+
+    /// 攒够该时长后，**主动**在能量低谷处切一刀。
+    ///
+    /// ## 为什么需要它
+    /// 取消 12 秒硬切之后，切点 100% 由 VAD 决定。真机上 VAD 会长时间判"仍在说话"
+    /// （室内底噪 + threshold=0.5），于是永远等不到切点 —— 实测 47 秒录音、
+    /// 20.5 秒连续语音，识别段 0 个、出句 0。软切就是那条兜底线：
+    /// **切点仍由内容（能量低谷）决定，只是给了它一个最晚出场时间**。
+    private let softCutSeconds = 8
+
+    /// 在 tail 末尾这个范围内找能量低谷（只往前找 2 秒：更早的位置切出来会太长）。
+    private let softCutSearchSeconds = 2.0
+
+    /// 能量窗口长度（毫秒）。200ms 覆盖一个音节的起落，短了会被单帧毛刺带偏。
+    private let softCutWindowMs = 200
+
+    /// 保底：攒到该时长仍找不到能量低谷（持续高能量、喊叫、音乐叠加），
+    /// 只能在当前位置切。这不是"又回到硬切"—— 正常语音一定能在 2 秒内找到低谷。
+    private let hardCutSeconds = 30
+
+    /// Silero VAD 阈值。默认 0.5 在室内底噪下过于"钝"：把说话间的短停顿也判成语音，
+    /// 于是迟迟不吐段。降到 0.4 更容易判出停顿（代价是更易被噪声触发，由软切兜住）。
+    private let vadThreshold: Float = 0.4
+
+    // MARK: - VAD 状态观测
+
+    /// 上一拍 VAD 的说话状态（用于识别"翻转"并记日志）。
+    private var lastVADSpeaking = false
+    /// 本状态开始于（单调时钟，秒）
+    private var vadStateSince = ProcessInfo.processInfo.systemUptime
+    /// 翻转日志节流：避免快速切换时刷屏
+    private var lastVADLogAt = Date.distantPast
 
     /// 停顿多久算"这句说完了"。
     ///
@@ -262,7 +289,6 @@ final class LiveTranscriptionEngine {
         entryDroppedPending = 0
         musicSegmentsCount = 0
         hasReportedFirstSegments = false
-        hasReportedLongUtterance = false
         hasReportedPauseDrop = false
         hasReportedNoSpeechDetected = false
         hasReportedFirstMusic = false
@@ -357,7 +383,11 @@ final class LiveTranscriptionEngine {
         if vad != nil {
             // 把切窗参数写出来：出字节奏完全由它决定，
             // 真机上"出字慢"时要能一眼看到是哪个参数在起作用，而不是只能猜。
-            parts.append("VAD 切窗（停顿 \(String(format: "%.2f", vadMinSilenceSeconds))s，不强切）")
+            parts.append(
+                "VAD 切窗（停顿 \(String(format: "%.2f", vadMinSilenceSeconds))s"
+                    + " / 阈值 \(String(format: "%.2f", vadThreshold))）"
+            )
+            parts.append("软切 \(softCutSeconds)s 能量谷")
         } else {
             parts.append("固定切窗（VAD 不可用）")
         }
@@ -384,6 +414,9 @@ final class LiveTranscriptionEngine {
                 // 理由见文件顶部的可调参数说明。
                 vad = SherpaVad(
                     modelPath: vadURL.path,
+                    // 0.4 而不是默认 0.5：室内底噪下 0.5 会把短停顿也判成语音，
+                    // 导致 VAD 迟迟不吐段（真机表现为整段不出字）
+                    threshold: vadThreshold,
                     minSilenceSeconds: vadMinSilenceSeconds,
                     maxSpeechSeconds: Float(vadMaxSpeechSeconds),
                     // 缓冲必须 ≥ maxSpeech，否则超长语音会在 VAD 内部被提前打断
@@ -556,15 +589,21 @@ final class LiveTranscriptionEngine {
     private enum CutReason {
         /// VAD 判定"停顿够长、这句说完了" —— 最常见的切点
         case silenceBoundary
-        /// 说话一直不停顿，到长度上限被切开
+        /// 说话一直不停顿，到 VAD 库内上限被切开（120s，实际不可达）
         case lengthCap
+        /// 软切：VAD 判不出停顿，主动在能量低谷处切开（正常语音的主要兜底）
+        case energyValley
+        /// 30 秒保底：连能量低谷都找不到，只能在当前位置切
+        case hardCap
         /// VAD 不可用时的固定长度切窗（退回 M2 行为）
         case fallbackFixed
 
         var text: String {
             switch self {
             case .silenceBoundary: return "静音边界"
-            case .lengthCap: return "长度上限"
+            case .lengthCap: return "VAD 库内上限"
+            case .energyValley: return "能量谷软切"
+            case .hardCap: return "30s 保底切"
             case .fallbackFixed: return "兜底固定切（VAD 不可用）"
             }
         }
@@ -609,6 +648,7 @@ final class LiveTranscriptionEngine {
         // 会把**正在说的那句话**当成静音丢掉（真会丢掉几十秒已说的话）。
         if let vad {
             speaking = vad.isSpeechDetected
+            noteVADState(speaking)
         }
 
         guard !stopped else { return }
@@ -656,33 +696,39 @@ final class LiveTranscriptionEngine {
             )
         }
 
-        // 2) 判定"现在该切了吗"。切点只有两个来源：VAD 给的句子边界，
-        //    或长度上限兜底（为"说话一直不停顿"准备）。
+        // 2) 判定"现在该切了吗"。切点有三个来源，优先级从高到低：
+        //      a. VAD 给的停顿边界      —— 最准，停在真正的句尾
+        //      b. 能量低谷软切          —— VAD 判不出停顿时主动切，不切断音节
+        //      c. 30 秒保底            —— 连低谷都找不到（喊叫/音乐叠加）才用
         var cutReason: CutReason?
+        /// 本拍要消费的 tail 前缀长度。nil = 整段消费（停顿边界/保底切）。
+        /// 软切只消费到切点，**剩余部分必须留到下一段** —— 否则等于把后面的话吃了。
+        var cutLength: Int?
         if vad != nil {
             if finishedVADSegments > 0 {
                 // VAD 吐出了一段完整语音，其边界由两件事之一决定：
                 //   · 停顿 ≥ vadMinSilenceSeconds  → 正常句尾
-                //   · 说话超过 vadMaxSpeechSeconds → 长度上限强切
+                //   · 说话超过 vadMaxSpeechSeconds → VAD 库内上限（120s，实际不可达）
                 // 两者都适合当切点。下面这句只是**为日志推断**原因，不影响行为：
-                // 还在说话 ⇒ 是长度上限切的。
+                // 还在说话 ⇒ 是被上限切开的。
                 cutReason = speaking ? .lengthCap : .silenceBoundary
-            } else if speaking, !hasReportedLongUtterance,
-                      tail.count >= longUtteranceWarnSeconds * sampleRate {
-                // 应用层**不再强切**（用户 2026-10-17 明确要求）。
-                // 这里只留一条观测：真的有人连续说了一分钟还没停顿，
-                // 就提醒一次"出字会延迟"，但不切断 —— 卡住时至少日志里能看出来。
-                hasReportedLongUtterance = true
+            } else if speaking, tail.count >= hardCutSeconds * sampleRate {
+                // 保底切：30 秒仍找不到能量低谷（持续高能量），只能在当前位置切。
+                // 正常语音到不了这里 —— 任何一次换气都会被 findEnergyValleyCut 抓住。
+                cutReason = .hardCap
                 Log.shared.warn(
                     .asr,
-                    "实时字幕｜连续语音已 \(tail.count * 1000 / sampleRate)ms 未出现停顿"
-                        + "｜仍不切断（已按设置取消强切）｜出字会相应延迟"
-                        + "｜内存占用约 \(tail.count * 4 / 1024 / 1024)MB"
+                    "实时字幕软切未找到低谷｜连续 \(tail.count * 1000 / sampleRate)ms 高能量"
+                        + "｜在当前位置保底切断｜内存约 \(tail.count * 4 / 1024 / 1024)MB"
                 )
+            } else if speaking, tail.count >= softCutSeconds * sampleRate,
+                      let cut = findEnergyValleyCut() {
+                cutLength = cut
+                cutReason = .energyValley
             } else if !incoming.isEmpty, !speaking, tail.count > prerollFrames {
                 // 长时间没人说话：不切、不识别，只保留一点前导音频。
                 // 这一条必须有：否则纯静音也会把 tail 撑到上限，
-                // 白让 whisper 跑一遍（还容易编出幻觉文本）。
+                // 白让识别引擎跑一遍（还容易编出幻觉文本）。
                 //
                 // 条件的 `!incoming.isEmpty` 不能省：没有新音频时 tail 也不会变长，
                 // 这里就无事可做；而少了它，上面 `speaking` 判断一旦失效就会误丢音频。
@@ -700,18 +746,22 @@ final class LiveTranscriptionEngine {
 
         guard let reason = cutReason else { return }
 
+        // 本拍真正送去识别的音频：软切只取前缀，其余留给下一段。
+        let consumeLength = cutLength ?? tail.count
+        let segmentAudio = consumeLength >= tail.count ? tail : Array(tail[0..<consumeLength])
+
         // 太短不识别：识别引擎对极短输入的判定最不可信（且易出幻觉）。
         // **刻意不清空 tail** —— 让这几百毫秒并进下一句；丢掉它等于丢掉一个词。
-        guard tail.count >= Int(minimumSeconds * Double(sampleRate)) else { return }
+        guard segmentAudio.count >= Int(minimumSeconds * Double(sampleRate)) else { return }
 
         // 3) 识别这一段。
-        let audioMs = tail.count * 1000 / sampleRate
+        let audioMs = segmentAudio.count * 1000 / sampleRate
         // 时间轴起点由**累计样本数**推出，不由"喂了多少减去窗口长度"推算 ——
         // 后者会随裁剪产生漂移（与分片时间轴的取舍一致）。
         let startMs = tailStartSample * 1000 / sampleRate
 
         // 降噪在这里临时施加（原始音频始终没有被动过）
-        let audio = maybeDenoise(tail)
+        let audio = maybeDenoise(segmentAudio)
 
         // 计时用**单调时钟**而不是墙钟：耗时是性能指标，
         // 系统对时会让墙钟跳变，而单调时钟不会（与看门狗同一取舍）
@@ -725,7 +775,7 @@ final class LiveTranscriptionEngine {
         // 有语音内容时以语音为准（即使同时有背景音乐）。
         if recognition.isMusic && recognition.segments.isEmpty {
             appendMusicSegment(startMs: startMs, audioMs: audioMs)
-            finishSegment()
+            finishSegment(consumed: consumeLength)
             return
         }
 
@@ -768,7 +818,7 @@ final class LiveTranscriptionEngine {
         // 推进段序号：本场会话内 id 的序号部分单调递增，切语言重启也不回到 0
         segmentSeqBase += local.count
         assemble(newSegments: mapped)
-        finishSegment()
+        finishSegment(consumed: consumeLength)
     }
 
     /// 丢掉 tail 开头的长静音，只留下 `prerollSeconds` 作为下一句的前导。
@@ -783,13 +833,92 @@ final class LiveTranscriptionEngine {
 
     /// 已处理音频出栈 + 触发统计。音乐段与识别段共用（见 tick），
     /// 避免两条路径各自写一遍出栈逻辑、日后新增字段时漏改一处。
-    private func finishSegment() {
+    ///
+    /// - Parameter consumed: 本拍消费的 tail 前缀长度。软切会小于 `tail.count`，
+    ///   此时**只出栈前缀**，剩余部分留作下一段的开头 —— 若一律 `removeAll`，
+    ///   切点之后那几秒音频就凭空消失了。
+    private func finishSegment(consumed: Int? = nil) {
+        let used = min(consumed ?? tail.count, tail.count)
         // 入口丢弃的帧在这里一并补进时间轴：它们排在刚消费掉的这段**之后**、
         // 下一段**之前**，补在这里正好对齐（补早了会把这一段本身推后）。
-        tailStartSample += tail.count + entryDroppedPending
+        tailStartSample += used + entryDroppedPending
         entryDroppedPending = 0
-        tail.removeAll(keepingCapacity: true)
+        if used >= tail.count {
+            tail.removeAll(keepingCapacity: true)
+        } else {
+            tail.removeFirst(used)
+        }
         reportLiveStatsIfNeeded()
+    }
+
+    // MARK: - VAD 状态观测
+
+    /// 记录 VAD 的"说话 / 停顿"翻转。
+    ///
+    /// ## 为什么必须记
+    /// 真机上"整段不出字"有两类完全不同的原因：
+    ///   · VAD 一直判"在说话" → 等不到切点（软切要解决的就是这一类）
+    ///   · VAD 一直判"静音"   → tail 被裁掉，音频直接丢失
+    /// 没有翻转日志时只能看到"识别段 0 个"，无法区分是哪一类，调参就只能靠猜。
+    /// 节流 1 秒：说话快的人会频繁翻转，不节流会把统计行冲垮。
+    private func noteVADState(_ speaking: Bool) {
+        guard speaking != lastVADSpeaking else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let heldMs = Int((now - vadStateSince) * 1000)
+        lastVADSpeaking = speaking
+        vadStateSince = now
+
+        let date = Date()
+        guard date.timeIntervalSince(lastVADLogAt) >= 1 else { return }
+        lastVADLogAt = date
+        Log.shared.info(
+            .asr,
+            "VAD 状态｜\(speaking ? "开始说话" : "判定停顿")"
+                + "｜上一状态持续 \(heldMs)ms"
+                + "｜当前 tail \(tail.count * 1000 / sampleRate)ms"
+        )
+    }
+
+    // MARK: - 软切：能量低谷
+
+    /// 在 tail 末尾 `softCutSearchSeconds` 范围内，找一段 `softCutWindowMs` 的
+    /// **平均能量最低**位置，返回建议切点（tail 内下标）。
+    ///
+    /// ## 为什么用能量而不是固定秒数
+    /// 固定秒数（旧的 12 秒硬切）必然会在词中间下刀；能量低谷通常落在换气、
+    /// 词间停顿或句末拖音处，同样"不看语义"，但落在自然间隙的概率高得多。
+    ///
+    /// ## 为什么只往前找 2 秒
+    /// 更早的位置切出来会让这一段过长（软切本就是为了控制段长），
+    /// 而且离当前时刻越远，越可能把一句完整的话拆开。
+    ///
+    /// - Returns: 切点下标；`nil` 表示这一段里找不到合适的低谷（调用方等下一拍或走保底）。
+    private func findEnergyValleyCut() -> Int? {
+        let window = max(1, softCutWindowMs * sampleRate / 1000)
+        let step = max(1, window / 2)  // 50% 重叠：宁可多算几次，也不放过真正的低谷
+        let minSegment = Int(minimumSeconds * Double(sampleRate))
+
+        // 切点不能太靠前（否则切出一段太短）、也不能太靠后（否则剩余太短无法成段）
+        guard tail.count >= minSegment + window * 2 else { return nil }
+
+        let searchStart = max(minSegment, tail.count - Int(softCutSearchSeconds * Double(sampleRate)))
+        var bestCenter = -1
+        var bestEnergy = Float.greatestFiniteMagnitude
+        var index = searchStart
+
+        while index + window <= tail.count {
+            var sum: Float = 0
+            for offset in index..<(index + window) { sum += tail[offset] * tail[offset] }
+            if sum < bestEnergy {
+                bestEnergy = sum
+                bestCenter = index + window / 2
+            }
+            index += step
+        }
+
+        guard bestCenter > minSegment,
+              tail.count - bestCenter >= minSegment else { return nil }
+        return bestCenter
     }
 
     /// 产出一个「（音乐）」标注段，**不送识别引擎**。
@@ -914,14 +1043,17 @@ final class LiveTranscriptionEngine {
         let ratio = avgAudioMs > 0 ? Double(avgCost) / Double(avgAudioMs) : 0
 
         var summary = "实时字幕统计｜识别段 \(utteranceCount) 个"
-            + "（其中切于长度上限 \(cappedUtteranceCount) 个）"
+            // 非停顿切 = 软切 + 30s 保底 + VAD 库内上限 + 降级固定切，
+            // 这个数字越接近 0 说明切点越接近真实句尾。
+            + "（其中非停顿切 \(cappedUtteranceCount) 个：软切/保底/上限）"
             + "｜音乐标注 \(musicSegmentsCount) 段"
             + "｜丢弃长静音 \(droppedSilenceCount) 次"
             + "｜平均音频 \(avgAudioMs)ms｜最长音频 \(maxUtteranceAudioMs)ms"
-            + "（硬上限 \(vadMaxSpeechSeconds * 1000)ms，实际不可达）"
+            + "（软切 \(softCutSeconds)s / 保底 \(hardCutSeconds)s）"
             // 分桶比平均值更能说明"切得碎不碎"：<1s 占比升高即切得过碎
             + "｜时长分布 \(bucketText)"
             + "｜停顿门槛 \(String(format: "%.2f", vadMinSilenceSeconds))s"
+            + "｜VAD 阈值 \(String(format: "%.2f", vadThreshold))"
             + "｜平均耗时 \(avgCost)ms｜最慢 \(maxCostMs)ms"
             + "｜实时倍率 \(String(format: "%.2f", ratio))｜累计出句 \(producedSegments)"
 
