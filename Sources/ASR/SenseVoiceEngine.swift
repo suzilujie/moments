@@ -48,6 +48,21 @@ final class SenseVoiceEngine {
     /// 表现为「随机崩溃或读到乱码路径」，因此显式持有并在 close 时释放。
     private var retainedStrings: [UnsafeMutablePointer<CChar>] = []
 
+    /// 诊断用：每个引擎实例只打一次原始识别结果。
+    ///
+    /// ## 为什么需要它
+    /// sherpa-onnx 的结果文本是**逐 token 查表拼接**的（`ConvertSenseVoiceResult`），
+    /// C++ 侧没有任何标点过滤；标点是否存在，完全取决于模型有没有吐出标点 token。
+    /// 只改 `use_itn` 后若仍无标点，就必须看两件事才能定性：
+    ///   · token 前缀里有没有 `，` `。` 这类符号（判断模型输出）
+    ///   · 前缀 4 个结构化 token 长什么样（判断 ITN / 语言张量是否被接收）
+    /// 没有这条日志，只能反复发版试参数。
+    private var hasLoggedFirstResult = false
+
+    /// ITN 开关。集中一处定义，创建配置与诊断日志共用同一值，
+    /// 避免"日志说开着、实际传的是关"这种自欺。
+    static let useITN: Int32 = 1
+
     private(set) var lastError: String?
 
     var isLoaded: Bool { recognizer != nil }
@@ -91,7 +106,7 @@ final class SenseVoiceEngine {
             //
             // 已知副作用：中文数字串可能被规范化（"一百二十三"→"123"），
             // 极少数量词场景可能误转；若真机再出现明显误转，再考虑做成设置项。
-            use_itn: 1
+            use_itn: Self.useITN
         )
         modelConfig.tokens = UnsafePointer(tokensString)
         modelConfig.num_threads = numThreads
@@ -179,10 +194,15 @@ final class SenseVoiceEngine {
             }
         }
         let count = Int(result.pointee.count)
+        /// 前若干个原始 token（诊断用：能直接看出模型有没有吐标点）
+        var tokenPrefix: [String] = []
         if let tokensArr = result.pointee.tokens_arr {
             for index in 0..<count {
                 guard let token = tokensArr[index] else { continue }
                 let tokenText = String(cString: token)
+                // 取前 12 个：前 4 个是 lang/emotion/event/itn 结构化前缀，
+                // 后面就是正文 token，足以判断有没有 `，` `。` 这类符号
+                if tokenPrefix.count < 12 { tokenPrefix.append(tokenText) }
                 if tokenText == "<|MUSIC|>" || tokenText == "<|BGM|>" {
                     isMusic = true
                 }
@@ -200,6 +220,22 @@ final class SenseVoiceEngine {
         }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 每个引擎实例只打一次原始结果样本。
+        // 判读方法：
+        //   · token 里有 `，`/`。` 但文本里没有 → 我方后处理或解码拼接出了问题；
+        //   · token 里也没有标点      → 模型没输出，问题在 ITN 张量或模型本身。
+        if !hasLoggedFirstResult, !trimmed.isEmpty {
+            hasLoggedFirstResult = true
+            Log.shared.info(
+                .asr,
+                "识别结果样本｜ITN \(Self.useITN == 1 ? "开" : "关")"
+                    + "｜语言 \(detectedLanguage ?? "-")｜音乐 \(isMusic)"
+                    + "｜前 12 个 token：\(tokenPrefix.joined(separator: " "))"
+                    + "｜文本：\(trimmed.prefix(40))"
+            )
+        }
+
         var segments: [Segment] = []
         if !trimmed.isEmpty {
             let audioMs = samples.count * 1000 / 16_000

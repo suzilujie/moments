@@ -64,3 +64,46 @@
   · read_lints：LiveTranscriber 0 诊断。
   · 未提交、未推送（构建时机由用户决定）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-18 二次] 标点仍缺失：核查 sherpa-onnx 源码 + 增加结果样本诊断
+--------------------------------------------------------------------------------
+
+■ 一、用户反馈
+  装 b91123e（含 use_itn=1）后，识别文本**仍然没有标点**。
+
+■ 二、源码核查（k2-fsa/sherpa-onnx master，
+       offline-recognizer-sense-voice-impl.h）
+  1) use_itn 不是"前缀 token 拼接"，而是作为一个**独立整数输入张量**
+    （text_norm）传给模型；id 取自模型元数据 with_itn_id / without_itn_id。
+    支持每条流用 OfflineStream::SetOption("use_itn", ...) 覆盖。
+  2) 结果文本在 ConvertSenseVoiceResult 中**逐 token 查符号表直接 append**，
+     `start = 4` 跳过前 4 个结构化 token（lang / emotion / event / itn）。
+  3) 该文件**没有任何标点过滤**：无白名单、无 ispunct、无正则替换。
+     因此"文本有没有标点"= "模型有没有吐出标点 token"。
+  4) 另有两处后处理在别处实现：ApplyInverseTextNormalization（ITN）、
+     ApplyHomophoneReplacer（同音字替换）。
+
+  结论：我上一轮"ITN 决定标点"的说法**只在经验层面成立**（withitn 解码更容易带标点），
+  机制上标点来自模型输出本身。若 use_itn=1 仍无标点，只剩两种可能：
+    a. use_itn 没有真正传到模型（如模型元数据缺 with_itn_id）；
+    b. 模型本身没吐标点 token。
+
+■ 三、改动（Sources/ASR/SenseVoiceEngine.swift，纯诊断、不改行为）
+  1) 抽出 `static let useITN: Int32 = 1`，配置与日志共用同一值，
+     避免"日志说开着、实际传的是关"；
+  2) 每个引擎实例首次出字时打一条「识别结果样本」：
+     ITN 开关 / 语言 / 是否音乐 / **前 12 个原始 token** / 文本前 40 字。
+  判读：
+     · token 里有 `，` `。` 而文本里没有 → 我方可疑的拼接或后处理；
+     · token 里也没有         → 模型没输出，需换方案（加 CT-Transformer 标点模型）。
+
+■ 四、下一步（待数据）
+  先装带诊断的包跑一次，取「识别结果样本」那行。
+  若确认模型不吐标点，则改用 sherpa-onnx 的 OfflinePunctuation（CT-Transformer 中文标点模型，
+  运行时下载）做后处理补标点，而不是继续调 use_itn。
+
+■ 五、验证
+  · read_lints：0 诊断。
+  · 未提交、未推送。
+================================================================================
