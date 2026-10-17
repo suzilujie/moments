@@ -87,6 +87,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(realtimeDenoiseEnabled, forKey: Keys.realtimeDenoise) }
     }
 
+    /// LLM 纠错（识别 → 纠正 → 翻译 → 展示纠正文本）是否启用。默认**开**（2026-10-17 用户拍板）。
+    ///
+    /// ## 关闭 / 模型未下载时的降级
+    /// 纠错是可选增强，不是核心链路的一环：开关关闭或纠错模型（Qwen2.5-0.5B）
+    /// 尚未下载时，实时链路**自动退回**「识别原文直接翻译」，不会影响字幕与译文本身。
+    /// 纠错模型需要单独下载（约 397 MB），下载入口在设置 →「模型」区。
+    @Published var llmCorrectionEnabled: Bool {
+        didSet { defaults.set(llmCorrectionEnabled, forKey: Keys.llmCorrection) }
+    }
+
     /// 模型下载是否优先走镜像。
     /// 保留这个开关是因为交付环境实测存在 huggingface.co 不可达的情况，
     /// 而模型下不下来会直接让转写功能失效（见 ModelManager）。
@@ -189,6 +199,8 @@ final class AppSettings: ObservableObject {
         autoPrepareModel = defaults.object(forKey: Keys.autoPrepareModel) as? Bool ?? true
         autoPrepareOnCellular = defaults.object(forKey: Keys.autoPrepareOnCellular) as? Bool ?? false
         realtimeDenoiseEnabled = defaults.object(forKey: Keys.realtimeDenoise) as? Bool ?? false
+        // LLM 纠错默认开（2026-10-17 用户拍板）；模型未下载时自动降级为原文直翻
+        llmCorrectionEnabled = defaults.object(forKey: Keys.llmCorrection) as? Bool ?? true
         // 存成局部变量：下面的实时翻译默认值要用它，而**不能在 init 里直接读
         // learningLanguage 属性**（带 didSet 的属性被读会触发 definite-initialization
         // 检查，报 used before being initialized —— 见下方说明）
@@ -245,6 +257,7 @@ final class AppSettings: ObservableObject {
         static let autoPrepareModel = "moments.model.autoPrepare"
         static let autoPrepareOnCellular = "moments.model.autoPrepareOnCellular"
         static let realtimeDenoise = "moments.asr.realtimeDenoise"
+        static let llmCorrection = "moments.asr.llmCorrection"
         static let learningLang = "moments.lang.learning"
         static let targetLang = "moments.lang.target"
         static let sourceLang = "moments.lang.source"

@@ -37,6 +37,8 @@ struct RecordView: View {
     @ObservedObject private var models = ModelManager.shared
     /// 实时翻译（逐句翻）。与实时字幕是两件事：字幕是本机识别，翻译走系统翻译框架。
     @ObservedObject private var translation = TranslationService.shared
+    /// LLM 纠错（识别后纠正再翻译）。与字幕、翻译都是解耦的独立单例。
+    @ObservedObject private var correction = CorrectionService.shared
 
     // MARK: - 界面状态
 
@@ -97,11 +99,15 @@ struct RecordView: View {
             .translationTask(translation.liveConfiguration) { session in
                 await translation.runLive(with: session)
             }
-            // 字幕每出一句就把最新几句交给翻译。
-            // 只传后缀而不是整份列表：字幕只增不改内容（成句即定稿），所以最新的
+            // 字幕每出一句、或纠错回写一句（correctedText 变化）时，把最新几句交给翻译与纠错。
+            // 只传后缀而不是整份列表：字幕基本只增（成句即定稿），所以最新的
             // 一定是后缀；而一场 8 小时的会话有数千句，每次全扫是白费。
-            // 真正的去重由 TranslationService 按 id 完成，这里不承担正确性。
-            .onChange(of: live.segments) { translation.enqueueLive(Array(live.segments.suffix(30))) }
+            // 注：纠错回写会改已有句的 correctedText（不新增句）并触发本 onChange，
+            // 从而让「纠正完成的句子」被补翻；真正的去重由 TranslationService 按 id 完成。
+            .onChange(of: live.segments) {
+                translation.enqueueLive(Array(live.segments.suffix(30)))
+                correction.enqueueLive(Array(live.segments.suffix(30)))
+            }
             // 「自动判定」模式下要等语言锁定才知道源语言 —— 这一刻才是能启动的时候。
             // 语言锁定后才查得到语言包状态（源语言之前未知），所以这里也要刷一次。
             .onChange(of: live.pinnedLanguage) {
@@ -181,6 +187,8 @@ struct RecordView: View {
     private var startButton: some View {
         Button {
             Task {
+                // 新录音开始：清空上一场的纠错状态（实时句 id 跨会话会重复，不清会导致漏纠错）
+                CorrectionService.shared.reset()
                 await session.start()
                 // 录音真正起来之后再启动字幕：会话若在检查阶段就失败，
                 // 提前启动只会留下一个空转的引擎
@@ -646,7 +654,7 @@ struct RecordView: View {
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
 
-            Text(segment.text)
+            Text(segment.correctedText ?? segment.text)
                 .font(.system(size: isLatest ? 19 : 16))
                 .foregroundStyle(isLatest ? .primary : .secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

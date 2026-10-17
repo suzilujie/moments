@@ -1121,3 +1121,136 @@
   · 仅 LlamaBridge.mm；不动 CI、project.yml、Swift 代码；LLAMA_BUMP 不变（llama.cpp
     静态库不变，缓存继续命中）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十二次] CI 构建成功（run #66）
+--------------------------------------------------------------------------------
+
+■ 结果
+  commit ee8f439 推送后 ios-build run #66（39024173758）构建 success。
+  vocab API 对齐后 .mm 编译与链接均通过，生成 unsigned ipa（约 13 MB，保留至 2026-11-16）。
+  ipa 体积较上次 11.4 MB 增约 1.6 MB（llama.cpp CPU-only 静态库链接入 App 二进制）。
+
+■ ipa 下载（需登录 GitHub）
+  https://github.com/suzilujie/moments/actions/runs/39024173758/artifacts/12097912120
+
+■ 待真机
+  · 探针页「LLM 纠错 POC」：下载模型（约 450 MB）→ 跑一句纠错 → 读延迟/内存，
+    对照判据（单句 ≤1s / 内存 ≤800MB）决定 CPU-only 是否可接受、是否升级 Metal。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十三次] LLM 纠错接入业务链路（形态 A：识别→纠正→翻译→展示）
+--------------------------------------------------------------------------------
+
+■ 起因（用户拍板的完整链路）
+  用户提出目标链路「实时识别 → LLM 纠正 → 翻译 → 重新展示纠正后的文字和翻译」，
+  5 个决策点逐一确认：
+  ① 接在哪一层：新建 CorrectionService 中间层（不塞进 LiveTranscriber/TranslationService）
+  ② 纠正时机：只纠「定型句」（isProvisional == false）
+  ③ 开关默认：开（模型未下载时自动降级为原文直翻）
+  ④ 落盘：原文 text + 纠正 correctedText **都落盘**（用户："要不然如何复盘"）
+  ⑤ 翻译时机：形态 A（纠正后才翻译，源文本 = 纠正后文本）
+
+■ 数据模型（1 个字段，向后兼容）
+  TranscriptSegment 新增 `var correctedText: String?`：
+  · text 永远是识别原文（复盘基准），correctedText 是 LLM 纠正文本（nil=未纠正/关闭/失败）
+  · 可选字段：老录音 JSON 缺该键解码为 nil，与 speakerId 保留同一原则，零破坏
+
+■ 改动清单（2 新增 + 6 修改）
+  新增：
+  1) Sources/ASR/LlamaModel.swift
+     Qwen2.5-0.5B 模型常量（id/displayName/fileName/primaryURL/mirrorURL/sizeText），
+     照 SenseVoiceModel 模式；GGUF 约 397 MB，运行时下载到 Models/。
+  2) Sources/ASR/CorrectionService.swift
+     核心中间层（@MainActor ObservableObject）+ 非隔离 LlamaCorrectionStore（持有
+     llama 句柄 + 串行队列，照探针页 LlamaProbeStore 模式）。职责：模型下载（复用
+     ModelDownloader，主站+镜像+体积校验）、enqueueLive 入队纠错、回写 applyCorrection。
+  修改：
+  3) Sources/ASR/LiveTranscriber.swift  → 新增 applyCorrection(id:correctedText:)：
+     segments 整体重建赋值（触发 @Published 刷新）+ accumulated 下标更新（落盘带上）。
+  4) Sources/Translate/TranslationService.swift
+     enqueueLive：纠错启用时只收 correctedText != nil 的句（等纠正）；
+     translateLiveBatch：sourceText 改 `correctedText ?? text`。
+  5) Sources/Store/AppSettings.swift  → llmCorrectionEnabled（默认 true）+ Keys.llmCorrection。
+  6) Sources/Features/Record/RecordView.swift
+     原文展示 `correctedText ?? text`；onChange(of: live.segments) 加 correction.enqueueLive；
+     开始录音 Button 里 CorrectionService.shared.reset()（清跨会话 id 残留）。
+  7) Sources/Features/Settings/SettingsView.swift
+     转写区加「LLM 纠错」开关；模型区加 llamaModelRow 下载行（进度/删除/取消）。
+
+■ 关键设计决策
+  · 纠错失败/空结果时用**原文兜底回写**（final = nonEmpty(corrected) ?? segment.text）：
+    保证形态 A 下「翻译等 correctedText」不会因某句纠错失败而永久漏翻。
+  · 上下文（context）在主线程算好（前 3 句的 correctedText ?? text）再跨线程传值，
+    后台队列不反查 UI 数据，避免跨 actor 访问。
+  · isCorrectionActive = 开关 && 模型已装；两者任一不满足，翻译层走原文、链路自动降级。
+  · 纠错结果回写 segments 触发 onChange → 再次 enqueueLive → 该句此刻 correctedText 非空、
+    被补翻 —— 形成「纠正完成即补翻」闭环，不依赖翻译层额外轮询。
+
+■ 影响范围
+  8 个文件（2 新增 + 6 修改）；无删除；无新依赖（复用 LlamaRunner/ModelDownloader/
+  ModelDownloadState）；project.yml 不动（Sources 目录通配，新 .swift 自动纳入编译）。
+  数据层仅加可选字段，落盘/检索/详情页现有逻辑零破坏（correctedText 暂不参与检索）。
+
+■ 潜在风险
+  1) 性能：0.5B 逐 token 生成，单句数百 ms~数秒；语速快时纠错积压，纠正文本比原文晚到，
+     屏幕出现「原文先显、几秒后被纠正文本替换」的跳动（形态 A 固有代价，已向用户说明）。
+  2) 内存：模型加载后常驻（llama 句柄不释放，串行队列复用），0.5B 量级约数百 MB，
+     真机需观察是否挤压实时识别/翻译。
+  3) 上下文取 suffix(30) 窗口内前 3 句：句子滑出 30 句窗口后纠错仍会发生（submittedIds
+     按 id），但 context 会缺更早前文 —— 影响轻微（纠错主要靠当前句）。
+  4) 编译正确性只能以 CI 为准（本机无 Swift 编译器，前例 009c477「零 lint 但编不过」）。
+
+■ 验证
+  · read_lints：8 个改动文件 0 诊断（仅供参考，本机无 Swift 编译器）。
+  · 编译与真机行为（纠错延迟/内存/展示跳动/落盘对照）均待 CI + 真机。
+
+■ 下一步
+  待用户确认后 commit → push 触发 CI → 贴 ipa 直链；真机核验：纠错模型下载、
+  实时字幕先出原文再变纠正文本、译文用纠正文本、详情页原文/纠正对照落盘。
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日二十四次] review 后修复：补翻加固 + 注释订正（LLM 纠错接入自查）
+--------------------------------------------------------------------------------
+
+■ 起因
+  对「同日二十三次」的 LLM 纠错接入做全链路代码 review（含 LiveTranscriber 的
+  tick/assemble 数据流），结论：核心链路正确、无编译级错误；发现 2 个边界行为
+  P1 + 4 个 P2。用户确认「都改」（P1-2 加固 + P1-3/P2-1 注释订正 + P1-1 记录不修）。
+
+■ 已修复（2 个文件）
+  1) P1-2 补翻依赖 suffix(30) 窗口 → 单点补翻（Sources/ASR/CorrectionService.swift）
+     原实现：applyCorrection 回写 segments 触发 onChange，靠 onChange 里
+     translation.enqueueLive(suffix(30)) 补翻 —— 若慢纠错导致该句滑出最近 30 句，
+     会永久漏翻。
+     修复：纠正完成的 completion 里，构造带 correctedText 的 segment 副本，
+     直接 TranslationService.enqueueLive([该句]) 单点补翻；enqueueLive 内部按 id 去重，
+     与 onChange 的 suffix(30) 补翻不会重复。
+     连带：CorrectionService 头注释「不碰翻译」改为「除单点补翻外不碰翻译」，
+     点明补翻是形态 A 的必要编排。
+  2) P1-3 注释失真（Sources/Features/Record/RecordView.swift）
+     onChange 注释「字幕只增不改内容（成句即定稿）」→ 更正为「基本只增，
+     纠错回写会改 correctedText 并触发本 onChange 以补翻」。
+  3) P2-1 注释订正（Sources/ASR/CorrectionService.swift）
+     「只纠定型句」守卫点明：SenseVoice 时代「成句即定稿」，实时句 isProvisional
+     恒为 false（LiveTranscriber.swift:683 硬编码 isProvisional: false），守卫为防御性保留。
+
+■ 记录不修（P1-1，形态 A 固有边界）
+  停止录音时，还在纠错队列里的句子纠正文本不落盘：
+  LiveTranscriber.stop() → persistLiveTranscript() 立即落盘（此刻 pending 句
+  correctedText 仍 nil），停止后才完成的 applyCorrection 只更新内存 accumulated、
+  不再落盘。后果：停止瞬间最后 1~2 句的纠正文本/译文丢失。
+  判据：属「停止即落盘」既有语义（停止时未完成的工作本来就丢），形态 A 只是把
+  「纠正」也纳入该窗口；加固需等待纠错队列排空，会拖慢停止响应，不划算。
+
+■ 记录在案（P2，不改）
+  · 模型文件损坏时 isInstalled=true 但 LlamaRunner 加载反复失败，每句兜底原文（功能正确，浪费）
+  · correction.lastMessage（下载完成提示）无展示位置（footer 只显示 SenseVoice 的 models.lastMessage）
+  · reset() 在 session.start() 前调用，start 失败时 submittedIds 已被清（无害）
+
+■ 验证
+  · read_lints：CorrectionService.swift / RecordView.swift 0 诊断。
+  · 编译正确性仍以 CI 为准（本机无 Swift 编译器，前例 009c477）。
+================================================================================

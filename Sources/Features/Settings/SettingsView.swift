@@ -14,6 +14,7 @@ struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var models = ModelManager.shared
     @ObservedObject private var translation = TranslationService.shared
+    @ObservedObject private var correction = CorrectionService.shared
     @Environment(\.dismiss) private var dismiss
     /// 实时翻译语言包的可用性。
     ///
@@ -161,6 +162,13 @@ struct SettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
+            Toggle("LLM 纠错（识别后先纠正再翻译）", isOn: $settings.llmCorrectionEnabled)
+            Text("用本地 Qwen2.5-0.5B 模型纠正同音字 / 识别错误，再用纠正后的文字翻译。"
+                + "需另下载纠错模型（约 \(LlamaModel.sizeText)）。"
+                + "关闭或未下载时自动退回「原文直翻」。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
             Picker("识别语言", selection: $settings.transcriptionLanguage) {
                 ForEach(SenseVoiceModel.languageOptions, id: \.code) { item in
                     Text(item.name).tag(item.code)
@@ -213,6 +221,10 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             modelRow
+
+            Divider()
+
+            llamaModelRow
 
             HStack {
                 Text("模型占用")
@@ -302,6 +314,78 @@ struct SettingsView: View {
         case .notInstalled, .failed:
             Button("下载 \(SenseVoiceModel.sizeText)") {
                 models.download(preferMirror: settings.preferModelMirror)
+            }
+            .font(.footnote)
+        }
+    }
+
+    /// 纠错模型下载行（Qwen2.5-0.5B）。与 SenseVoice 模型独立下载、单独管理。
+    @ViewBuilder
+    private var llamaModelRow: some View {
+        let state = correction.state
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(LlamaModel.displayName).bold()
+                        Text("纠错专用")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.secondary.opacity(0.14), in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("本地小模型，纠正识别同音字；只在「LLM 纠错」开启时使用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                llamaModelAction(state: state)
+            }
+            if case .downloading(let progress) = state {
+                if progress.isProportional {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                }
+                Text(progress.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if progress.idleSeconds >= 8 {
+                    Text("最近 \(Int(progress.idleSeconds)) 秒没有收到数据；"
+                        + "累计 \(Int(ModelDownloader.stallSeconds)) 秒无数据会自动改试另一个地址。")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            if case .failed(let message) = state {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func llamaModelAction(state: ModelDownloadState) -> some View {
+        switch state {
+        case .installed:
+            Button("删除", role: .destructive) {
+                try? correction.delete()
+            }
+            .font(.footnote)
+
+        case .downloading:
+            Button("取消") {
+                correction.cancelDownload()
+            }
+            .font(.footnote)
+
+        case .notInstalled, .failed:
+            Button("下载 \(LlamaModel.sizeText)") {
+                correction.download(preferMirror: settings.preferModelMirror)
             }
             .font(.footnote)
         }

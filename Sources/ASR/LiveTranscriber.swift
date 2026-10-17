@@ -983,6 +983,24 @@ final class LiveTranscriber: ObservableObject {
         }
     }
 
+    /// LLM 纠错结果回写（由 `CorrectionService` 在纠正完成后调用，主线程）。
+    ///
+    /// 同时更新显示列表与落盘累计：
+    ///   · `segments` 用整体重建赋值，触发 `@Published` 通知，界面立刻刷新为纠正文本；
+    ///   · `accumulated` 下标更新，保证 `persistLiveTranscript()` 落盘时带上 `correctedText`
+    ///     —— 原文 `text` 始终保留，与纠正文本并存供复盘对照（用户 2026-10-17 确认）。
+    func applyCorrection(id: String, correctedText: String) {
+        segments = segments.map { segment in
+            guard segment.id == id else { return segment }
+            var copy = segment
+            copy.correctedText = correctedText
+            return copy
+        }
+        if let index = accumulated.firstIndex(where: { $0.id == id }) {
+            accumulated[index].correctedText = correctedText
+        }
+    }
+
     /// 开始实时字幕。需要调用方（录音页）先确认模型已下载。
     /// - Parameters:
     ///   - sessionId: 本次录音的会话 id。停止时据此把实时稿落盘。

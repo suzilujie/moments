@@ -306,7 +306,13 @@ final class TranslationService: ObservableObject {
         for segment in segments {
             // 音乐标注段不是真实语音内容，不送翻译（id 前缀见 TranscriptSegment.musicMarkerIDPrefix）。
             guard !segment.isMusicMarker else { continue }
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // LLM 纠错（形态 A：纠正后才翻译）。纠错启用时，只有「已纠正」的句子才送翻译；
+            // 纠错关闭 / 模型未下载时 `correctedText` 恒为 nil，直接走原文，链路自动降级。
+            if CorrectionService.shared.isCorrectionActive, segment.correctedText == nil {
+                continue
+            }
+            let text = (segment.correctedText ?? segment.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             guard !liveSubmittedIds.contains(segment.id) else { continue }
             guard liveTranslations[segment.id] == nil else { continue }
@@ -372,7 +378,8 @@ final class TranslationService: ObservableObject {
     /// 一句失败就让后面全部停掉是不可接受的（与批量翻译同一条原则）。
     private func translateLiveBatch(_ batch: [TranscriptSegment], with session: TranslationSession) async {
         let requests = batch.map {
-            TranslationSession.Request(sourceText: $0.text, clientIdentifier: $0.id)
+            // 优先用纠正后的文本翻译（形态 A）；纠正关闭时 `correctedText` 为 nil，回退原文。
+            TranslationSession.Request(sourceText: $0.correctedText ?? $0.text, clientIdentifier: $0.id)
         }
         do {
             let responses = try await session.translations(from: requests)

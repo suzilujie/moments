@@ -49,6 +49,17 @@ struct TranscriptSegment: Codable, Identifiable, Hashable {
     var endMs: Int
     var text: String
 
+    /// LLM 纠错后的文本（nil = 未纠正 / 纠错关闭 / 纠错失败）。
+    ///
+    /// ## 与 `text` 的关系（2026-10-17 用户确认：两者都落盘，用于复盘对照）
+    /// `text` 永远是识别引擎的**原始输出**（复盘基准，不被覆盖）；
+    /// `correctedText` 是 LLM 纠错后的文本，仅当纠错链路生效且成功时非空。
+    /// 详情页 / 复盘时并排对照「原文 vs 纠正后」，判断 LLM 改对还是改错。
+    ///
+    /// 向后兼容：这是可选字段，老录音的 JSON 里没有这个键，解码时自动为 nil，
+    /// 与 `speakerId` 的保留原则一致 —— 删字段会让老数据打不开，加可选字段则安全。
+    var correctedText: String?
+
     /// 说话人编号。
     ///
     /// ## 字段保留、但不再写入（2026-10-17）
