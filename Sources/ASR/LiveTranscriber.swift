@@ -371,7 +371,7 @@ final class LiveTranscriptionEngine {
         queue.async { [weak self] in
             guard let self else { return }
             self.stopTimer()
-            self.engine?.unload()
+            self.engine?.close()
             self.engine = nil
             // M3 的两个模型也要显式释放：它们各自持有 ONNX 会话，
             // 不释放会一直占内存（本项目的会话可能连续录 8 小时，内存必须能回收）

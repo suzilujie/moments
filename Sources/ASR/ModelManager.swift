@@ -184,22 +184,24 @@ final class ModelManager: ObservableObject {
         guard !isInstalled, !state.isDownloading else { return }
 
         NetworkReach.checkUnmetered { [weak self] unmetered in
-            guard let self else { return }
-            guard unmetered || self.settings.autoPrepareOnCellular else {
-                self.autoPrepareNote = "识别模型「\(SenseVoiceModel.displayName)」"
-                    + "（\(SenseVoiceModel.sizeText)）尚未下载。"
-                    + "当前是移动网络，未自动下载以免消耗你的流量 —— "
-                    + "可直接在下方点「下载」，或在上面打开「允许在移动网络下自动下载」。"
-                Log.shared.info(.model, "自动准备｜跳过｜当前为计费网络，且未允许移动网络自动下载")
-                return
-            }
+            Task { @MainActor in
+                guard let self else { return }
+                guard unmetered || self.settings.autoPrepareOnCellular else {
+                    self.autoPrepareNote = "识别模型「\(SenseVoiceModel.displayName)」"
+                        + "（\(SenseVoiceModel.sizeText)）尚未下载。"
+                        + "当前是移动网络，未自动下载以免消耗你的流量 —— "
+                        + "可直接在下方点「下载」，或在上面打开「允许在移动网络下自动下载」。"
+                    Log.shared.info(.model, "自动准备｜跳过｜当前为计费网络，且未允许移动网络自动下载")
+                    return
+                }
 
-            Log.shared.info(
-                .model,
-                "自动准备｜开始静默下载 \(SenseVoiceModel.displayName)（\(SenseVoiceModel.sizeText)）"
-                    + "｜网络 \(unmetered ? "非计费（Wi-Fi/有线）" : "计费（用户已允许）")"
-            )
-            self.download(preferMirror: self.settings.preferModelMirror)
+                Log.shared.info(
+                    .model,
+                    "自动准备｜开始静默下载 \(SenseVoiceModel.displayName)（\(SenseVoiceModel.sizeText)）"
+                        + "｜网络 \(unmetered ? "非计费（Wi-Fi/有线）" : "计费（用户已允许）")"
+                )
+                self.download(preferMirror: self.settings.preferModelMirror)
+            }
         }
     }
 

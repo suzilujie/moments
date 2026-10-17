@@ -920,3 +920,35 @@
     门面传参）一致。
   · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十五次] 修复：CI 构建失败的编译错误（SenseVoice 替换遗留）
+--------------------------------------------------------------------------------
+
+■ 背景
+  上一轮「同日十三次」子代理全链路审查后进入 CI 构建，xcodebuild 约 34s 早期失败，
+  CI 日志不可得（403），改为静态排查全部改动文件，定位到两处问题。
+
+■ 修复（2 处）
+  1)【编译错误·真凶】LiveTranscriber.swift:374
+     `self.engine?.unload()` → `self.engine?.close()`。
+     whisper 时代残留符号：SenseVoiceEngine 只有 close()（SenseVoiceEngine.swift:192），
+     无 unload()，全库仅此一处引用，属替换遗漏，必阻断编译。
+  2)【警告·非阻断】ModelManager.swift autoPrepareIfNeeded()
+     NetworkReach.checkUnmetered 的非隔离 completion 闭包内同步访问 @MainActor 成员
+     （autoPrepareNote / settings / download），违反隔离。修复：闭包体包进
+     `Task { @MainActor in ... }`，与同文件 attemptDownload 的 onProgress/onFinish 写法对齐。
+     注：工程 SWIFT_VERSION 5.0 + SWIFT_STRICT_CONCURRENCY minimal，此问题只是警告、
+     不会阻断构建；修复属清理遗留，非本次失败根因。
+
+■ 影响范围
+  · 仅 Sources/ASR/LiveTranscriber.swift（1 行）与 Sources/ASR/ModelManager.swift
+    （autoPrepareIfNeeded 方法体）。
+  · 不动 C 封装、C API 头文件、UI、删除符号引用；无跨模块影响。
+  · 语义等价：close() 与原 unload() 意图一致（释放引擎）；Task { @MainActor } 仅多一次
+    actor 跳转（checkUnmetered 本就在主队列回调），延迟可忽略。
+
+■ 验证
+  · read_lints：LiveTranscriber.swift / ModelManager.swift 两文件 0 诊断。
+  · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。待用户确认后 commit → push 触发 CI。
+================================================================================
