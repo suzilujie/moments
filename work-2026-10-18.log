@@ -107,3 +107,39 @@
   · read_lints：0 诊断。
   · 未提交、未推送。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-18 三次] 设置页「模型占用」漏算纠错模型：补上 correction.installedBytes
+--------------------------------------------------------------------------------
+
+■ 一、背景（问题定性）
+  核对设置页「纠错模型」UI 与 CorrectionService 的接线时，发现一处真实遗漏：
+    · SettingsView.swift 的「模型占用」只取 models.installedBytes（SenseVoice）；
+    · CorrectionService.installedBytes（第 53-58 行）虽已实现，但**全项目零调用点**（死代码）。
+  后果：下载 Qwen2.5-0.5B（约 397 MB）纠错模型后，设置页显示的占用仍只是 SenseVoice
+  的体积，用户看到的数字与实际磁盘占用不符。
+  同类不一致（本次未改，方案 A 明确只修设置页）：
+    · RootView.swift:304-309（设置页之外的模型摘要）
+    · AppDelegate.swift:87-91（启动日志里的模型体积）
+
+■ 二、方案选择（用户 2026-10-18 拍板 A）
+  A：只改 SettingsView 一处取值 = models.installedBytes + correction.installedBytes（已实施）
+  B：连同 RootView / AppDelegate 一起统一（未采纳）
+  C：不动总量，仅单独显示纠错模型自身占用（未采纳）
+
+■ 三、改动（Sources/Features/Settings/SettingsView.swift）
+  · modelSection 的「模型占用」行：ByteCountFormatter 的入参由
+    models.installedBytes 改为 models.installedBytes + correction.installedBytes；
+  · 加两行注释说明「两个模型独立下载、占用必须相加」的原因，
+    防止后人再把它简化回单一模型统计。
+
+■ 四、影响与风险
+  · 影响面：仅设置页这一处文案显示，不涉及下载状态机、不涉及识别/纠错/翻译链路。
+  · 未安装纠错模型时 correction.installedBytes 返回 0，显示值与改动前完全一致（无回归）。
+  · 残留问题：RootView 与 AppDelegate 的统计仍只算 SenseVoice，三处口径暂不一致；
+    若后续要统一，按方案 B 再动一次即可，改动同样很小。
+
+■ 五、验证
+  · read_lints：SettingsView 0 诊断。
+  · 未提交、未推送（等用户确认后再 commit / push）。
+================================================================================

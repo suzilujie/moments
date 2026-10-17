@@ -241,8 +241,13 @@ struct SettingsView: View {
             HStack {
                 Text("模型占用")
                 Spacer()
-                Text(ByteCountFormatter.string(fromByteCount: models.installedBytes, countStyle: .file))
-                    .foregroundStyle(.secondary)
+                // 两个模型各自独立下载，占用必须相加：只算 SenseVoice 的话，
+                // 装了 397 MB 的纠错模型之后这个数字是错的。
+                Text(ByteCountFormatter.string(
+                    fromByteCount: models.installedBytes + correction.installedBytes,
+                    countStyle: .file
+                ))
+                .foregroundStyle(.secondary)
             }
         } header: {
             Text("模型")
