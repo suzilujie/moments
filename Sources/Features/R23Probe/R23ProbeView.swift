@@ -13,6 +13,7 @@ import AVFoundation
 struct R23ProbeView: View {
 
     @StateObject private var probe = R23ProbeModel()
+    @StateObject private var llamaProbe = LlamaProbeModel()
 
     var body: some View {
         List {
@@ -61,6 +62,16 @@ struct R23ProbeView: View {
             Section("结论") {
                 Text(probe.conclusion)
                     .font(.footnote)
+            }
+
+            Section("LLM 纠错 POC（Qwen2.5-0.5B）") {
+                Text(llamaProbe.status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("下载模型（约 450 MB）") { llamaProbe.downloadModel() }
+                Button("跑一句纠错") { llamaProbe.runCorrection() }
+                row("纠正结果", llamaProbe.resultText)
+                row("指标", llamaProbe.metricsText)
             }
         }
         .navigationTitle("R23 探针")
@@ -235,4 +246,95 @@ private struct BroadcastPickerView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
+}
+
+// MARK: - LLM 纠错 POC（临时，用后即删）
+
+/// 非隔离：持有 llama 句柄与后台队列，避免在 @MainActor 与非隔离闭包之间跨域访问。
+/// llama 句柄不是线程安全的，统一收敛到这一个串行队列上使用。
+final class LlamaProbeStore {
+    private let queue = DispatchQueue(label: "com.xfish.moments.llama-probe", qos: .userInitiated)
+    private var runner: LlamaRunner?
+
+    func correct(
+        modelPath: String,
+        sentence: String,
+        context: [String],
+        completion: @escaping (LlamaRunner.Outcome?, String?) -> Void
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            var r = self.runner
+            if r == nil {
+                r = LlamaRunner(modelPath: modelPath)
+                self.runner = r
+            }
+            guard let runner = r else {
+                completion(nil, "模型加载失败（文件不存在？请先下载）")
+                return
+            }
+            let out = runner.correct(sentence: sentence, context: context)
+            completion(out, nil)
+        }
+    }
+}
+
+/// LLM 纠错探针的界面状态与动作。
+@MainActor
+final class LlamaProbeModel: ObservableObject {
+
+    @Published var status = "未下载模型"
+    @Published var resultText = "-"
+    @Published var metricsText = "-"
+
+    private let store = LlamaProbeStore()
+    private let remoteURL = URL(string: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf")!
+
+    private var localURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("qwen2.5-0.5b-instruct-q4_k_m.gguf")
+    }
+
+    func downloadModel() {
+        status = "下载中…（约 450 MB）"
+        let task = URLSession.shared.downloadTask(with: remoteURL) { [weak self] url, _, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let url {
+                    let dest = self.localURL
+                    try? FileManager.default.removeItem(at: dest)
+                    do {
+                        try FileManager.default.moveItem(at: url, to: dest)
+                        self.status = "模型已下载：\(dest.lastPathComponent)"
+                    } catch {
+                        self.status = "保存模型失败：\(error.localizedDescription)"
+                    }
+                } else {
+                    self.status = "下载失败：\(error?.localizedDescription ?? "未知错误")"
+                }
+            }
+        }
+        task.resume()
+    }
+
+    func runCorrection() {
+        status = "加载模型 + 纠错中…"
+        let sentence = "今天天气真不错我们一起出去玩吧"
+        let context = ["上周我们讨论过这个方案", "大家一致同意尽快推进"]
+        store.correct(modelPath: localURL.path, sentence: sentence, context: context) { [weak self] outcome, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let outcome {
+                    self.resultText = outcome.correctedText
+                    self.metricsText = "耗时 \(outcome.elapsedMs) ms｜prompt \(outcome.promptTokens) tok"
+                        + "｜生成 \(outcome.generatedTokens) tok｜常驻 \(outcome.residentMB) MB"
+                    self.status = "纠错完成"
+                } else {
+                    self.resultText = "-"
+                    self.metricsText = "-"
+                    self.status = error ?? "纠错失败"
+                }
+            }
+        }
+    }
 }

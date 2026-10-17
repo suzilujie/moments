@@ -14,5 +14,6 @@
 #define MOMENTS_BRIDGES_H
 
 #include "SherpaBridge.h"
+#include "LlamaBridge.h"
 
 #endif /* MOMENTS_BRIDGES_H */

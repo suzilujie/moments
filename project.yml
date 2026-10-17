@@ -63,6 +63,10 @@ targets:
       # 与 Translation.framework 同理**显式声明**：漏链接的失败形态是链接错误，
       # 不带行列号，在无 Xcode 的环境里极难定位。
       - sdk: Network.framework
+      # ═══ Accelerate（llama.cpp CPU 后端 BLAS，LLM 纠错 POC）═══
+      # llama.cpp 关 Metal 后走 ggml-cpu + BLAS，默认用 Apple Accelerate；
+      # 静态库不携带 framework 依赖信息，须显式链接，否则报 Accelerate 符号缺失。
+      - sdk: Accelerate.framework
     settings:
       base:
         PRODUCT_NAME: Moments
@@ -88,7 +92,7 @@ targets:
         # 刻意**不引入第三方封装**（GRDB / SQLite.swift）：本项目已有两个
         # 手工构建的二进制依赖，再多一个来源不同的依赖，只会增加"哪一层坏了"的排查成本。
         # 系统 SQLite 的 C API 写起来啰嗦一点，但确定可用、零版本风险。
-        OTHER_LDFLAGS: "-lc++ -lz -lsherpa-onnx-all -lsqlite3"
+        OTHER_LDFLAGS: "-lc++ -lz -lsherpa-onnx-all -lsqlite3 -lllama-all"
         # ═══ sherpa-onnx（M3）═══
         # 刻意**不走 xcframework**：本项目的 iOS 产物只用于真机侧载，
         # 只需要真机切片；直接链接 CI 合并出的 .a + 头文件目录，
@@ -96,9 +100,14 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/third_party/sherpa-onnx/build-ios-os64/build/os64"
+          - "$(SRCROOT)/third_party/llama.cpp/build-ios-os64/build/os64"
         HEADER_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/third_party/sherpa-onnx/build-ios-os64/install/include"
+          # llama.h 与 ggml.h 的所在目录（llama.cpp 版本不同，头文件位置会变，多给几条兜底）
+          - "$(SRCROOT)/third_party/llama.cpp/include"
+          - "$(SRCROOT)/third_party/llama.cpp/ggml/include"
+          - "$(SRCROOT)/third_party/llama.cpp"
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
         MARKETING_VERSION: "0.1"

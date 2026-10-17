@@ -36,6 +36,8 @@ jobs:
       SHERPA_TAG: v1.13.8
       # sherpa-onnx 依赖的 onnxruntime iOS 静态库版本（官方脚本里的默认值）
       ORT_VERSION: 1.28.2
+      # llama.cpp 薄封装版本号（POC 手动 bump）：改 LlamaBridge 的 C API 时 +1 使缓存失效
+      LLAMA_BUMP: "1"
 
     steps:
       - name: Checkout
@@ -190,6 +192,92 @@ jobs:
             echo "::warning::sherpa-ort $(ls -1 "$BASE/ios-onnxruntime/${ORT_VERSION}/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime" 2>/dev/null || echo '缺失 onnxruntime')"
           else
             echo "::warning::$BASE 不存在，sherpa-onnx 未构建"
+          fi
+
+      # ═══════════════════════════════════════════════════════════════
+      # llama.cpp（LLM 纠错 POC）→ 合并静态库
+      #
+      # 与 sherpa-onnx 同一套模式：cmake + ios.toolchain.cmake 编真机切片。
+      # 三点刻意取舍：
+      #  1) 关 Metal（GGML_METAL=OFF）走纯 CPU（ggml-cpu + Accelerate BLAS）：
+      #     Metal 需额外把 .metal 编成 metallib，集成复杂度高；POC 先验证
+      #     CPU 延迟是否可接受，不达标再上 Metal。
+      #  2) 只编真机切片（OS64），不编模拟器。
+      #  3) 用 master 而非固定 tag：POC 阶段尚未锁定 llama.cpp 版本，
+      #     进业务时再固定 tag + 严格缓存。
+      # 缓存 key 绑 LLAMA_BUMP：改薄封装（API 对齐）时手动 bump 使缓存失效。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Cache llama.cpp (source + built lib)
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/llama.cpp
+          key: llama-${{ env.LLAMA_BUMP }}-${{ runner.os }}
+
+      - name: Build llama.cpp static lib (device only, CPU)
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p third_party
+          if [ ! -d third_party/llama.cpp/.git ]; then
+            git clone --depth 1 https://github.com/ggml-org/llama.cpp third_party/llama.cpp \
+              || { echo "::error::克隆 llama.cpp 失败"; exit 1; }
+          fi
+
+          cd third_party/llama.cpp
+          SRC_ROOT="$PWD"
+          mkdir -p build-ios-os64
+          cd build-ios-os64
+          LOGS="$PWD/logs"
+          mkdir -p "$LOGS"
+
+          # 分阶段落日志，失败时把尾部转成注解（理由与 sherpa-onnx 相同）。
+          emit_fail() {
+            name="$1"
+            echo "::error::阶段「${name}」失败，日志尾部如下"
+            tail -25 "$LOGS/${name}.log" | while IFS= read -r line; do
+              echo "::error::$(printf '%s' "$line" | cut -c1-280)"
+            done
+            exit 1
+          }
+
+          echo "=== 1/3 配置（仅真机 OS64，关 Metal）==="
+          cmake -S "$SRC_ROOT" -B build/os64 \
+            -DCMAKE_TOOLCHAIN_FILE="$SRC_ROOT/../sherpa-onnx/toolchains/ios.toolchain.cmake" \
+            -DPLATFORM=OS64 \
+            -DENABLE_BITCODE=0 \
+            -DDEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DGGML_METAL=OFF \
+            -DGGML_NATIVE=OFF \
+            > "$LOGS/01-cmake-configure.log" 2>&1 || emit_fail "01-cmake-configure"
+          echo "配置完成"
+
+          echo "=== 2/3 编译 ==="
+          cmake --build build/os64 -j 4 > "$LOGS/02-cmake-build.log" 2>&1 || emit_fail "02-cmake-build"
+          echo "编译完成"
+
+          echo "=== 3/3 合并静态库 ==="
+          # llama.cpp 按 ggml-base / ggml-cpu / ggml-blas 等拆库，find 兜底全合并
+          libtool -static -o build/os64/libllama-all.a \
+            $(find build/os64 -name '*.a') \
+            > "$LOGS/03-libtool-merge.log" 2>&1 || emit_fail "03-libtool-merge"
+          ls -lh build/os64/libllama-all.a
+
+      # 本机看不到 Actions 原始日志，注解是唯一观测通道。把关键产物路径直接报出来。
+      - name: Report llama.cpp artifact layout
+        if: always()
+        run: |
+          BASE=third_party/llama.cpp/build-ios-os64
+          if [ -d "$BASE" ]; then
+            echo "::notice::llama.cpp 构建目录已生成"
+            echo "::warning::llama-lib $(ls -1 "$BASE/build/os64/libllama-all.a" 2>/dev/null || echo '缺失 libllama-all.a')"
+            echo "::warning::llama-header $(ls -1 third_party/llama.cpp/include/llama.h 2>/dev/null || ls -1 third_party/llama.cpp/llama.h 2>/dev/null || echo '缺失 llama.h')"
+          else
+            echo "::warning::$BASE 不存在，llama.cpp 未构建"
           fi
 
       # ═══════════════════════════════════════════════════════════════

@@ -982,3 +982,71 @@
   · read_lints：两文件 0 诊断。
   · 编译正确性仍以 CI 为准（本机无 Swift 编译器）。待用户确认后 commit → push 触发 CI。
 ================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十七次] CI 构建成功（run #62）
+--------------------------------------------------------------------------------
+
+■ 结果
+  commit a3502fd 推送后 ios-build run #62（39019605746）构建 success，
+  生成 unsigned ipa（Moments-unsigned-ipa，约 11.4 MB，保留至 2026-11-16）。
+
+■ ipa 下载（需登录 GitHub）
+  https://github.com/suzilujie/moments/actions/runs/39019605746/artifacts/12096117738
+
+■ 待真机核验
+  · 能否安装（unsigned，需自行签名 / AltStore / Sideloadly）
+  · SenseVoice 模型下载（约 226 MiB）
+  · 实时字幕不再有音乐断点
+  · 终稿同音字改善
+================================================================================
+
+--------------------------------------------------------------------------------
+[2026-10-17 同日十八次] LLM 纠错 POC（形态 A 前置验证）：接入 llama.cpp 探针
+--------------------------------------------------------------------------------
+
+■ 背景
+  用户确认「实时字幕 + 上下文纠错」走形态 A（SenseVoice 原文先上屏、LLM 异步事后纠错），
+  并同意「先做真机 POC 验证 0.5B 单句纠错的延迟/内存」。本批改动**只搭探针、不进业务链路**。
+
+■ 决策要点
+  · 模型：Qwen2.5-0.5B-Instruct Q4_K_M GGUF（约 450 MB），运行时下载（POC 阶段探针页
+    用 URLSession 临时下到 Documents）。
+  · 推理框架：llama.cpp，照 sherpa-onnx 模式接入（cmake + ios.toolchain.cmake 编真机
+    静态库 → 链接 → 桥接头）。
+  · 后端：先 CPU-only（GGML_METAL=OFF，ggml-cpu + Accelerate BLAS），延迟不达标再上 Metal。
+  · 判据：单句 ≤ 1s、内存峰值 ≤ 800 MB。
+
+■ 改动清单（3 新增 + 4 修改）
+  新增：
+  1) Sources/Support/LlamaBridge.h —— llama.cpp 的纯 C 薄封装声明（lbr_load/lbr_correct/lbr_free）。
+     llama.h 混合 C++（ggml.h），不能直接进 Swift 桥接头，故加这层。
+  2) Sources/Support/LlamaBridge.mm —— 薄封装的 Objective-C++ 实现，内部 #include "llama.h"，
+     用较新 C API（llama_init_from_model / llama_sampler 系列）做「tokenize→decode→贪婪采样→出句」。
+  3) Sources/ASR/LlamaRunner.swift —— llama 的 Swift 封装：加载 GGUF、correct() 返回纠正句
+     + 耗时/token 数/常驻内存（mach_task_basic_info）。
+
+  修改：
+  4) Sources/Support/Bridges.h —— include "LlamaBridge.h"。
+  5) project.yml —— OTHER_LDFLAGS 加 -lllama-all；LIBRARY/HEADER_SEARCH_PATHS 加 llama.cpp
+     产物与头文件路径（含 ggml/include 兜底）；dependencies 加 Accelerate.framework（CPU BLAS）。
+  6) .github/workflows/ios-build.yml —— 加 llama.cpp 缓存 + 编译 step（clone master、
+     cmake OS64 关 Metal、libtool 合并 .a）+ 产物报告 step；env 加 LLAMA_BUMP。
+  7) Sources/Features/R23Probe/R23ProbeView.swift —— 加「LLM 纠错 POC」测试区：
+     下载模型 + 跑一句纠错 + 显示指标（LlamaProbeStore 非隔离串行队列持有句柄、
+     LlamaProbeModel @MainActor 驱动 UI）。
+
+■ 影响范围与风险
+  · 全部为新增/独立改动，探针不进实时/终稿业务链路；不动引擎、SenseVoice、ModelManager。
+  · 风险（需 CI 实跑确认）：
+    1) llama.h C API 版本对齐：薄封装按较新 API 写，clone master 若版本有出入会编译失败，
+       需按注解报错对齐；
+    2) llama.cpp 库拆分（ggml-base/cpu/blas 等）用 find -name '*.a' 兜底合并；
+    3) toolchain 复用 sherpa-onnx 的 ios.toolchain.cmake 是否兼容；
+    4) 关 Metal 后 Accelerate BLAS 符号需 -framework Accelerate（已加）。
+  · 本机 Windows 无 Swift/ObjC++ 编译器，编译正确性以 CI 为准。
+
+■ 待办
+  · commit/push 触发 CI（等用户确认）；CI 通过后真机：下载模型 → 跑纠错 → 读延迟/内存，
+    对照判据（≤1s / ≤800MB）决定 CPU-only 是否可接受、是否升级 Metal。
+================================================================================
