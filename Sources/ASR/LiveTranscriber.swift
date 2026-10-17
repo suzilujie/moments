@@ -50,14 +50,34 @@ final class LiveTranscriptionEngine {
 
     /// 单段最长时长，直接传给 VAD 的 `max_speech_duration`。
     ///
-    /// 说话不停顿时 VAD 会在到点处切开，所以**它也是最坏情况下一个字都不出的时长**。
-    /// 取 12 秒：whisper 单窗上限是 30 秒，12 秒有充分余量；
-    /// 同时对"一口气说很久"的人不至于等太久。觉得出字慢就调小它。
-    private let vadMaxSpeechSeconds = 12
+    /// ## 2026-10-17：12 秒 → 120 秒（用户要求「不要强切」）
+    /// 12 秒时真机上一半的段是**撞上限被切断**的（切点落在词中间），这是不可接受的。
+    /// 现在只保留一个"物理上限"，日常对话（哪怕一口气说一分钟）都不会被切 ——
+    /// 切点基本上永远来自停顿。
+    ///
+    /// **为什么不能真的设成无穷大**：VAD 的内部缓冲是**创建时预分配**的 float 数组
+    ///（`buffer_size_in_seconds × 16000 × 4` 字节），且要求 ≥ maxSpeech。
+    /// 120 秒缓冲约 7.7 MB；再往上翻倍，收益为零而常驻内存直接翻倍。
+    /// 这个值是"实际不可达"与"内存可控"的折中，不是又要开始强切。
+    private let vadMaxSpeechSeconds = 120
 
-    /// 停顿多久算"这句说完了"。取 0.4 秒：比 0.5 更跟手，
-    /// 又不会把句中的自然换气当成句尾（0.2 秒以下会切得过碎）。
-    private let vadMinSilenceSeconds: Float = 0.4
+    /// VAD 内部缓冲容量（秒）。必须 > maxSpeech，留 10 秒余量给"停在段尾未切出"的部分。
+    private var vadBufferSeconds: Double { Double(vadMaxSpeechSeconds) + 10 }
+
+    /// 多久还没切就提醒一次：**只记录，不切**。
+    /// 用户明确不要强切，所以这里保留观测能力（否则卡住时日志一片空白），
+    /// 但绝不因为超时就切断一句话。
+    private let longUtteranceWarnSeconds = 60
+    /// 已提醒过"超长未切"（每次会话只提醒一次，避免刷屏）
+    private var hasReportedLongUtterance = false
+
+    /// 停顿多久算"这句说完了"。
+    ///
+    /// 从 0.4 调到 0.3（2026-10-17）：真机统计显示一半的段是撞到 12 秒上限被**强切**的
+    /// （`切于长度上限` 与 `最长音频 12017ms`），说明日常说话的句间停顿普遍短于 0.4 秒，
+    /// VAD 一直不认为"说完了"，于是攒够 12 秒才切 —— 表现为句子很长、出字很慢。
+    /// 0.3 秒仍高于"句中换气"的典型时长（0.15~0.25 秒），不至于把一句话切碎。
+    private let vadMinSilenceSeconds: Float = 0.3
 
     /// 静音期间保留的前导音频。
     ///
@@ -68,9 +88,13 @@ final class LiveTranscriptionEngine {
     /// VAD 缺失时的兜底：固定切窗长度（退回 M2 的行为）。
     private let fallbackCutSeconds = 10
 
-    /// 最少音频量：whisper 对极短输入无意义（且易产生幻觉）。
+    /// 最少音频量：识别引擎对极短输入无意义（且易产生幻觉）。
     /// 不足则**不清空** tail，让这几百毫秒并进下一句 —— 丢掉它等于丢掉一个词。
-    private let minimumSeconds = 1
+    ///
+    /// 从 1.0 调到 0.6（2026-10-17）：这个值和"停顿门槛"必须**一起**降。
+    /// 只降停顿门槛不降它，0.3 秒切出来的短段会被这条并回下一句，
+    /// 等于白切一遍 —— 这是调断句时最容易漏掉的一处联动。
+    private let minimumSeconds: Double = 0.6
 
     private let sampleRate = 16_000
 
@@ -161,6 +185,29 @@ final class LiveTranscriptionEngine {
     // 这里按窗口累计、每 N 个窗口汇总一行：既不刷屏，又能回答
     // 「实时字幕到底跟不跟得上采集」。
     private var utteranceCount = 0
+    /// 识别段时长分布（<1s / 1~3s / 3~6s / 6~10s / ≥10s）。
+    ///
+    /// 调断句参数时唯一能回答"到底切得碎不碎"的数据：
+    /// 只报平均时长会被长句掩盖，而"<1s 占比突然升高"正是切太碎的信号。
+    private var audioBuckets = [0, 0, 0, 0, 0]
+    /// 时长分桶的边界（毫秒）
+    private static let bucketBoundsMs = [1_000, 3_000, 6_000, 10_000]
+
+    /// 把时长映射到分桶下标（0 = 最短）。
+    private static func bucketIndex(forMs ms: Int) -> Int {
+        for (index, bound) in bucketBoundsMs.enumerated() where ms < bound {
+            return index
+        }
+        return bucketBoundsMs.count
+    }
+
+    /// 一行分桶文案，供统计日志使用。
+    private var bucketText: String {
+        let labels = ["<1s", "1~3s", "3~6s", "6~10s", "≥10s"]
+        return zip(labels, audioBuckets)
+            .map { "\($0)=\($1)" }
+            .joined(separator: " ")
+    }
     /// 其中**推断**为"说话不停顿、到长度上限"被切开的段数。
     ///
     /// 判据是"VAD 吐段的那一刻是否仍在说话" —— 这是**推断，不是确证**：
@@ -200,6 +247,7 @@ final class LiveTranscriptionEngine {
     /// 清空实时统计。**开始与停止都调它** —— 两处各写一遍必然会在新增字段时漏掉一处。
     private func resetLiveStats() {
         utteranceCount = 0
+        audioBuckets = [0, 0, 0, 0, 0]
         cappedUtteranceCount = 0
         droppedSilenceCount = 0
         producedSegments = 0
@@ -212,6 +260,7 @@ final class LiveTranscriptionEngine {
         entryDroppedPending = 0
         musicSegmentsCount = 0
         hasReportedFirstSegments = false
+        hasReportedLongUtterance = false
         hasReportedPauseDrop = false
         hasReportedNoSpeechDetected = false
         hasReportedFirstMusic = false
@@ -306,7 +355,7 @@ final class LiveTranscriptionEngine {
         if vad != nil {
             // 把切窗参数写出来：出字节奏完全由它决定，
             // 真机上"出字慢"时要能一眼看到是哪个参数在起作用，而不是只能猜。
-            parts.append("VAD 切窗（停顿 \(vadMinSilenceSeconds)s / 单段上限 \(vadMaxSpeechSeconds)s）")
+            parts.append("VAD 切窗（停顿 \(String(format: "%.2f", vadMinSilenceSeconds))s，不强切）")
         } else {
             parts.append("固定切窗（VAD 不可用）")
         }
@@ -334,7 +383,9 @@ final class LiveTranscriptionEngine {
                 vad = SherpaVad(
                     modelPath: vadURL.path,
                     minSilenceSeconds: vadMinSilenceSeconds,
-                    maxSpeechSeconds: Float(vadMaxSpeechSeconds)
+                    maxSpeechSeconds: Float(vadMaxSpeechSeconds),
+                    // 缓冲必须 ≥ maxSpeech，否则超长语音会在 VAD 内部被提前打断
+                    bufferSeconds: vadBufferSeconds
                 )
                 if vad == nil {
                     Log.shared.warn(.asr, "VAD 模型加载失败，回退到固定切窗 + 能量门限")
@@ -614,10 +665,18 @@ final class LiveTranscriptionEngine {
                 // 两者都适合当切点。下面这句只是**为日志推断**原因，不影响行为：
                 // 还在说话 ⇒ 是长度上限切的。
                 cutReason = speaking ? .lengthCap : .silenceBoundary
-            } else if speaking, tail.count >= vadMaxSpeechSeconds * sampleRate {
-                // 兜底：VAD 因故没吐段（例如句尾停顿一直不够），但音频已到上限。
-                // **不能无限攒** —— 内存与延迟都会失控。
-                cutReason = .lengthCap
+            } else if speaking, !hasReportedLongUtterance,
+                      tail.count >= longUtteranceWarnSeconds * sampleRate {
+                // 应用层**不再强切**（用户 2026-10-17 明确要求）。
+                // 这里只留一条观测：真的有人连续说了一分钟还没停顿，
+                // 就提醒一次"出字会延迟"，但不切断 —— 卡住时至少日志里能看出来。
+                hasReportedLongUtterance = true
+                Log.shared.warn(
+                    .asr,
+                    "实时字幕｜连续语音已 \(tail.count * 1000 / sampleRate)ms 未出现停顿"
+                        + "｜仍不切断（已按设置取消强切）｜出字会相应延迟"
+                        + "｜内存占用约 \(tail.count * 4 / 1024 / 1024)MB"
+                )
             } else if !incoming.isEmpty, !speaking, tail.count > prerollFrames {
                 // 长时间没人说话：不切、不识别，只保留一点前导音频。
                 // 这一条必须有：否则纯静音也会把 tail 撑到上限，
@@ -639,9 +698,9 @@ final class LiveTranscriptionEngine {
 
         guard let reason = cutReason else { return }
 
-        // 太短不识别：whisper 对极短输入的判定最不可信（且易出幻觉）。
+        // 太短不识别：识别引擎对极短输入的判定最不可信（且易出幻觉）。
         // **刻意不清空 tail** —— 让这几百毫秒并进下一句；丢掉它等于丢掉一个词。
-        guard tail.count >= minimumSeconds * sampleRate else { return }
+        guard tail.count >= Int(minimumSeconds * Double(sampleRate)) else { return }
 
         // 3) 识别这一段。
         let audioMs = tail.count * 1000 / sampleRate
@@ -677,6 +736,7 @@ final class LiveTranscriptionEngine {
         let costMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
 
         utteranceCount += 1
+        audioBuckets[Self.bucketIndex(forMs: audioMs)] += 1
         if !reason.isSilenceBoundary { cappedUtteranceCount += 1 }
         producedSegments += local.count
         totalCostMs += costMs
@@ -856,7 +916,10 @@ final class LiveTranscriptionEngine {
             + "｜音乐标注 \(musicSegmentsCount) 段"
             + "｜丢弃长静音 \(droppedSilenceCount) 次"
             + "｜平均音频 \(avgAudioMs)ms｜最长音频 \(maxUtteranceAudioMs)ms"
-            + "（上限 \(vadMaxSpeechSeconds * 1000)ms）"
+            + "（硬上限 \(vadMaxSpeechSeconds * 1000)ms，实际不可达）"
+            // 分桶比平均值更能说明"切得碎不碎"：<1s 占比升高即切得过碎
+            + "｜时长分布 \(bucketText)"
+            + "｜停顿门槛 \(String(format: "%.2f", vadMinSilenceSeconds))s"
             + "｜平均耗时 \(avgCost)ms｜最慢 \(maxCostMs)ms"
             + "｜实时倍率 \(String(format: "%.2f", ratio))｜累计出句 \(producedSegments)"
 

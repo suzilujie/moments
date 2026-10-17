@@ -50,7 +50,13 @@ final class SherpaVad {
         minSpeechSeconds: Float = 0.25,
         maxSpeechSeconds: Float = 20,
         windowSize: Int32 = 512,
-        sampleRate: Int32 = 16_000
+        sampleRate: Int32 = 16_000,
+        // bufferSeconds: 内部环形缓冲容量（秒）。
+        // **必须 ≥ maxSpeechSeconds**：这个缓冲是**创建时预分配**的 float 数组
+        //（bufferSeconds × sampleRate × 4 字节），VAD 靠它保存"尚未切出的当前段"。
+        // 缓冲比 maxSpeech 小，超长语音会被提前打断或丢样本 ——
+        // 这也是"完全不设上限"物理上做不到的原因：上限受预分配内存约束。
+        bufferSeconds: Double = 30
     ) {
         guard let modelString = strdup(modelPath),
               let providerString = strdup("cpu") else {
@@ -84,7 +90,7 @@ final class SherpaVad {
             max_speech_duration: 0
         )
 
-        guard let created = SherpaOnnxCreateVoiceActivityDetector(&config, 30.0) else {
+        guard let created = SherpaOnnxCreateVoiceActivityDetector(&config, Float(bufferSeconds)) else {
             lastError = "VAD 创建失败（模型可能损坏或与库版本不匹配）"
             retainedStrings.forEach { free($0) }
             retainedStrings = []
