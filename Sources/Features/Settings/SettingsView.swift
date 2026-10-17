@@ -112,11 +112,17 @@ struct SettingsView: View {
                 Text("120 秒").tag(120)
             }
 
+            // 只提供 32 / 48 两档。
+            // **64 kbps 已移除**：16 kHz 单声道下 AAC 编码器会直接拒绝该组合
+            //（AVAudioFile 创建即失败，#560226676 / '!dat'），真机实测整场 0 分片。
+            // 写入器另有阶梯降档兜底，但把明知会失败的选项摆出来没有任何好处。
             Picker("落盘码率", selection: $settings.bitRate) {
                 Text("32 kbps（约 14 MB/小时）").tag(32_000)
-                Text("48 kbps（约 21 MB/小时）").tag(48_000)
-                Text("64 kbps（更保真）").tag(64_000)
+                Text("48 kbps（约 21 MB/小时，不支持时自动降到 32）").tag(48_000)
             }
+            Text("16 kHz 单声道下超过 48 kbps 会被编码器拒绝。若所选码率不可用，会自动降档并记录日志。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             Picker("单次录制上限", selection: $settings.maxSessionHours) {
                 Text("2 小时").tag(2)

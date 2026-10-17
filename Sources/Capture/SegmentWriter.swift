@@ -38,6 +38,26 @@ final class SegmentWriter {
     private var seq = 0
     /// 当前分片已写入的帧数
     private var framesInCurrentSegment = 0
+
+    /// 实际生效的码率。
+    ///
+    /// **为什么不能直接用请求值**：实测 16 kHz 单声道 + 64 kbps 时，
+    /// `AVAudioFile(forWriting:)` 在创建阶段就被编码器拒绝
+    ///（`com.apple.coreaudio.avfaudio#560226676`，四字符 `'!dat'`），
+    /// 后果是整场录音 0 分片、0 帧落盘 —— 而用户以为录到了。
+    /// 因此创建失败时按阶梯降档重试，成功后固定用降档值，避免每片都从头试错。
+    private(set) var effectiveBitRate: Int
+
+    /// 创建失败日志节流：明细最多每 10 秒一条。
+    /// 不节流的话，一个可用码率都没有时每 100ms 就会刷一条，
+    /// 2 分钟就能刷出 1400 行错误、把有效日志淹没（真机实测过）。
+    private var lastOpenFailureLogAt = Date.distantPast
+    private var openFailuresSinceLog = 0
+    /// 是否已报告过降档（只报一次，避免每一片都重复）
+    private var didReportDowngrade = false
+
+    /// 16 kHz 单声道 AAC 的码率阶梯（降序）。
+    private static let bitRateLadder = [64_000, 48_000, 32_000, 24_000, 16_000]
     /// 当前分片之前累计的帧数（用于推导 startMs）
     private var framesBeforeCurrentSegment = 0
     /// 全会话累计帧数
@@ -56,6 +76,7 @@ final class SegmentWriter {
         self.sampleRate = sampleRate
         self.segmentSeconds = segmentSeconds
         self.bitRate = bitRate
+        self.effectiveBitRate = bitRate
 
         let sessionDirectory = directory.appendingPathComponent(sessionId, isDirectory: true)
         try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
@@ -247,7 +268,11 @@ final class SegmentWriter {
         guard !isClosed else { return nil }
         let last = try finalizeCurrent()
         isClosed = true
-        let detail = "失败统计 创建 \(failedOpenCount) / 写入 \(failedWriteCount)"
+        let bitRateText = effectiveBitRate == bitRate
+            ? "\(bitRate / 1000)kbps"
+            : "\(effectiveBitRate / 1000)kbps（请求 \(bitRate / 1000)，已降档）"
+        let detail = "码率 \(bitRateText)"
+            + "｜失败统计 创建 \(failedOpenCount) / 写入 \(failedWriteCount)"
             + " / 收尾 \(failedFinalizeCount)"
         if failedOpenCount + failedWriteCount + failedFinalizeCount > 0 {
             // 有失败就用 WARN：否则"分片数"对不上用户看到的时长，却看不出哪里丢了
@@ -272,44 +297,91 @@ final class SegmentWriter {
 
     private func openNewSegment() throws {
         let temp = sessionDirectory.appendingPathComponent(String(format: "%06d.partial.m4a", seq))
-        if FileManager.default.fileExists(atPath: temp.path) {
-            try? FileManager.default.removeItem(at: temp)
+
+        // 按阶梯逐个码率尝试。**必须在一层内试完**：
+        // 若把降档留到下一次 append，每次失败都会丢掉当前这一批样本，
+        // 而阶梯只有 5 档 —— 一层内试完，最坏情况也只丢一批。
+        var lastError: Error?
+        let attempts = Self.candidates(startingAt: effectiveBitRate)
+        for candidate in attempts {
+            // 上一次尝试可能留下半成品（0 字节或残缺容器），必须先清掉再试，
+            // 否则 AVAudioFile 可能因为文件已存在而继续失败。
+            if FileManager.default.fileExists(atPath: temp.path) {
+                try? FileManager.default.removeItem(at: temp)
+            }
+
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: candidate
+            ]
+
+            do {
+                file = try AVAudioFile(
+                    forWriting: temp,
+                    settings: settings,
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+            } catch {
+                lastError = error
+                continue
+            }
+
+            let downgraded = candidate != bitRate
+            if downgraded, !didReportDowngrade {
+                didReportDowngrade = true
+                Log.shared.warn(
+                    .storage,
+                    "落盘码率降档｜请求 \(bitRate / 1000)kbps 不被编码器接受"
+                        + "（16kHz 单声道）｜改用 \(candidate / 1000)kbps｜后续分片沿用"
+                )
+            }
+
+            effectiveBitRate = candidate
+            tempURL = temp
+            framesInCurrentSegment = 0
+
+            Log.shared.info(
+                .storage,
+                "分片开始｜seq=\(seq)｜\(framesBeforeCurrentSegment) 帧处"
+                    + "｜\(candidate / 1000)kbps"
+                    + "｜临时文件 \(temp.lastPathComponent)"
+            )
+            return
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: bitRate
-        ]
-
-        do {
-            file = try AVAudioFile(
-                forWriting: temp,
-                settings: settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            // 创建失败若只在调用方打一行"分片写入失败"，就分不清是"打不开文件"还是"写不进去"。
-            // 这两者的处置完全不同：打不开多半是目录/权限/磁盘，写不进多半是编码器或空间。
-            failedOpenCount += 1
+        // 全部码率都失败：这是真正的硬故障（目录被删 / 权限 / 磁盘满 / 编码器不可用）。
+        // 明细按 10 秒节流，避免每 100ms 一条把日志刷爆。
+        failedOpenCount += 1
+        openFailuresSinceLog += 1
+        let now = Date()
+        if now.timeIntervalSince(lastOpenFailureLogAt) >= 10 {
+            lastOpenFailureLogAt = now
             Log.shared.error(
                 .storage,
-                "分片创建失败｜seq=\(seq)｜\(Int(sampleRate))Hz/\(bitRate / 1000)kbps"
-                    + "｜临时文件 \(temp.lastPathComponent)｜第 \(failedOpenCount) 次"
-                    + "｜\(error.diagnosticText)"
+                "分片创建失败｜seq=\(seq)｜\(Int(sampleRate))Hz"
+                    + "｜已试 \(attempts.count) 档码率（\(attempts.map { "\($0 / 1000)" }.joined(separator: "/"))kbps）全部失败"
+                    + "｜近 10 秒失败 \(openFailuresSinceLog) 次｜累计 \(failedOpenCount) 次"
+                    + "｜目录 \(sessionDirectory.lastPathComponent)"
+                    + "｜\(lastError?.diagnosticText ?? "未知错误")"
             )
-            throw error
+            openFailuresSinceLog = 0
         }
-        tempURL = temp
-        framesInCurrentSegment = 0
+        throw lastError ?? CaptureError.recordingFailed("无法创建分片文件")
+    }
 
-        Log.shared.info(
-            .storage,
-            "分片开始｜seq=\(seq)｜\(framesBeforeCurrentSegment) 帧处"
-                + "｜临时文件 \(temp.lastPathComponent)"
-        )
+    /// 生成尝试顺序：从 `start` 开始，逐档向下，直到阶梯最低档。
+    ///
+    /// 若 `start` 不在阶梯里（例如用户设了 40 kbps），先试它本身，
+    /// 再试所有不高于它的档位 —— 上调码率没有意义，只会再失败一次。
+    private static func candidates(startingAt start: Int) -> [Int] {
+        var result = [start]
+        for bitRate in bitRateLadder where bitRate < start {
+            result.append(bitRate)
+        }
+        return result
     }
 
     private func writeChunk(_ samples: [Float]) throws {

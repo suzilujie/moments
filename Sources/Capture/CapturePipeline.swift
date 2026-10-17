@@ -69,6 +69,9 @@ final class CapturePipeline {
     /// 是否处于"失败中"状态，用于在恢复时补一条恢复日志。
     private var isFailing = false
 
+    /// 上一次观察到的累计丢弃帧数（用于识别"这一次又溢出了多少"）。
+    private var lastDroppedSamples = 0
+
     /// 上一条心跳日志的时间。
     private var lastHeartbeatAt = Date()
     /// 心跳间隔：没有日志 ≠ 一切正常，所以要定期自证"消费线程还活着"。
@@ -174,7 +177,14 @@ final class CapturePipeline {
                     )
                 }
 
-                let stats = "失败统计 创建 \(writer.failedOpenCount)"
+                // 修正统计口径：`totalSegments` 只在定时器路径（drainOnce）里累加，
+                // 而最后一片是 close() 收尾的，不走那条路 ——
+                // 真机上于是出现「分片 0 个｜本次收尾 1 个」这种自相矛盾的日志。
+                // 写入器的 seq 就是"已成功收尾的分片数"，以它为准。
+                self.totalSegments = writer.nextSeq
+
+                let stats = "码率 \(writer.effectiveBitRate / 1000)kbps"
+                    + "｜失败统计 创建 \(writer.failedOpenCount)"
                     + " / 写入 \(writer.failedWriteCount)"
                     + " / 收尾 \(writer.failedFinalizeCount)"
                     + "｜断口 \(writer.skippedMs)ms"
@@ -288,6 +298,9 @@ final class CapturePipeline {
             if !finished.isEmpty {
                 self.onSegments?(finished)
             }
+            // 放在 drainOnce 之后：此时 lastTickCostMs 已是本次消费的真实耗时，
+            // 告警里能直接对照"是不是消费慢了导致丢帧"。
+            self.checkRingBufferOverflow()
             self.logHeartbeatIfNeeded()
         }
         timer = source
@@ -355,6 +368,30 @@ final class CapturePipeline {
 
     // MARK: - 失败与心跳日志
 
+    /// 环形缓冲溢出即时告警。
+    ///
+    /// ## 为什么必须即时
+    /// `droppedSamples` 原来只在**停止录音**时被汇总打印。中途溢出时日志里
+    /// 没有任何时间点 —— 事后只能知道"丢过帧"，不知道丢在几点几分，
+    /// 也就无法与锁屏、中断、路由变更这些事件对齐，等于没有证据。
+    ///
+    /// 实时线程内禁止写日志（见 `AudioCaptureEngine` 的纪律），所以改为在消费侧
+    /// 比较丢弃计数的**增量**：最多滞后一个 tick（100ms），但足以定位到秒。
+    private func checkRingBufferOverflow() {
+        let dropped = ringBuffer.droppedSamples
+        guard dropped > lastDroppedSamples else { return }
+        let delta = dropped - lastDroppedSamples
+        lastDroppedSamples = dropped
+
+        Log.shared.error(
+            .capture,
+            "环形缓冲溢出｜本次新增 \(delta) 帧｜累计 \(dropped) 帧"
+                + "｜待消费 \(ringBuffer.availableToRead) 帧"
+                + "｜本次消费耗时 \(lastTickCostMs)ms（间隔 \(tickIntervalMs)ms）"
+                + "｜已转出 \(totalConvertedFrames) 帧｜分片 \(totalSegments) 个"
+        )
+    }
+
     /// 记录一次落盘失败。
     ///
     /// ## 为什么要节流
@@ -414,6 +451,7 @@ final class CapturePipeline {
             "落盘心跳｜分片 \(totalSegments) 个（当前 seq=\(nextSeq)，已写 \(segmentFrames) 帧）"
                 + "｜已转出 \(totalConvertedFrames) 帧"
                 + "｜环形缓冲待消费 \(ringBuffer.availableToRead) 帧"
+                + "｜累计写入 \(ringBuffer.totalWritten) 帧"
                 + "｜累计丢弃 \(ringBuffer.droppedSamples) 帧"
                 + "｜本次消费 \(lastTickCostMs)ms"
                 + "｜失败累计 \(appendFailureTotal) 次"

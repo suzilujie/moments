@@ -38,6 +38,19 @@ final class RecordingSession: ObservableObject {
     /// 显示上一次录了多久 —— 而且这个错误会随使用次数越来越大。
     private var frameBaseAtSessionStart = 0
 
+    /// 首帧探针：布防时刻（单调时钟）。nil 表示未布防。
+    ///
+    /// 存在的理由：`engine.start()` 成功只证明"引擎起来了"，**不证明 tap 真的在出数据**。
+    /// 音频图被重建后旧引擎静默失效、麦克风被系统静音这类故障，所有回调都不触发，
+    /// 日志里除了"采集引擎已启动"什么都没有 —— 这正是本项目最难查的一类问题。
+    private var firstFrameArmUptime: Double?
+    /// 首帧探针的帧数基准（布防那一刻的累计写入帧）。
+    private var firstFrameBase = 0
+    /// 是否已就首帧发过结论（"到达"或"无输出"都只报一次，避免每秒刷屏）。
+    private var firstFrameReported = true
+    /// 布防后多久必须见到帧
+    private let firstFrameDeadlineSeconds: Double = 1.0
+
     /// 逻辑时间轴位置（毫秒）。它 = 最后一次收尾分片的 endMs + 已记录的断口时长。
     /// 用它而不是 `manifest.recordedMs` 来定位断口起点，是因为断口本身要占据时间轴位置。
     private var timelineMs = 0
@@ -91,6 +104,50 @@ final class RecordingSession: ObservableObject {
         // 说明：中断期间没有音频写入 → 上面的数字会**停住不动**，这是刻意的：
         // 已录时长就该等于"真正录到的音频长度"，断口由断口区单独如实显示，
         // 而不是把它摊进时长里假装连续（设计文档 11.2 第 2 条）。
+    }
+
+    // MARK: - 首帧探针
+
+    /// 布下首帧探针：从此刻起 `firstFrameDeadlineSeconds` 内必须见到至少一帧音频。
+    ///
+    /// 基准取**当前**累计写入帧，而不是会话开始的基准 —— 恢复（重建引擎）之后
+    /// 再布防时，历史帧会让判定立刻为真，"重建后仍然没有声音"就永远发现不了。
+    private func armFirstFrameProbe() {
+        firstFrameBase = ringBuffer.totalWritten
+        firstFrameArmUptime = ProcessInfo.processInfo.systemUptime
+        firstFrameReported = false
+    }
+
+    /// 由看门狗 1 秒 tick 驱动（不另起定时器：同一个探针两个定时器迟早读数不一致）。
+    private func checkFirstFrame() {
+        guard !firstFrameReported, let armUptime = firstFrameArmUptime else { return }
+
+        let frames = ringBuffer.totalWritten - firstFrameBase
+        if frames > 0 {
+            firstFrameReported = true
+            firstFrameArmUptime = nil
+            Log.shared.info(
+                .capture,
+                "首帧到达｜\(frames) 帧进入环形缓冲"
+                    + "｜原生格式 \(Int(manifest?.nativeSampleRate ?? 0))Hz"
+                    + "｜会话 \(snapshot.sessionId ?? "-")"
+            )
+            return
+        }
+
+        let elapsed = ProcessInfo.processInfo.systemUptime - armUptime
+        guard elapsed >= firstFrameDeadlineSeconds else { return }
+
+        firstFrameReported = true
+        firstFrameArmUptime = nil
+        Log.shared.warn(
+            .capture,
+            "采样无输出｜已 \(String(format: "%.1f", elapsed))s 未收到任何音频帧"
+                + "（阈值 \(String(format: "%.0f", firstFrameDeadlineSeconds))s）"
+                + "｜引擎运行中=\(engine.isRunning)｜tap 缓冲 \(engine.tapBufferFrames) 帧"
+                + "｜会话 \(snapshot.sessionId ?? "-")"
+                + "｜提示：此状态下波形与已录时长都会停住，需检查麦克风/音频图"
+        )
     }
 
     // MARK: - 开始
@@ -169,6 +226,8 @@ final class RecordingSession: ObservableObject {
         frameBaseAtSessionStart = ringBuffer.totalWritten
 
         try engine.start(ringBuffer: ringBuffer)
+        // 引擎起来了不等于有数据：布下首帧探针，1 秒内没有任何帧进入缓冲就告警
+        armFirstFrameProbe()
         guard let nativeFormat = engine.nativeFormat else {
             throw CaptureError.noInputAvailable
         }
@@ -219,6 +278,9 @@ final class RecordingSession: ObservableObject {
         // 两个定时器各刷一份，迟早会出现界面数字与看门狗判定不一致。
         watchdog.onTick = { [weak self] in
             self?.refreshLiveMetrics()
+            // 首帧探针挂在同一个 tick 上：它判定的就是"帧有没有进来"，
+            // 与 refreshLiveMetrics 读的是同一个 totalWritten，不需要第二个定时器。
+            self?.checkFirstFrame()
         }
         watchdog.start()
         self.watchdog = watchdog
@@ -270,6 +332,24 @@ final class RecordingSession: ObservableObject {
                     + "｜分片 \(current.segments.count)｜断口 \(current.gaps.count) 处 \(current.totalGapMs)ms"
                     + "｜体积 \(current.sizeText)"
             )
+
+            // ══ 零落盘强告警 ══
+            // 真机踩过：16 kHz + 64 kbps 的 AAC 参数被编码器拒绝，
+            // 整场录音 0 分片、0 帧落盘，而日志只有一行 WARN、界面显示"已录 00:00" ——
+            // 用户以为录到了，事后才发现没有任何音频。
+            // 判据用**采集帧数**而不是时长：时长依赖 nativeSampleRate，取不到时为 0，
+            // 会把"确实采到了但没写下去"误判成"什么都没录"。
+            let capturedFrames = ringBuffer.totalWritten - frameBaseAtSessionStart
+            if current.segments.isEmpty, capturedFrames > 0 {
+                let seconds = Int(Double(capturedFrames) / max(1, current.nativeSampleRate))
+                snapshot.lastError = "录音已结束，但音频未能保存（共采集约 \(seconds) 秒，0 个分片）。"
+                    + "文字稿已单独保留。常见原因：编码参数不被支持或存储目录不可写。"
+                Log.shared.error(
+                    .storage,
+                    "录音零落盘｜会话 \(current.id)｜采集 \(capturedFrames) 帧（约 \(seconds) 秒）"
+                        + "｜分片 0｜文字稿已单独保留"
+                )
+            }
         }
 
         pipeline = nil
@@ -530,6 +610,9 @@ final class RecordingSession: ObservableObject {
                 manifest?.nativeSampleRate = format.sampleRate
             }
 
+            // 重建后重新布防：这是最需要证据的时刻 —— "重建成功但依然没有声音"
+            // 若不重布防，就只能等 3 秒后的看门狗停滞判定，且分不清是没帧还是消费卡住。
+            armFirstFrameProbe()
             endOutage()
             watchdog?.markRecovered()
             recoveryAttempts = 0

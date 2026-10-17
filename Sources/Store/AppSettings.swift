@@ -30,9 +30,16 @@ final class AppSettings: ObservableObject {
     }
 
     /// 落盘码率（bps）。32 kbps ≈ 14 MB/小时（设计文档 4.4）
+    ///
+    /// **上限由编码器决定，不是由存储预算决定**：16 kHz 单声道 AAC 在 64 kbps 时
+    /// `AVAudioFile(forWriting:)` 直接抛 `#560226676`（`'!dat'`），整场录音 0 分片。
+    /// 因此超过 `maxBitRate` 的取值一律钳制回 32 kbps（含旧版本存下来的 64 kbps）。
     @Published var bitRate: Int {
         didSet { defaults.set(bitRate, forKey: Keys.bitRate) }
     }
+
+    /// 16 kHz 单声道 AAC 的实测可用码率上限。
+    static let maxBitRate = 48_000
 
     /// 单次录音时长上限（小时），防止忘记停止录满存储
     @Published var maxSessionHours: Int {
@@ -188,7 +195,20 @@ final class AppSettings: ObservableObject {
         sessionMode = (rawMode == "highFidelity") ? .highFidelity : .coexistent
 
         segmentSeconds = defaults.object(forKey: Keys.segmentSeconds) as? Int ?? 60
-        bitRate = defaults.object(forKey: Keys.bitRate) as? Int ?? 32_000
+        // 旧安装里可能存着 64 kbps（当时设置页提供该项），升级后必须钳制，
+        // 否则"设置已经改了"但用户仍然录不到音 —— 这是最难解释的一类问题。
+        let storedBitRate = defaults.object(forKey: Keys.bitRate) as? Int ?? 32_000
+        if storedBitRate > Self.maxBitRate {
+            bitRate = 32_000
+            defaults.set(32_000, forKey: Keys.bitRate)
+            Log.shared.warn(
+                .app,
+                "落盘码率已钳制｜配置里是 \(storedBitRate / 1000)kbps，超过编码器上限"
+                    + " \(Self.maxBitRate / 1000)kbps（16kHz 单声道）｜已回落到 32kbps"
+            )
+        } else {
+            bitRate = storedBitRate
+        }
         maxSessionHours = defaults.object(forKey: Keys.maxHours) as? Int ?? 12
         retentionDays = defaults.object(forKey: Keys.retentionDays) as? Int ?? 7
         minFreeDiskGB = defaults.object(forKey: Keys.minFreeDiskGB) as? Double ?? 1.0
