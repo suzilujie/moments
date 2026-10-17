@@ -144,10 +144,10 @@ final class WhisperEngine {
     ///   - translateToEnglish: 是否让 whisper 直接输出英文（注意：whisper 只能译成英文）
     ///   - dropLikelySilence: 是否丢弃"疑似幻觉"的分段（非语音概率过高）。
     ///     **只给实时字幕用**；终稿必须传 false，留档不能丢内容。
-    ///   - decodeMode: 解码策略（默认贪心）。实时字幕传 `.beamSearch` ——
-    ///     它最被诟病的是错字，而 beam 正是针对错字的手段（见 DecodeMode 的说明）。
-    ///     终稿仍用贪心：终稿本来就慢，且"换模型"对它的提升更直接，
-    ///     两个变量一起动会让成效无法归因。
+    ///   - decodeMode: 解码策略（默认贪心）。实时字幕与终稿都传 `.beamSearch` ——
+    ///     中文同音字（是/时/事/实）正是贪心最容易错的地方，而 beam 保留多条候选
+    ///     路径、在歧义处能纠回来（见 DecodeMode 的说明）。终稿不求快（后台补跑），
+    ///     慢几倍可接受。
     /// - Returns: 分段文本；失败返回空数组并写入 lastError
     func transcribe(
         samples: [Float],

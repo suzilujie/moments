@@ -122,9 +122,18 @@ enum WhisperModelCatalog {
     /// 若哪天真机发热明显，改回 `"base-q5_1"` 或让用户切到 Base 即可（设置里可选）。
     static let realtimeDefaultId = "small-q5_1"
 
-    /// 终稿默认模型：small 量化版。准确率明显优于 base，且可在充电/息屏时慢慢跑，
-    /// 速度不是约束（设计文档 5.4）。
-    static let finalDefaultId = "small-q5_1"
+    /// 终稿默认模型：medium 量化版。
+    ///
+    /// ## 为什么从 small 改成 medium（2026-10-17）
+    /// 终稿是留档、事后补跑，设计文档 5.4 明确「速度不是约束」。small 仍是实时/
+    /// 终稿共用的兜底，但终稿有更强的 medium 可用（539 MB）—— 中文同音字
+    /// （在/再、的/得/地、做/作）正是 small 最容易错、medium 明显更稳的地方。
+    /// 终稿求准，没有理由继续用 small。
+    ///
+    /// ## 连带影响
+    /// 仅影响**新用户**的默认值（已存 `finalModel` 的老用户沿用自己存的）。
+    /// 新用户首次补跑终稿会提示下载 medium（约 539 MB），仍只在 Wi-Fi 下。
+    static let finalDefaultId = "medium-q5_0"
 
     static let all: [WhisperModelDescriptor] = [
         WhisperModelDescriptor(

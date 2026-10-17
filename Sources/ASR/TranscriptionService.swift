@@ -364,7 +364,10 @@ final class TranscriptionWorker {
                         let local = engine.transcribe(
                             samples: audio,
                             language: inputs.language == "auto" ? pinnedLanguage : inputs.language,
-                            translateToEnglish: false
+                            translateToEnglish: false,
+                            // 终稿求准、不求快（后台补跑）：beam search 在歧义处能纠回来，
+                            // 中文同音字（是/时/事/实）正是贪心最容易错的地方。
+                            decodeMode: .beamSearch
                         )
                         // 与实时路径同一条规则：只有**真的转出了内容**才锁定语言。
                         // 空结果分片的语言判定最不可信，而锁定是一次性的。
